@@ -114,7 +114,7 @@ Reports become correct by construction: category and income/expense rollups filt
 |---|---|---|
 | `transactions.kind` | enum | `expense` · `income` · `transfer` |
 | `categories.kind` | enum | `expense` · `income` |
-| `wallets.kind` | enum | `cash` · `card` · `bank` · `savings` · `other` — see §3.7 |
+| `wallets.kind` | enum | `card` · `bank` — see §3.7 |
 | `wallet_members.role` | enum | `owner` · `member` — phase 1 only ever writes `owner`; `member` exists so phase 3's invite flow is a data change, not a migration |
 | `wallets.color_slot`<br>`categories.color_slot` | `smallint` 1–8 | An index into the validated palette (§6.1), **not** a hex string. Storing hex would let a future colour bypass `scripts/validate-palette.mjs`; storing a slot makes that structurally impossible. |
 | `profiles.theme` | enum | `system` · `light` · `dark` |
@@ -127,19 +127,16 @@ Twelve categories against eight colour slots means slots repeat by design — ca
 
 ### 3.7 Wallet kinds — cards and bank accounts
 
-A "wallet" is any pot of money, not just cash. `wallets.kind` distinguishes them:
+A wallet is a pot of money. There are exactly two kinds:
 
 | Kind | Typical use |
 |---|---|
-| `cash` | Physical cash |
 | `card` | A debit or credit card |
-| `bank` | A current / checking account |
-| `savings` | A savings or reserve account |
-| `other` | Anything else — a prepaid travel card, a shared holiday pot |
+| `bank` | A current, checking or savings account |
 
-All are **manually tracked** in phase 1: the user creates the wallet, sets a starting balance, and records transactions against it. Moving money between them — cash withdrawn from an account, a card bill paid from current — is a transfer (§3.2), which is precisely why transfers are in phase 1 rather than deferred. Multiple cards and accounts per user are supported; there is no limit.
+Both are **manually tracked** in phase 1: the user creates the wallet, sets a starting balance, and records transactions against it. Moving money between them — paying a card bill from a current account, sweeping into savings — is a transfer (§3.2), which is precisely why transfers are in phase 1 rather than deferred. Multiple cards and accounts per user are supported; there is no limit.
 
-`kind` is not decoration. It drives icon and colour defaults, grouping on `/wallets`, and two downstream behaviours already visible in the Spendee model: scheduled transactions apply only to manually-tracked wallets (phase 2), and bank-connected wallets cannot be shared (phase 3). Encoding it now means neither is a migration.
+With only two kinds, `kind` is **presentational**: it drives icon and colour defaults and grouping on `/wallets`. It deliberately does *not* carry the manual-versus-connected distinction that phase 2's scheduling rule and phase 3's sharing rule depend on — those key off a future `provider IS NULL` (§3.7 note), because a `bank` wallet may be either hand-tracked or aggregator-backed. Keeping those two concepts on separate columns is what stops the enum having to grow when sync arrives.
 
 > **Manual tracking is not bank sync.** Automatically importing transactions from a real bank requires an open-banking aggregator (Plaid, TrueLayer, Salt Edge, GoCardless Bank Account Data). That is a paid, KYC-gated third-party integration with its own credential handling, consent-renewal flow and per-account monthly cost — a project in its own right, not a feature of this one. It is out of scope for all three phases (§8). `wallets.kind` leaves the seam: an aggregator-backed wallet would add `provider` and `external_account_id` columns and a sync job, without changing anything above.
 
