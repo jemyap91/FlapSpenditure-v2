@@ -53,7 +53,7 @@ A single Next.js App Router application against Supabase Postgres. No separate A
 ```
 profiles          id -> auth.users, display_name, base_currency, theme
 currencies        code (PK), minor_unit, symbol, name          [reference data]
-wallets           id, owner_id, name, currency_code,
+wallets           id, owner_id, name, kind, currency_code,
                   starting_balance_minor, color_slot, icon,
                   archived_at, created_at, updated_at
 wallet_members    wallet_id, user_id, role, joined_at          [PK: wallet_id+user_id]
@@ -114,6 +114,7 @@ Reports become correct by construction: category and income/expense rollups filt
 |---|---|---|
 | `transactions.kind` | enum | `expense` · `income` · `transfer` |
 | `categories.kind` | enum | `expense` · `income` |
+| `wallets.kind` | enum | `cash` · `card` · `bank` · `savings` · `other` — see §3.7 |
 | `wallet_members.role` | enum | `owner` · `member` — phase 1 only ever writes `owner`; `member` exists so phase 3's invite flow is a data change, not a migration |
 | `wallets.color_slot`<br>`categories.color_slot` | `smallint` 1–8 | An index into the validated palette (§6.1), **not** a hex string. Storing hex would let a future colour bypass `scripts/validate-palette.mjs`; storing a slot makes that structurally impossible. |
 | `profiles.theme` | enum | `system` · `light` · `dark` |
@@ -124,7 +125,25 @@ Onboarding seeds **12 default expense categories and 4 income categories** per u
 
 Twelve categories against eight colour slots means slots repeat by design — categories 9–12 reuse slots 1–4. This is the §6.1 ceiling applied: identity for a repeated slot is carried by the icon and name, and the charts fold the tail into "Other" before two same-coloured categories can appear in one view. Defaults are user-owned rows, so they are editable and archivable like any other category.
 
-### 3.7 Indexes
+### 3.7 Wallet kinds — cards and bank accounts
+
+A "wallet" is any pot of money, not just cash. `wallets.kind` distinguishes them:
+
+| Kind | Typical use |
+|---|---|
+| `cash` | Physical cash |
+| `card` | A debit or credit card |
+| `bank` | A current / checking account |
+| `savings` | A savings or reserve account |
+| `other` | Anything else — a prepaid travel card, a shared holiday pot |
+
+All are **manually tracked** in phase 1: the user creates the wallet, sets a starting balance, and records transactions against it. Moving money between them — cash withdrawn from an account, a card bill paid from current — is a transfer (§3.2), which is precisely why transfers are in phase 1 rather than deferred. Multiple cards and accounts per user are supported; there is no limit.
+
+`kind` is not decoration. It drives icon and colour defaults, grouping on `/wallets`, and two downstream behaviours already visible in the Spendee model: scheduled transactions apply only to manually-tracked wallets (phase 2), and bank-connected wallets cannot be shared (phase 3). Encoding it now means neither is a migration.
+
+> **Manual tracking is not bank sync.** Automatically importing transactions from a real bank requires an open-banking aggregator (Plaid, TrueLayer, Salt Edge, GoCardless Bank Account Data). That is a paid, KYC-gated third-party integration with its own credential handling, consent-renewal flow and per-account monthly cost — a project in its own right, not a feature of this one. It is out of scope for all three phases (§8). `wallets.kind` leaves the seam: an aggregator-backed wallet would add `provider` and `external_account_id` columns and a sync job, without changing anything above.
+
+### 3.8 Indexes
 
 ```sql
 CREATE INDEX ON transactions (wallet_id, occurred_on DESC) WHERE deleted_at IS NULL;
@@ -186,8 +205,8 @@ Mobile gets a bottom tab bar; desktop gets a persistent left sidebar.
 | `/transactions` | Full list grouped by day, infinite scroll, filter by wallet / category / type |
 | `/transactions/new` | Mobile: full-screen keypad. Desktop: redirects to `/` with the modal open |
 | `/transactions/[id]` | Detail and edit; deleting a transfer removes both legs behind one confirmation |
-| `/wallets` | List with balances; create, rename, recolour, archive |
-| `/categories` | Manage, reorder, archive (never hard-delete — it would orphan history) |
+| `/wallets` | List grouped by kind with balances; create, rename, re-kind, recolour, archive (§3.7) |
+| `/categories` | Create, edit, reorder, archive (never hard-delete — it would orphan history). See §5.3 |
 | `/settings` | Profile, base currency, theme |
 
 ### 5.1 Add-transaction flow
@@ -216,6 +235,30 @@ Confirmation dialogs are deliberately avoided in favour of undo: dialogs interru
 ### 5.2 States
 
 Every list screen specifies four states — loading skeleton, empty, error with retry, populated. Empty states are design work, not placeholder text. The transaction list has **two distinct** empty states: no data yet (the fix is adding a transaction) and a filter matched nothing (the fix is clearing the filter).
+
+### 5.3 Custom categories
+
+The 16 seeded categories (§3.6) are a starting point, not a fixed set. Users create their own, and there are **two** places to do it — the second matters more than the first.
+
+**From `/categories`.** The management screen, for deliberate curation. Fields: name, kind (`expense` / `income`, fixed after creation), colour slot, icon.
+
+**Inline from the add-transaction category picker.** This is the load-bearing one. The realistic case is standing at a till having typed `48.00`, opening the picker, and finding that "Vet" doesn't exist. Sending the user to a settings screen means abandoning the half-entered transaction. So the picker's search field offers **"Create *<typed text>*"** as the last row whenever the query matches nothing: one tap creates the category with auto-assigned colour and a default icon, selects it, and returns to the keypad with the amount intact. Refinement happens later on `/categories`, or never.
+
+**Defaults on creation:**
+
+| Field | Behaviour |
+|---|---|
+| `kind` | Inherited from the transaction type in the inline case; chosen explicitly on `/categories`. Immutable afterwards — changing it would silently move historical transactions between income and expense reports. |
+| `color_slot` | Auto-assigned to the **least-used active slot** for that user and kind, so new categories spread across the palette instead of stacking on slot 1. User-overridable. |
+| `icon` | A neutral default from the curated set; user-overridable. Icons come from Lucide line icons — **never emoji**, per the design constraint. |
+| `sort_order` | Appended to the end. |
+| `is_default` | `false`. |
+
+**Uniqueness:** `UNIQUE (owner_id, kind, lower(name)) WHERE archived_at IS NULL`. Case-insensitive so "Vet" and "vet" don't both exist; scoped to active rows so a name can be reused after archiving. The inline picker surfaces the existing match rather than the create row when a name collides.
+
+**Archive, never delete.** Deleting a category would orphan every transaction referencing it. Archiving hides it from pickers while leaving history intact and reports correct. Archived categories still appear in historical breakdowns — the alternative is last month's totals silently changing.
+
+> **Phase 3 note.** Categories are owner-scoped (§4). When shared wallets arrive, guests see the wallet owner's categories and cannot create new ones, matching Spendee. The RLS `SELECT` policy widens to "categories of any owner whose wallet I'm a member of"; the write policies do not change.
 
 ---
 
@@ -320,7 +363,7 @@ Two of these are unusual and deliberate.
 
 ## 8. Out of scope for phase 1
 
-Budgets · scheduled transactions · multi-currency conversion and the all-wallets overview · shared wallet invites and realtime · CSV import/export · bulk edit · receipt AI scan · PWA install and offline · passcode / biometric lock · bank account connections (out of scope for all phases — requires a paid aggregator).
+Budgets · scheduled transactions · multi-currency conversion and the all-wallets overview · shared wallet invites and realtime · CSV import/export · bulk edit · receipt AI scan · PWA install and offline · passcode / biometric lock · automatic bank/card sync via an open-banking aggregator (out of scope for all three phases — see §3.7; manually-tracked card and bank wallets *are* in phase 1).
 
 Phase 1 leaves the schema seams for the first six.
 
