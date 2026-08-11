@@ -1,0 +1,27 @@
+{
+  "categorical": [
+    { "name": "brick", "light": "#ba362e", "dark": "#e86154" },
+    { "name": "amber", "light": "#b67c10", "dark": "#8c5e09" },
+    { "name": "fern",  "light": "#0a7039", "dark": "#16ae5b" },
+    { "name": "olive", "light": "#918e10", "dark": "#6f6d0a" },
+    { "name": "wine",  "light": "#c7436d", "dark": "#d55078" },
+    { "name": "ochre", "light": "#a48610", "dark": "#7e660a" },
+    { "name": "plum",  "light": "#b84999", "dark": "#c656a6" },
+    { "name": "sage",  "light": "#1a8210", "dark": "#2b8f22" }
+  ],
+  "surfaces": { "light": "#fcfcfb", "dark": "#1a1a19" },
+  "chrome": {
+    "page":  { "light": "#f9f9f7", "dark": "#0d0d0d" },
+    "ink":   { "light": "#0b0b0b", "dark": "#ffffff" },
+    "ink2":  { "light": "#52514e", "dark": "#c3c2b7" },
+    "muted": { "light": "#898781", "dark": "#898781" },
+    "grid":  { "light": "#e1e0d9", "dark": "#2c2c2a" },
+    "pos":   { "light": "#006300", "dark": "#0ca30c" },
+    "neg":   { "light": "#d03b3b", "dark": "#e66767" }
+  },
+  "diverging": {
+    "in":  { "light": "#17a2a2", "dark": "#17a2a2" },
+    "out": { "light": "#e36a1f", "dark": "#e36a1f" },
+    "mid": { "light": "#f0efec", "dark": "#383835" }
+  }
+}

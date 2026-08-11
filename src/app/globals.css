@@ -24,3 +24,48 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/*
+ * Palette tokens — single-sourced from ../../palette.json (see src/lib/palette.ts
+ * and scripts/validate-palette.mjs). Do not hand-edit these values; regenerate
+ * from palette.json if the palette changes.
+ *
+ * Dark values are declared under both the media query and the [data-theme]
+ * scope so an explicit toggle wins in both directions.
+ */
+:root {
+  --cat-1: #ba362e; --cat-2: #b67c10; --cat-3: #0a7039; --cat-4: #918e10;
+  --cat-5: #c7436d; --cat-6: #a48610; --cat-7: #b84999; --cat-8: #1a8210;
+  --surface: #fcfcfb; --page: #f9f9f7;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781; --grid: #e1e0d9;
+  --pos: #006300; --neg: #d03b3b;
+  --div-in: #17a2a2; --div-out: #e36a1f; --div-mid: #f0efec;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --cat-1: #e86154; --cat-2: #8c5e09; --cat-3: #16ae5b; --cat-4: #6f6d0a;
+    --cat-5: #d55078; --cat-6: #7e660a; --cat-7: #c656a6; --cat-8: #2b8f22;
+    --surface: #1a1a19; --page: #0d0d0d;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781; --grid: #2c2c2a;
+    --pos: #0ca30c; --neg: #e66767;
+    --div-mid: #383835;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --cat-1: #e86154; --cat-2: #8c5e09; --cat-3: #16ae5b; --cat-4: #6f6d0a;
+  --cat-5: #d55078; --cat-6: #7e660a; --cat-7: #c656a6; --cat-8: #2b8f22;
+  --surface: #1a1a19; --page: #0d0d0d;
+  --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781; --grid: #2c2c2a;
+  --pos: #0ca30c; --neg: #e66767;
+  --div-mid: #383835;
+  color-scheme: dark;
+}
+
+body {
+  background: var(--page);
+  color: var(--ink);
+}

@@ -28,25 +28,19 @@
 // Slot order is the colour-vision-safety mechanism, not decoration. It was
 // derived by searching orderings and lightness steps under the gates below.
 // Re-ordering requires re-running this script.
+//
+// Single-sourced from ../palette.json so the validator and the app can never
+// drift apart.
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const raw = JSON.parse(readFileSync(join(here, "..", "palette.json"), "utf8"));
+
 export const PALETTE = {
-  light: {
-    surface: "#fcfcfb",
-    slots: [
-      ["brick", "#ba362e"], ["amber", "#b67c10"],
-      ["fern",  "#0a7039"], ["olive", "#918e10"],
-      ["wine",  "#c7436d"], ["ochre", "#a48610"],
-      ["plum",  "#b84999"], ["sage",  "#1a8210"],
-    ],
-  },
-  dark: {
-    surface: "#1a1a19",
-    slots: [
-      ["brick", "#e86154"], ["amber", "#8c5e09"],
-      ["fern",  "#16ae5b"], ["olive", "#6f6d0a"],
-      ["wine",  "#d55078"], ["ochre", "#7e660a"],
-      ["plum",  "#c656a6"], ["sage",  "#2b8f22"],
-    ],
-  },
+  light: { surface: raw.surfaces.light, slots: raw.categorical.map((c) => [c.name, c.light]) },
+  dark:  { surface: raw.surfaces.dark,  slots: raw.categorical.map((c) => [c.name, c.dark])  },
 };
 
 const BAND = { light: [0.43, 0.77], dark: [0.48, 0.67] };
