@@ -2241,7 +2241,11 @@ import { Plus } from "lucide-react";
 import { createCategory } from "@/server/actions/categories";
 import { slotVar } from "@/lib/palette";
 
-export type Category = { id: string; name: string; color_slot: number; icon: string };
+// `kind` is required: TransactionForm (Task 19) filters this list by it.
+export type Category = {
+  id: string; name: string; kind: "expense" | "income";
+  color_slot: number; icon: string;
+};
 
 export function CategoryPicker({
   categories, kind, value, onChange,
@@ -2330,11 +2334,11 @@ export default async function CategoriesPage() {
   return (
     <div className="mx-auto max-w-2xl p-6">
       <h1 className="mb-6 text-2xl font-semibold">Categories</h1>
-      {[["Expense", expense], ["Income", income]].map(([label, list]) => (
-        <section key={label as string} className="mb-8">
-          <h2 className="mb-2 text-sm uppercase" style={{ color: "var(--muted)" }}>{label as string}</h2>
+      {[{ label: "Expense", items: expense }, { label: "Income", items: income }].map(({ label, items }) => (
+        <section key={label} className="mb-8">
+          <h2 className="mb-2 text-sm uppercase" style={{ color: "var(--muted)" }}>{label}</h2>
           <ul className="rounded-lg border" style={{ borderColor: "var(--grid)", background: "var(--surface)" }}>
-            {(list as typeof expense).map((c) => (
+            {items.map((c) => (
               <li key={c.id} className="flex items-center gap-3 border-b px-4 py-3 last:border-0"
                   style={{ borderColor: "var(--grid)" }}>
                 <span aria-hidden className="h-3 w-3 rounded-full" style={{ background: slotVar(c.color_slot) }} />
@@ -2608,6 +2612,7 @@ export function TransactionForm({
 import { redirect } from "next/navigation";
 import { createServerClient } from "@/lib/supabase/server";
 import { TransactionForm } from "@/components/TransactionForm";
+import type { Category } from "@/components/CategoryPicker";
 
 export default async function NewTransactionPage() {
   const supabase = await createServerClient();
@@ -2623,7 +2628,7 @@ export default async function NewTransactionPage() {
   return (
     <TransactionForm
       wallets={wallets}
-      categories={(categories ?? []) as never}
+      categories={categories ?? ([] satisfies Category[])}
       defaultWalletId={wallets[0]!.id}
     />
   );
@@ -2761,21 +2766,22 @@ export default async function TransactionsPage() {
     .order("occurred_on", { ascending: false })
     .limit(100);
 
-  const rows: Row[] = (data ?? []).map((t: never) => {
-    const r = t as unknown as {
-      id: string; kind: Row["kind"]; amount_minor: number; currency_code: string;
-      occurred_on: string; note: string | null;
-      wallets: { name: string } | null;
-      categories: { name: string; color_slot: number } | null;
-    };
-    return {
-      id: r.id, kind: r.kind, amount_minor: r.amount_minor,
-      currency_code: r.currency_code, occurred_on: r.occurred_on, note: r.note,
-      wallet_name: r.wallets?.name ?? "",
-      category_name: r.categories?.name ?? null,
-      color_slot: r.categories?.color_slot ?? null,
-    };
-  });
+  // Supabase types embedded relations loosely. Assert the shape ONCE here, at
+  // the data boundary, rather than casting inside the map.
+  type JoinedTxn = {
+    id: string; kind: Row["kind"]; amount_minor: number; currency_code: string;
+    occurred_on: string; note: string | null;
+    wallets: { name: string } | null;
+    categories: { name: string; color_slot: number } | null;
+  };
+
+  const rows: Row[] = ((data ?? []) as unknown as JoinedTxn[]).map((r) => ({
+    id: r.id, kind: r.kind, amount_minor: r.amount_minor,
+    currency_code: r.currency_code, occurred_on: r.occurred_on, note: r.note,
+    wallet_name: r.wallets?.name ?? "",
+    category_name: r.categories?.name ?? null,
+    color_slot: r.categories?.color_slot ?? null,
+  }));
 
   return (
     <div className="mx-auto max-w-2xl">

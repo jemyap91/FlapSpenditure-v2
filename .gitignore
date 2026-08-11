@@ -29,3 +29,6 @@ supabase/.temp/
 *.log
 .vercel
 .turbo
+
+# subagent-driven-development scratch
+.superpowers/
