@@ -4,7 +4,9 @@
 
 **Goal:** Build the core ledger — auth, wallets, categories, transactions including transfers, and a dashboard — as a responsive web app.
 
-**Architecture:** A single Next.js App Router application against Supabase Postgres. Reads happen in Server Components; writes go through Server Actions, never from the browser. Row-level security is the enforcement boundary, routed through one `SECURITY DEFINER` membership predicate. Anything requiring atomicity across rows (transfers, undo) is a Postgres function, because the Supabase client cannot run multi-statement transactions.
+**Architecture:** A single Next.js App Router application against Supabase Postgres. Reads happen in Server Components; writes go through Server Actions, never from the browser. Row-level security is the enforcement boundary, routed through one `SECURITY DEFINER` membership predicate.
+
+**On SQL functions.** PostgREST runs each request in a transaction, so a single multi-row `.insert([a, b])` or a single `UPDATE … WHERE transfer_id = $1` is already atomic — atomicity alone does **not** justify pushing logic into Postgres. Exactly one operation earns a function: `create_transfer`, whose invariant is multi-part (two rows, opposite signs, distinct wallets, membership on both) and worth enforcing regardless of which client is calling. Soft delete and restore stay in TypeScript: they are single statements with no invariant a function would add, and every SQL function is a permanent migration, an untypeable surface, and an opaque error string.
 
 **Tech Stack:** Next.js 15 (App Router), TypeScript strict, Tailwind, Supabase (Postgres + Auth), Zod, Recharts, Vitest, Playwright.
 
@@ -976,27 +978,26 @@ git commit -m "test: add adversarial RLS tests that authenticate as a second use
 
 ---
 
-### Task 9: Transfer and undo functions
+### Task 9: The transfer function
 
-Supabase's client cannot run multi-statement transactions, so anything atomic across rows must be a Postgres function.
+One function, and only one. Creating a transfer has a multi-part invariant — two rows, opposite signs, distinct wallets, membership on both — that should hold no matter what client is calling, including a future mobile app or a direct PostgREST request. Soft delete and restore do not: each is a single `UPDATE` that PostgREST already runs atomically, so they stay in TypeScript (Task 16).
 
 **Files:**
-- Create: `supabase/migrations/0005_transfer_fns.sql`
+- Create: `supabase/migrations/0005_transfer_fn.sql`
 
 **Interfaces:**
 - Consumes: `transactions`, `is_wallet_member`
-- Produces:
-  - `create_transfer(from_wallet uuid, to_wallet uuid, amount_out bigint, amount_in bigint, on_date date, note text) returns uuid`
-  - `soft_delete_transaction(txn_id uuid) returns integer`
-  - `restore_transaction(txn_id uuid) returns integer`
+- Produces: `create_transfer(from_wallet uuid, to_wallet uuid, amount_out bigint, amount_in bigint, on_date date, note text) returns uuid`
 
 - [ ] **Step 1: Write the migration**
 
 ```sql
--- supabase/migrations/0005_transfer_fns.sql
+-- supabase/migrations/0005_transfer_fn.sql
 
--- A transfer is TWO rows sharing a transfer_id (spec §3.2). Both legs must
--- appear or neither: the Supabase client cannot express that, so it lives here.
+-- A transfer is TWO rows sharing a transfer_id (spec §3.2). A client could
+-- write both atomically with one multi-row insert — the reason this lives in
+-- Postgres is the INVARIANT, not atomicity: distinct wallets, positive inputs,
+-- membership on both sides, and opposite signs, enforced for every caller.
 -- amount_out is POSITIVE from the caller; this function applies the signs.
 create function create_transfer(
   from_wallet uuid, to_wallet uuid,
@@ -1030,41 +1031,9 @@ begin
 
   return tid;
 end $$;
-
--- Soft delete. For a transfer, BOTH legs go together — undo must restore an
--- intact pair, never half of one.
-create function soft_delete_transaction(txn_id uuid) returns integer
-  language plpgsql security invoker set search_path = public as $$
-declare tid uuid; n integer;
-begin
-  select transfer_id into tid from transactions where id = txn_id;
-  if tid is null then
-    update transactions set deleted_at = now(), updated_at = now()
-      where id = txn_id and deleted_at is null;
-  else
-    update transactions set deleted_at = now(), updated_at = now()
-      where transfer_id = tid and deleted_at is null;
-  end if;
-  get diagnostics n = row_count;
-  return n;
-end $$;
-
-create function restore_transaction(txn_id uuid) returns integer
-  language plpgsql security invoker set search_path = public as $$
-declare tid uuid; n integer;
-begin
-  select transfer_id into tid from transactions where id = txn_id;
-  if tid is null then
-    update transactions set deleted_at = null, updated_at = now() where id = txn_id;
-  else
-    update transactions set deleted_at = null, updated_at = now() where transfer_id = tid;
-  end if;
-  get diagnostics n = row_count;
-  return n;
-end $$;
 ```
 
-`security invoker` is deliberate here — unlike `is_wallet_member`, these functions *should* run under the caller's RLS so a user cannot transfer out of a wallet they don't belong to.
+`security invoker` is deliberate — unlike `is_wallet_member`, this function *should* run under the caller's RLS so a user cannot transfer out of a wallet they don't belong to. The explicit `is_wallet_member` guard is belt-and-braces: without it RLS would still reject the insert, but with a far worse error message.
 
 - [ ] **Step 2: Apply**
 
@@ -1096,12 +1065,14 @@ begin
   assert bal_from = -1250 - 5000, format('from balance wrong: %s', bal_from);
   assert bal_to   =  5000,        format('to balance wrong: %s', bal_to);
 
-  -- deleting ONE leg must soft-delete BOTH
-  perform soft_delete_transaction((select id from transactions where transfer_id = tid limit 1));
+  -- Deleting by transfer_id takes BOTH legs in one statement. This is the
+  -- exact statement the TypeScript action issues (Task 16) — proving it here
+  -- means the client path is covered without a function wrapping it.
+  update transactions set deleted_at = now() where transfer_id = tid and deleted_at is null;
   assert (select count(*) from transactions where transfer_id = tid and deleted_at is null) = 0,
          'soft delete must take both legs';
 
-  perform restore_transaction((select id from transactions where transfer_id = tid limit 1));
+  update transactions set deleted_at = null where transfer_id = tid;
   assert (select count(*) from transactions where transfer_id = tid and deleted_at is null) = 2,
          'restore must bring both legs back';
 end $$;
@@ -1113,8 +1084,8 @@ Expected: `RLS tests passed`.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add supabase/migrations/0005_transfer_fns.sql supabase/tests/rls.sql
-git commit -m "feat: add atomic transfer, soft-delete and restore functions"
+git add supabase/migrations/0005_transfer_fn.sql supabase/tests/rls.sql
+git commit -m "feat: add create_transfer function enforcing the paired-row invariant"
 ```
 
 ---
@@ -1943,11 +1914,11 @@ git commit -m "feat: add onboarding with first wallet creation"
 - Create: `src/server/actions/transactions.ts`, `src/lib/validation/transaction.ts`, `src/server/actions/transactions.test.ts`
 
 **Interfaces:**
-- Consumes: `parseAmountInput`, `minorUnitFor`, RPCs from Task 9
+- Consumes: `parseAmountInput`, `minorUnitFor`, the `create_transfer` RPC from Task 9
 - Produces:
   - `createTransaction(input: TransactionInput): Promise<{ id: string } | { error: string }>`
   - `createTransfer(input: TransferInput): Promise<{ transferId: string } | { error: string }>`
-  - `softDeleteTransaction(id)`, `restoreTransaction(id)`
+  - `softDeleteTransaction(id: string): Promise<void>`, `restoreTransaction(id: string): Promise<void>` — plain client calls, no RPC
   - `signedAmount(kind, positiveMinor)` — exported pure helper, unit-tested
 
 - [ ] **Step 1: Write the schemas**
@@ -2093,19 +2064,35 @@ export async function createTransfer(raw: unknown) {
   return { transferId: data as string };
 }
 
-export async function softDeleteTransaction(id: string) {
+/**
+ * Soft delete. A transfer's two legs go together — undo must restore an intact
+ * pair, never half of one. The UPDATE is a single statement, so both legs move
+ * atomically; the preceding SELECT only chooses the WHERE clause.
+ * RLS still applies, so this cannot touch another member's rows.
+ */
+async function setDeletedAt(id: string, value: string | null) {
   const supabase = await createServerClient();
-  const { error } = await supabase.rpc("soft_delete_transaction", { txn_id: id });
+
+  const { data: row, error: readError } = await supabase
+    .from("transactions").select("transfer_id").eq("id", id).single();
+  if (readError) throw new Error(readError.message);
+
+  const query = supabase.from("transactions").update({
+    deleted_at: value, updated_at: new Date().toISOString(),
+  });
+
+  const { error } = row.transfer_id
+    ? await query.eq("transfer_id", row.transfer_id)
+    : await query.eq("id", id);
   if (error) throw new Error(error.message);
+
   revalidatePath("/", "layout");
 }
 
-export async function restoreTransaction(id: string) {
-  const supabase = await createServerClient();
-  const { error } = await supabase.rpc("restore_transaction", { txn_id: id });
-  if (error) throw new Error(error.message);
-  revalidatePath("/", "layout");
-}
+export const softDeleteTransaction = (id: string) =>
+  setDeletedAt(id, new Date().toISOString());
+
+export const restoreTransaction = (id: string) => setDeletedAt(id, null);
 ```
 
 - [ ] **Step 5: Run the test**
@@ -3205,4 +3192,4 @@ git commit -m "test: add end-to-end ledger flow and accessibility checks"
 - Infinite scroll on `/transactions` — currently capped at 100 rows.
 - Category reorder and archive UI — the `archiveCategory` action exists and is tested, the UI is not wired.
 
-**Type consistency** verified across tasks: `formatMoney`/`parseAmountInput`/`appendDigit`/`minorUnitFor` (Task 3) are used with matching signatures in 15, 16, 18, 20, 21, 22. `slotVar` (Task 2) is used in 17, 20, 21. `Category` (Task 17) is consumed by 19. `Row` (Task 20), `BreakdownRow` (Task 21) and `FlowRow` (Task 22) are each defined once and imported. RPC names `create_transfer`, `soft_delete_transaction`, `restore_transaction`, `get_category_breakdown`, `get_cash_flow` match between Tasks 9/10 and Task 16/21/22.
+**Type consistency** verified across tasks: `formatMoney`/`parseAmountInput`/`appendDigit`/`minorUnitFor` (Task 3) are used with matching signatures in 15, 16, 18, 20, 21, 22. `slotVar` (Task 2) is used in 17, 20, 21. `Category` (Task 17) is consumed by 19. `Row` (Task 20), `BreakdownRow` (Task 21) and `FlowRow` (Task 22) are each defined once and imported. RPC names `create_transfer` (Task 9), `get_category_breakdown` and `get_cash_flow` (Task 10) match their call sites in Tasks 16, 21 and 22. `softDeleteTransaction` / `restoreTransaction` are plain client calls in Task 16 — no RPC — and the SQL suite in Task 9 exercises the same two `UPDATE` statements those functions issue.
