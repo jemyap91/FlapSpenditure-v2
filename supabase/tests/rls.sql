@@ -57,6 +57,135 @@ begin;
 commit;
 
 -- =====================================================================
+-- Task 9: create_transfer's paired-row invariant. Placed here (after
+-- section 1, before any Bob section) so the extra transfer legs landing
+-- in cccccccc-...-003 are accounted for by every later count assertion
+-- scoped to that wallet -- see the running commentary at each such
+-- assertion below.
+--
+-- The wallet created for the transfer's destination deliberately does
+-- NOT reuse 'eeeeeeee-0000-0000-0000-000000000005' (the id the plan's
+-- snippet used) -- that id already names Alice's transaction row created
+-- in section 1 above. Different tables, so no key collision, but reusing
+-- it here would be a readability trap; '77777777-...-007' is used
+-- instead.
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
+  do $$ begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid,
+      'impersonation failed: auth.uid() did not resolve to alice';
+  end $$;
+
+  insert into wallets (id,owner_id,name,kind,currency_code,color_slot,icon)
+    values ('77777777-0000-0000-0000-000000000007',
+            'aaaaaaaa-0000-0000-0000-000000000001','Alice Card','card','USD',3,'credit-card');
+
+  do $$
+  declare tid uuid; legs int; bal_from bigint; bal_to bigint;
+  begin
+    tid := create_transfer('cccccccc-0000-0000-0000-000000000003',
+                           '77777777-0000-0000-0000-000000000007',
+                           5000, 5000, current_date, 'card payment');
+    select count(*) into legs from transactions where transfer_id = tid;
+    assert legs = 2, 'transfer must create exactly two legs';
+
+    select coalesce(sum(amount_minor),0) into bal_from
+      from transactions where wallet_id='cccccccc-0000-0000-0000-000000000003' and deleted_at is null;
+    select coalesce(sum(amount_minor),0) into bal_to
+      from transactions where wallet_id='77777777-0000-0000-0000-000000000007' and deleted_at is null;
+    assert bal_from = -1250 - 5000, format('from balance wrong: %s', bal_from);
+    assert bal_to   =  5000,        format('to balance wrong: %s', bal_to);
+
+    -- The schema cannot enforce transfer pairing on its own (CHECK
+    -- constraints only see one row at a time) -- create_transfer is the
+    -- only place that can, so prove both legs actually satisfy the
+    -- transfer_shape (category_id null) and non_transfer_no_link
+    -- (transfer_id set) constraints, and that the two amounts really do
+    -- have opposite signs.
+    assert (select count(*) from transactions where transfer_id = tid and category_id is null) = 2,
+      'both legs must have category_id null (transfer_shape)';
+    assert (select bool_and(kind = 'transfer') from transactions where transfer_id = tid),
+      'both legs must have kind = transfer';
+    assert (select amount_minor from transactions
+              where transfer_id = tid and wallet_id = 'cccccccc-0000-0000-0000-000000000003') = -5000,
+      'the out-leg must be negative';
+    assert (select amount_minor from transactions
+              where transfer_id = tid and wallet_id = '77777777-0000-0000-0000-000000000007') = 5000,
+      'the in-leg must be positive';
+
+    -- Deleting by transfer_id takes BOTH legs in one statement. This is the
+    -- exact statement the TypeScript action issues (Task 16) -- proving it
+    -- here means the client path is covered without a function wrapping it.
+    update transactions set deleted_at = now() where transfer_id = tid and deleted_at is null;
+    assert (select count(*) from transactions where transfer_id = tid and deleted_at is null) = 0,
+           'soft delete must take both legs';
+
+    update transactions set deleted_at = null where transfer_id = tid;
+    assert (select count(*) from transactions where transfer_id = tid and deleted_at is null) = 2,
+           'restore must bring both legs back';
+  end $$;
+commit;
+
+-- Attack: create_transfer must reject a transfer to the same wallet on
+-- both sides, even for a caller who is a legitimate member of it.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+  end $$;
+
+  do $$
+  declare before_count int; after_count int;
+  begin
+    select count(*) into before_count from transactions;
+    begin
+      perform create_transfer('cccccccc-0000-0000-0000-000000000003',
+                               'cccccccc-0000-0000-0000-000000000003',
+                               1000, 1000, current_date, null);
+      raise exception 'LEAK: create_transfer allowed a same-wallet transfer';
+    exception
+      when others then
+        assert sqlerrm = 'cannot transfer to the same wallet',
+          format('wrong rejection reason: %s', sqlerrm);
+    end;
+    select count(*) into after_count from transactions;
+    assert before_count = after_count, 'a rejected same-wallet transfer must leave no trace';
+  end $$;
+commit;
+
+-- Attack: create_transfer must reject a caller who is not a member of
+-- either wallet. Bob has no membership anywhere in the file yet.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002"}';
+  do $$ begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+  end $$;
+
+  do $$
+  declare before_count int; after_count int;
+  begin
+    select count(*) into before_count from transactions;
+    begin
+      perform create_transfer('cccccccc-0000-0000-0000-000000000003',
+                               '77777777-0000-0000-0000-000000000007',
+                               1000, 1000, current_date, null);
+      raise exception 'LEAK: create_transfer allowed a transfer by a non-member of either wallet';
+    exception
+      when others then
+        assert sqlerrm = 'not a member of both wallets',
+          format('wrong rejection reason: %s', sqlerrm);
+    end;
+    select count(*) into after_count from transactions;
+    assert before_count = after_count, 'a rejected transfer must leave no trace';
+  end $$;
+commit;
+
+-- =====================================================================
 -- 2. Select-path leak: Bob (a total stranger, not a member of anything)
 --    must see none of Alice's rows across all four RLS-protected tables.
 --    Paired with section 1's positive result.
@@ -102,12 +231,14 @@ begin;
   end $$;
 commit;
 
--- Verify from Alice's side that the attack left no trace (still exactly 1 row).
+-- Verify from Alice's side that the attack left no trace (still exactly 3
+-- rows: her original expense plus the two transfer legs created in the
+-- Task 9 block above).
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
   do $$ begin
-    assert (select count(*) from transactions) = 1,
+    assert (select count(*) from transactions) = 3,
       'LEAK: transaction count changed after bob''s rejected insert attempt';
   end $$;
 commit;
@@ -309,6 +440,43 @@ begin;
 commit;
 
 -- =====================================================================
+-- Task 9 (cont'd): now that bob is a real member of cccccccc-003 (added
+-- just above) but NOT a member of 77777777-007 (alice's personal card
+-- wallet, created earlier in the transfer block), this is the point in
+-- the file where "member of only one of the two wallets" can be tested
+-- against real membership state rather than a contrived setup.
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002"}';
+  do $$ begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+    assert is_wallet_member('cccccccc-0000-0000-0000-000000000003'::uuid) = true,
+      'test setup broken: bob should be a member of cccccccc-003 by now';
+    assert is_wallet_member('77777777-0000-0000-0000-000000000007'::uuid) = false,
+      'test setup broken: bob should not be a member of 77777777-007';
+  end $$;
+
+  do $$
+  declare before_count int; after_count int;
+  begin
+    select count(*) into before_count from transactions;
+    begin
+      perform create_transfer('cccccccc-0000-0000-0000-000000000003',
+                               '77777777-0000-0000-0000-000000000007',
+                               1000, 1000, current_date, null);
+      raise exception 'LEAK: create_transfer allowed a transfer by a member of only one wallet';
+    exception
+      when others then
+        assert sqlerrm = 'not a member of both wallets',
+          format('wrong rejection reason: %s', sqlerrm);
+    end;
+    select count(*) into after_count from transactions;
+    assert before_count = after_count, 'a rejected transfer must leave no trace';
+  end $$;
+commit;
+
+-- =====================================================================
 -- 9. Post-membership asymmetry (spec 4): members can SEE the wallet and
 --    its shared transaction ledger; only the OWNER can CHANGE the
 --    wallet or its membership list. Also: wallet membership does not
@@ -329,7 +497,9 @@ begin;
       'PERMISSION BROKEN: member bob cannot see alice''s wallet';
     assert (select count(*) from public.wallet_members where wallet_id = 'cccccccc-0000-0000-0000-000000000003') = 2,
       'PERMISSION BROKEN: member bob cannot see the wallet''s member list';
-    assert (select count(*) from transactions where wallet_id = 'cccccccc-0000-0000-0000-000000000003') = 1,
+    -- 2, not 1: alice's original expense plus the Task 9 transfer's
+    -- out-leg, both landed in this wallet before this section runs.
+    assert (select count(*) from transactions where wallet_id = 'cccccccc-0000-0000-0000-000000000003') = 2,
       'PERMISSION BROKEN: member bob cannot see the shared transaction ledger';
     -- Negative (extra attack, not named in the brief): membership does
     -- NOT leak alice's categories -- categories are owner-scoped.
@@ -379,7 +549,9 @@ begin;
     values ('cccccccc-0000-0000-0000-000000000003', 'bbbbbbbb-0000-0000-0000-000000000002',
             'expense', -300, 'USD', current_date);
   do $$ begin
-    assert (select count(*) from transactions where wallet_id = 'cccccccc-0000-0000-0000-000000000003') = 2,
+    -- 3, not 2: alice's original expense + the Task 9 transfer's out-leg +
+    -- bob's own insert just above.
+    assert (select count(*) from transactions where wallet_id = 'cccccccc-0000-0000-0000-000000000003') = 3,
       'PERMISSION BROKEN: legitimate member bob cannot add a transaction to the shared wallet';
   end $$;
 commit;
@@ -482,7 +654,8 @@ commit;
 -- Final sanity check as alice: her wallet still has the name and owner she
 -- set in section 8 (not bob's forged rename or ownership-reassignment
 -- attempts from section 9), membership was never escalated, and the wallet
--- now legitimately has two members and two transactions.
+-- now legitimately has two members and three transactions (her original
+-- expense, the Task 9 transfer's out-leg, and bob's own insert).
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
@@ -496,7 +669,7 @@ begin;
               where wallet_id = 'cccccccc-0000-0000-0000-000000000003'
                 and user_id = 'bbbbbbbb-0000-0000-0000-000000000002') = 'member',
       'LEAK: bob''s membership role was escalated';
-    assert (select count(*) from transactions where wallet_id = 'cccccccc-0000-0000-0000-000000000003') = 2,
+    assert (select count(*) from transactions where wallet_id = 'cccccccc-0000-0000-0000-000000000003') = 3,
       'unexpected transaction count on alice''s wallet';
   end $$;
 commit;
