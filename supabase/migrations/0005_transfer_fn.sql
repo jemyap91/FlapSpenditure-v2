@@ -37,6 +37,16 @@ begin
   if from_wallet = to_wallet then
     raise exception 'cannot transfer to the same wallet';
   end if;
+  -- amount_out/amount_in/on_date can't carry a `not null` in a plpgsql
+  -- parameter list, so a client sending an explicit JSON null reaches here.
+  -- `amount_out <= 0 or amount_in <= 0` alone would evaluate to NULL (not
+  -- true) when exactly one side is null, and plpgsql's `if null then` takes
+  -- the ELSE branch -- so execution would fall through to the insert and
+  -- die on a NOT NULL column constraint instead of this function's own
+  -- message. Explicit null checks close that.
+  if amount_out is null or amount_in is null or on_date is null then
+    raise exception 'transfer amounts and date must not be null';
+  end if;
   if amount_out <= 0 or amount_in <= 0 then
     raise exception 'transfer amounts must be positive';
   end if;
@@ -44,8 +54,22 @@ begin
     raise exception 'not a member of both wallets';
   end if;
 
-  select currency_code into from_ccy from public.wallets where id = from_wallet;
-  select currency_code into to_ccy   from public.wallets where id = to_wallet;
+  select currency_code into strict from_ccy from public.wallets where id = from_wallet;
+  select currency_code into strict to_ccy   from public.wallets where id = to_wallet;
+
+  -- A transfer is a claim that the SAME money moved between two wallets of
+  -- the caller's. When both legs are in the same currency there is no
+  -- exchange rate to justify amount_out <> amount_in -- that would either
+  -- destroy money (amount_out > amount_in) or fabricate it (amount_out <
+  -- amount_in) with no error and no record. Cross-currency transfers keep
+  -- two independent amounts, since a real exchange rate applies there. A
+  -- transfer fee is deliberately NOT modelled by allowing an unbalanced
+  -- same-currency transfer here -- that would hide the fee inside the
+  -- transfer instead of recording it as its own expense row, which the
+  -- schema already supports.
+  if from_ccy = to_ccy and amount_out <> amount_in then
+    raise exception 'a same-currency transfer must balance';
+  end if;
 
   insert into public.transactions
     (wallet_id, created_by, kind, amount_minor, currency_code, transfer_id, occurred_on, note)

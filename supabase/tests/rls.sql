@@ -63,12 +63,26 @@ commit;
 -- scoped to that wallet -- see the running commentary at each such
 -- assertion below.
 --
--- The wallet created for the transfer's destination deliberately does
--- NOT reuse 'eeeeeeee-0000-0000-0000-000000000005' (the id the plan's
--- snippet used) -- that id already names Alice's transaction row created
--- in section 1 above. Different tables, so no key collision, but reusing
--- it here would be a readability trap; '77777777-...-007' is used
--- instead.
+-- The wallets created for the transfer tests deliberately do NOT reuse
+-- 'eeeeeeee-0000-0000-0000-000000000005' (the id the plan's snippet
+-- used) -- that id already names Alice's transaction row created in
+-- section 1 above. Different tables, so no key collision, but reusing
+-- it here would be a readability trap; '77777777-...-007' and
+-- '88888888-...-008' are used instead. Only 77777777-007 is a
+-- create_transfer party against cccccccc-003, so it is the only one of
+-- the two whose row-count cascade is tracked through the rest of this
+-- file; 88888888-008 (EUR) is used solely for the cross-currency control
+-- below, paired with 77777777-007 on both legs, so it never touches
+-- cccccccc-003's count.
+--
+-- Below, "begin ... exception when others ... assert sqlerrm = ..."
+-- blocks that expect create_transfer to raise have no before/after
+-- row-count assertion. That would be decorative, not load-bearing: the
+-- call happens inside a plpgsql exception block, whose implicit
+-- subtransaction Postgres rolls back on ANY exception, so no row from a
+-- raised call could persist regardless of what the function did. The
+-- sqlerrm equality is the assertion that actually distinguishes "the
+-- right guard fired" from "some other error happened to also raise".
 -- =====================================================================
 begin;
   set local role authenticated;
@@ -82,6 +96,9 @@ begin;
   insert into wallets (id,owner_id,name,kind,currency_code,color_slot,icon)
     values ('77777777-0000-0000-0000-000000000007',
             'aaaaaaaa-0000-0000-0000-000000000001','Alice Card','card','USD',3,'credit-card');
+  insert into wallets (id,owner_id,name,kind,currency_code,color_slot,icon)
+    values ('88888888-0000-0000-0000-000000000008',
+            'aaaaaaaa-0000-0000-0000-000000000001','Alice EUR','bank','EUR',4,'euro');
 
   do $$
   declare tid uuid; legs int; bal_from bigint; bal_to bigint;
@@ -129,31 +146,158 @@ begin;
   end $$;
 commit;
 
+-- Control, paired with the unbalanced-transfer attacks below: a genuine
+-- CROSS-currency transfer with two genuinely different amounts must
+-- still succeed. This is the critical control for the balance guard --
+-- a guard written to reject everything (not just same-currency
+-- mismatches) would pass every attack test below and look identical to
+-- a correct fix unless this also runs and passes. Uses 77777777-007 (USD)
+-- and 88888888-008 (EUR) on both legs so it never touches cccccccc-003.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
+  do $$ begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+  end $$;
+
+  do $$
+  declare tid uuid; legs int; out_amt bigint; in_amt bigint;
+  begin
+    tid := create_transfer('77777777-0000-0000-0000-000000000007',
+                           '88888888-0000-0000-0000-000000000008',
+                           10000, 9200, current_date, 'usd->eur fx');
+    select count(*) into legs from transactions where transfer_id = tid;
+    assert legs = 2, 'cross-currency transfer must create exactly two legs';
+    select amount_minor into out_amt from transactions
+      where transfer_id = tid and wallet_id = '77777777-0000-0000-0000-000000000007';
+    select amount_minor into in_amt from transactions
+      where transfer_id = tid and wallet_id = '88888888-0000-0000-0000-000000000008';
+    assert out_amt = -10000, format('cross-currency out-leg wrong: %s', out_amt);
+    assert in_amt  =  9200,  format('cross-currency in-leg wrong: %s', in_amt);
+  end $$;
+commit;
+
+-- Attack (Critical finding, round 2): create_transfer must reject an
+-- UNBALANCED same-currency transfer. Both cccccccc-003 and 77777777-007
+-- are USD, so amount_out <> amount_in has no exchange rate to justify
+-- it -- it would either destroy money (out > in) or fabricate it
+-- (out < in) with no error and no record. Tested in both directions.
+-- Also covers the null-argument and zero/negative-amount guards, which
+-- had no coverage before this round: a null slips past
+-- `amount_out <= 0 or amount_in <= 0` (NULL or false = NULL, and
+-- plpgsql's `if null then` takes the ELSE branch), so without an
+-- explicit null check execution would reach the insert and fail on a
+-- NOT NULL column instead of this function's own message.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
+  do $$ begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+  end $$;
+
+  do $$
+  begin
+    begin
+      perform create_transfer('cccccccc-0000-0000-0000-000000000003',
+                               '77777777-0000-0000-0000-000000000007',
+                               5000, 1, current_date, null);
+      raise exception 'LEAK: create_transfer allowed an unbalanced same-currency transfer (destroys money)';
+    exception
+      when others then
+        assert sqlerrm = 'a same-currency transfer must balance',
+          format('wrong rejection reason: %s', sqlerrm);
+    end;
+
+    begin
+      perform create_transfer('cccccccc-0000-0000-0000-000000000003',
+                               '77777777-0000-0000-0000-000000000007',
+                               1, 5000, current_date, null);
+      raise exception 'LEAK: create_transfer allowed an unbalanced same-currency transfer (fabricates money)';
+    exception
+      when others then
+        assert sqlerrm = 'a same-currency transfer must balance',
+          format('wrong rejection reason: %s', sqlerrm);
+    end;
+
+    begin
+      perform create_transfer('cccccccc-0000-0000-0000-000000000003',
+                               '77777777-0000-0000-0000-000000000007',
+                               null, 5000, current_date, null);
+      raise exception 'LEAK: create_transfer allowed a null amount_out';
+    exception
+      when others then
+        assert sqlerrm = 'transfer amounts and date must not be null',
+          format('wrong rejection reason: %s', sqlerrm);
+    end;
+
+    begin
+      perform create_transfer('cccccccc-0000-0000-0000-000000000003',
+                               '77777777-0000-0000-0000-000000000007',
+                               5000, null, current_date, null);
+      raise exception 'LEAK: create_transfer allowed a null amount_in';
+    exception
+      when others then
+        assert sqlerrm = 'transfer amounts and date must not be null',
+          format('wrong rejection reason: %s', sqlerrm);
+    end;
+
+    begin
+      perform create_transfer('cccccccc-0000-0000-0000-000000000003',
+                               '77777777-0000-0000-0000-000000000007',
+                               5000, 5000, null, null);
+      raise exception 'LEAK: create_transfer allowed a null on_date';
+    exception
+      when others then
+        assert sqlerrm = 'transfer amounts and date must not be null',
+          format('wrong rejection reason: %s', sqlerrm);
+    end;
+
+    begin
+      perform create_transfer('cccccccc-0000-0000-0000-000000000003',
+                               '77777777-0000-0000-0000-000000000007',
+                               0, 5000, current_date, null);
+      raise exception 'LEAK: create_transfer allowed a zero amount_out';
+    exception
+      when others then
+        assert sqlerrm = 'transfer amounts must be positive',
+          format('wrong rejection reason: %s', sqlerrm);
+    end;
+
+    begin
+      perform create_transfer('cccccccc-0000-0000-0000-000000000003',
+                               '77777777-0000-0000-0000-000000000007',
+                               -5000, 5000, current_date, null);
+      raise exception 'LEAK: create_transfer allowed a negative amount_out';
+    exception
+      when others then
+        assert sqlerrm = 'transfer amounts must be positive',
+          format('wrong rejection reason: %s', sqlerrm);
+    end;
+  end $$;
+commit;
+
 -- Attack: create_transfer must reject a transfer to the same wallet on
 -- both sides, even for a caller who is a legitimate member of it.
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
   do $$ begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
     assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
   end $$;
 
   do $$
-  declare before_count int; after_count int;
   begin
-    select count(*) into before_count from transactions;
-    begin
-      perform create_transfer('cccccccc-0000-0000-0000-000000000003',
-                               'cccccccc-0000-0000-0000-000000000003',
-                               1000, 1000, current_date, null);
-      raise exception 'LEAK: create_transfer allowed a same-wallet transfer';
-    exception
-      when others then
-        assert sqlerrm = 'cannot transfer to the same wallet',
-          format('wrong rejection reason: %s', sqlerrm);
-    end;
-    select count(*) into after_count from transactions;
-    assert before_count = after_count, 'a rejected same-wallet transfer must leave no trace';
+    perform create_transfer('cccccccc-0000-0000-0000-000000000003',
+                             'cccccccc-0000-0000-0000-000000000003',
+                             1000, 1000, current_date, null);
+    raise exception 'LEAK: create_transfer allowed a same-wallet transfer';
+  exception
+    when others then
+      assert sqlerrm = 'cannot transfer to the same wallet',
+        format('wrong rejection reason: %s', sqlerrm);
   end $$;
 commit;
 
@@ -163,25 +307,20 @@ begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002"}';
   do $$ begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
     assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
   end $$;
 
   do $$
-  declare before_count int; after_count int;
   begin
-    select count(*) into before_count from transactions;
-    begin
-      perform create_transfer('cccccccc-0000-0000-0000-000000000003',
-                               '77777777-0000-0000-0000-000000000007',
-                               1000, 1000, current_date, null);
-      raise exception 'LEAK: create_transfer allowed a transfer by a non-member of either wallet';
-    exception
-      when others then
-        assert sqlerrm = 'not a member of both wallets',
-          format('wrong rejection reason: %s', sqlerrm);
-    end;
-    select count(*) into after_count from transactions;
-    assert before_count = after_count, 'a rejected transfer must leave no trace';
+    perform create_transfer('cccccccc-0000-0000-0000-000000000003',
+                             '77777777-0000-0000-0000-000000000007',
+                             1000, 1000, current_date, null);
+    raise exception 'LEAK: create_transfer allowed a transfer by a non-member of either wallet';
+  exception
+    when others then
+      assert sqlerrm = 'not a member of both wallets',
+        format('wrong rejection reason: %s', sqlerrm);
   end $$;
 commit;
 
@@ -231,14 +370,17 @@ begin;
   end $$;
 commit;
 
--- Verify from Alice's side that the attack left no trace (still exactly 3
--- rows: her original expense plus the two transfer legs created in the
--- Task 9 block above).
+-- Verify from Alice's side that the attack left no trace (still exactly 5
+-- rows: her original expense, the two legs of the cccccccc-003 <->
+-- 77777777-007 transfer, and the two legs of the 77777777-007 <->
+-- 88888888-008 cross-currency control transfer, all from the Task 9
+-- block above -- every rejected create_transfer attempt in between left
+-- no trace, per that block's own comment on why).
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
   do $$ begin
-    assert (select count(*) from transactions) = 3,
+    assert (select count(*) from transactions) = 5,
       'LEAK: transaction count changed after bob''s rejected insert attempt';
   end $$;
 commit;
@@ -450,6 +592,7 @@ begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002"}';
   do $$ begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
     assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
     assert is_wallet_member('cccccccc-0000-0000-0000-000000000003'::uuid) = true,
       'test setup broken: bob should be a member of cccccccc-003 by now';
@@ -457,22 +600,21 @@ begin;
       'test setup broken: bob should not be a member of 77777777-007';
   end $$;
 
+  -- No before/after row-count assertion here -- see the comment on the
+  -- Task 9 block above: the call happens inside an exception handler
+  -- whose implicit subtransaction Postgres rolls back regardless, so it
+  -- cannot leave a trace either way. The sqlerrm equality below is the
+  -- assertion that actually proves the right guard fired.
   do $$
-  declare before_count int; after_count int;
   begin
-    select count(*) into before_count from transactions;
-    begin
-      perform create_transfer('cccccccc-0000-0000-0000-000000000003',
-                               '77777777-0000-0000-0000-000000000007',
-                               1000, 1000, current_date, null);
-      raise exception 'LEAK: create_transfer allowed a transfer by a member of only one wallet';
-    exception
-      when others then
-        assert sqlerrm = 'not a member of both wallets',
-          format('wrong rejection reason: %s', sqlerrm);
-    end;
-    select count(*) into after_count from transactions;
-    assert before_count = after_count, 'a rejected transfer must leave no trace';
+    perform create_transfer('cccccccc-0000-0000-0000-000000000003',
+                             '77777777-0000-0000-0000-000000000007',
+                             1000, 1000, current_date, null);
+    raise exception 'LEAK: create_transfer allowed a transfer by a member of only one wallet';
+  exception
+    when others then
+      assert sqlerrm = 'not a member of both wallets',
+        format('wrong rejection reason: %s', sqlerrm);
   end $$;
 commit;
 
