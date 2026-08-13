@@ -3,12 +3,17 @@
 -- SECURITY DEFINER is REQUIRED, not stylistic (spec §4.1): without it, the
 -- wallets policy queries wallet_members whose policy queries wallets, and
 -- Postgres raises "infinite recursion detected in policy".
--- SET search_path is mandatory — without it a caller can point search_path at
--- their own wallet_members table and escalate.
+-- search_path is set to '' (empty), not 'public' — Postgres searches pg_temp
+-- for unqualified relation names before consulting search_path at all, so
+-- `set search_path = public` alone does NOT stop a caller from creating a
+-- temp table named wallet_members and redirecting this lookup to it. An empty
+-- search_path forces every unqualified name to fail to resolve, so the body
+-- below schema-qualifies both wallet_members and auth.uid() explicitly; this
+-- also fails closed if a future edit adds an unqualified reference.
 create function is_wallet_member(w uuid) returns boolean
-  language sql stable security definer set search_path = public as $$
+  language sql stable security definer set search_path = '' as $$
   select exists (
-    select 1 from wallet_members
+    select 1 from public.wallet_members
     where wallet_id = w and user_id = auth.uid()
   )
 $$;
@@ -26,6 +31,15 @@ $$;
 -- unknown starting state; the grants that follow are scoped to exactly what
 -- each table's policies below permit.
 revoke all on all tables in schema public from anon, authenticated;
+
+-- The revoke above only fixes tables that exist today. The default ACL for
+-- schema public still hands anon/authenticated TRUNCATE/REFERENCES/TRIGGER/
+-- MAINTAIN on anything created later, which would re-open the RLS-bypassing
+-- TRUNCATE hole (with no offsetting DML grant, so the new table would also be
+-- unreachable). Phase 1 creates no further tables, so this is durability, not
+-- an open hole today — but it costs two lines to close for good.
+alter default privileges in schema public
+  revoke truncate, references, trigger, maintain on tables from anon, authenticated;
 
 grant select on currencies to authenticated;
 

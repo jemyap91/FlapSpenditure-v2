@@ -43,10 +43,16 @@ create index wallets_owner    on wallets (owner_id) where archived_at is null;
 create index categories_owner on categories (owner_id, kind) where archived_at is null;
 
 -- Every wallet's creator is automatically its owner-member.
+-- search_path is set to '' (empty), not 'public': pg_temp is searched for
+-- unqualified relation names before search_path is consulted at all, so
+-- `set search_path = public` alone would not stop a caller from creating a
+-- temp table named wallet_members and redirecting this insert into it. An
+-- empty search_path forces every unqualified name to fail to resolve, so the
+-- body below schema-qualifies wallet_members explicitly.
 create function add_owner_as_member() returns trigger
-  language plpgsql security definer set search_path = public as $$
+  language plpgsql security definer set search_path = '' as $$
 begin
-  insert into wallet_members (wallet_id, user_id, role)
+  insert into public.wallet_members (wallet_id, user_id, role)
   values (new.id, new.owner_id, 'owner');
   return new;
 end $$;
