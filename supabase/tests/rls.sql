@@ -97,7 +97,7 @@ begin;
               'expense', -999, 'USD', current_date);
     raise exception 'LEAK: bob inserted a transaction into alice''s wallet';
   exception
-    when insufficient_privilege or check_violation then
+    when insufficient_privilege then
       null; -- expected: WITH CHECK on transactions_member rejects it
   end $$;
 commit;
@@ -132,7 +132,7 @@ begin;
       values ('cccccccc-0000-0000-0000-000000000003', 'bbbbbbbb-0000-0000-0000-000000000002', 'member');
     raise exception 'LEAK: bob granted himself membership on alice''s wallet';
   exception
-    when insufficient_privilege or check_violation then
+    when insufficient_privilege then
       null; -- expected: WITH CHECK on members_write requires owner_id = auth.uid()
   end $$;
 commit;
@@ -156,7 +156,7 @@ begin;
               'aaaaaaaa-0000-0000-0000-000000000001', 'Forged Wallet', 'bank', 'USD', 3, 'landmark');
     raise exception 'LEAK: bob created a wallet owned by alice';
   exception
-    when insufficient_privilege or check_violation then
+    when insufficient_privilege then
       null; -- expected: WITH CHECK on wallets_write requires owner_id = auth.uid()
   end $$;
 
@@ -197,7 +197,10 @@ begin;
   end $$;
 commit;
 
--- Positive control paired with section 6: Alice can update her own transaction.
+-- Positive control paired with section 6: Alice can update AND delete her
+-- own transaction. The delete uses a throwaway row inserted and removed in
+-- the same block, so it does not shift any transaction counts asserted
+-- later in this file.
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
@@ -207,6 +210,18 @@ begin;
     update transactions set note = 'legit edit' where id = 'eeeeeeee-0000-0000-0000-000000000005';
     get diagnostics n = row_count;
     assert n = 1, 'PERMISSION BROKEN: alice cannot update her own transaction';
+  end $$;
+
+  insert into transactions (id, wallet_id, created_by, kind, amount_minor, currency_code, occurred_on)
+    values ('11111111-0000-0000-0000-000000000011',
+            'cccccccc-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001',
+            'expense', -100, 'USD', current_date);
+  do $$
+  declare n int;
+  begin
+    delete from transactions where id = '11111111-0000-0000-0000-000000000011';
+    get diagnostics n = row_count;
+    assert n = 1, 'PERMISSION BROKEN: alice cannot delete her own transaction';
   end $$;
 commit;
 
@@ -241,8 +256,14 @@ begin;
     values ('cccccccc-0000-0000-0000-000000000003', 'bbbbbbbb-0000-0000-0000-000000000002', 'owner');
 
   do $$ begin
-    assert (select count(*) from pg_temp.wallet_members) = 1,
-      'test setup broken: shadow table not populated';
+    -- Unqualified, deliberately: this proves the actual premise of the
+    -- attack -- that an unqualified `wallet_members` reference in this
+    -- session resolves to the pg_temp shadow, not to public.wallet_members
+    -- (which would return 0 here, since bob has no real membership row).
+    -- Asserting against pg_temp.wallet_members directly would only prove
+    -- the shadow table exists, not that anything resolves to it.
+    assert (select count(*) from wallet_members) = 1,
+      'test setup broken: unqualified wallet_members did not resolve to the pg_temp shadow';
     -- The predicate must ignore the shadow table entirely.
     assert is_wallet_member('cccccccc-0000-0000-0000-000000000003'::uuid) = false,
       'VULNERABLE: is_wallet_member() was fooled by a pg_temp shadow table';
@@ -268,14 +289,22 @@ begin;
     assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
   end $$;
 
-  insert into wallet_members (wallet_id, user_id, role)
+  insert into public.wallet_members (wallet_id, user_id, role)
     values ('cccccccc-0000-0000-0000-000000000003', 'bbbbbbbb-0000-0000-0000-000000000002', 'member');
 
   do $$ begin
-    assert (select role from wallet_members
+    assert (select role from public.wallet_members
               where wallet_id = 'cccccccc-0000-0000-0000-000000000003'
                 and user_id = 'bbbbbbbb-0000-0000-0000-000000000002') = 'member',
       'PERMISSION BROKEN: alice (owner) cannot add a member to her own wallet';
+  end $$;
+
+  -- Positive control, paired with section 9's denied rename/owner-reassign
+  -- attempts below: the real owner CAN update her own wallet.
+  update wallets set name = 'Alice Bank Updated' where id = 'cccccccc-0000-0000-0000-000000000003';
+  do $$ begin
+    assert (select name from wallets where id = 'cccccccc-0000-0000-0000-000000000003') = 'Alice Bank Updated',
+      'PERMISSION BROKEN: alice (owner) cannot rename her own wallet';
   end $$;
 commit;
 
@@ -298,7 +327,7 @@ begin;
     -- list, and the shared transaction ledger.
     assert (select count(*) from wallets where id = 'cccccccc-0000-0000-0000-000000000003') = 1,
       'PERMISSION BROKEN: member bob cannot see alice''s wallet';
-    assert (select count(*) from wallet_members where wallet_id = 'cccccccc-0000-0000-0000-000000000003') = 2,
+    assert (select count(*) from public.wallet_members where wallet_id = 'cccccccc-0000-0000-0000-000000000003') = 2,
       'PERMISSION BROKEN: member bob cannot see the wallet''s member list';
     assert (select count(*) from transactions where wallet_id = 'cccccccc-0000-0000-0000-000000000003') = 1,
       'PERMISSION BROKEN: member bob cannot see the shared transaction ledger';
@@ -317,13 +346,26 @@ begin;
     assert n = 0, 'LEAK: member bob renamed alice''s wallet';
   end $$;
 
+  -- Negative: bob (member, not owner) cannot steal ownership of the wallet
+  -- via UPDATE either -- wallets_write's USING clause (owner_id = auth.uid())
+  -- filters the row out before WITH CHECK is even reached, since bob is not
+  -- the current owner.
+  do $$
+  declare n int;
+  begin
+    update wallets set owner_id = 'bbbbbbbb-0000-0000-0000-000000000002'
+      where id = 'cccccccc-0000-0000-0000-000000000003';
+    get diagnostics n = row_count;
+    assert n = 0, 'LEAK: member bob reassigned alice''s wallet to himself';
+  end $$;
+
   -- Negative: bob (member, not owner) cannot escalate his own role, nor
   -- add further members -- members_write is owner-only regardless of
   -- whether the caller is already a legitimate member.
   do $$
   declare n int;
   begin
-    update wallet_members set role = 'owner'
+    update public.wallet_members set role = 'owner'
       where wallet_id = 'cccccccc-0000-0000-0000-000000000003'
         and user_id = 'bbbbbbbb-0000-0000-0000-000000000002';
     get diagnostics n = row_count;
@@ -342,16 +384,20 @@ begin;
   end $$;
 commit;
 
--- Final sanity check as alice: her wallet was never renamed, membership
--- was never escalated, and the wallet now legitimately has two members
--- and two transactions.
+-- Final sanity check as alice: her wallet still has the name and owner she
+-- set in section 8 (not bob's forged rename or ownership-reassignment
+-- attempts from section 9), membership was never escalated, and the wallet
+-- now legitimately has two members and two transactions.
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
   do $$ begin
-    assert (select name from wallets where id = 'cccccccc-0000-0000-0000-000000000003') = 'Alice Bank',
+    assert (select name from wallets where id = 'cccccccc-0000-0000-0000-000000000003') = 'Alice Bank Updated',
       'LEAK: wallet name was changed by a non-owner';
-    assert (select role from wallet_members
+    assert (select owner_id from wallets where id = 'cccccccc-0000-0000-0000-000000000003')
+             = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid,
+      'LEAK: wallet ownership was reassigned by a non-owner';
+    assert (select role from public.wallet_members
               where wallet_id = 'cccccccc-0000-0000-0000-000000000003'
                 and user_id = 'bbbbbbbb-0000-0000-0000-000000000002') = 'member',
       'LEAK: bob''s membership role was escalated';
