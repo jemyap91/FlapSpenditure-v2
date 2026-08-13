@@ -396,7 +396,8 @@ commit;
 --     row to compare against -- so 0004_rls.sql now narrows the blanket
 --     UPDATE grant on transactions to
 --     (kind, amount_minor, currency_code, category_id, occurred_on, note,
---     deleted_at), excluding id, wallet_id, created_by and transfer_id.
+--     deleted_at, updated_at), excluding id, wallet_id, created_by,
+--     transfer_id and created_at.
 --     Column privilege is checked BEFORE RLS, so a denial here surfaces as
 --     SQLSTATE 42501 insufficient_privilege -- the SAME code an RLS
 --     `with check` denial uses. The failure messages below say "COLUMN
@@ -457,12 +458,24 @@ begin;
       'LEAK: transaction created_by changed despite the denied UPDATE';
   end $$;
 
-  -- Positive control: soft delete (deleted_at) is in the granted column
-  -- list -- Task 16 (create/soft-delete/restore) depends on this working.
-  update transactions set deleted_at = now() where id = 'eeeeeeee-0000-0000-0000-000000000005';
+  -- Positive control: a soft delete writes deleted_at AND updated_at in a
+  -- single statement -- this is the exact shape of Task 16's setDeletedAt
+  -- (backing softDeleteTransaction/restoreTransaction, and via those, Task
+  -- 20's undo): `update transactions set deleted_at = <value>, updated_at =
+  -- new Date().toISOString()`. No trigger maintains updated_at -- it's
+  -- app-written -- so both columns must be in the granted list, and this is
+  -- the shape that would have caught updated_at's omission if it had one.
+  update transactions
+    set deleted_at = '2030-01-01T00:00:00+00'::timestamptz,
+        updated_at = '2030-01-01T00:00:00+00'::timestamptz
+    where id = 'eeeeeeee-0000-0000-0000-000000000005';
   do $$ begin
-    assert (select deleted_at from transactions where id = 'eeeeeeee-0000-0000-0000-000000000005') is not null,
+    assert (select deleted_at from transactions where id = 'eeeeeeee-0000-0000-0000-000000000005')
+             = '2030-01-01T00:00:00+00'::timestamptz,
       'PERMISSION BROKEN (COLUMN PRIVILEGE): member bob cannot soft-delete (set deleted_at)';
+    assert (select updated_at from transactions where id = 'eeeeeeee-0000-0000-0000-000000000005')
+             = '2030-01-01T00:00:00+00'::timestamptz,
+      'PERMISSION BROKEN (COLUMN PRIVILEGE): member bob cannot set updated_at alongside deleted_at';
   end $$;
 commit;
 

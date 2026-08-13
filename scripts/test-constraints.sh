@@ -9,12 +9,21 @@
 set -euo pipefail
 DB_URL="${DB_URL:-postgresql://postgres:postgres@127.0.0.1:54322/postgres}"
 
-case "$DB_URL" in
-  postgres://*@127.0.0.1:*|postgres://*@localhost:*|postgresql://*@127.0.0.1:*|postgresql://*@localhost:*)
+# Same guard as scripts/test-rls.sh, and for the same reason -- parse the
+# actual host libpq would connect to, rather than substring-matching the
+# raw URL (see that file's comment for why a glob is not safe here).
+authority="${DB_URL#postgres://}"
+authority="${authority#postgresql://}"
+authority="${authority%%/*}"
+hostport="${authority##*@}"
+db_host="${hostport%%:*}"
+
+case "$db_host" in
+  127.0.0.1|localhost)
     ;;
   *)
     echo "refusing to run: DB_URL must point at a loopback host (127.0.0.1/localhost)." >&2
-    echo "got: $DB_URL" >&2
+    echo "got host: $db_host (from DB_URL: $DB_URL)" >&2
     exit 1
     ;;
 esac

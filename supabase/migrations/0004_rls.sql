@@ -60,14 +60,27 @@ grant select, insert, update, delete
 -- UPDATE grant above to the columns Phase 1 actually needs to edit. This
 -- also closes a separate deferred finding for free -- excluding created_by
 -- stops a member re-attributing a transaction to another user.
--- Excluded: id (never changes), wallet_id (see above; moving a transaction
--- between wallets is not a Phase 1 feature -- Task 16 is create/soft-delete/
--- restore, Task 20 is list+undo -- so reintroduce this deliberately with its
--- own checks if a later phase wants it), created_by (see above), and
--- transfer_id (prevents re-linking a row to an arbitrary transfer once Task
--- 9's create_transfer lands).
+-- transactions has 13 columns; every excluded one is listed here so this
+-- comment can't silently drift from the grant again:
+--   id            -- never changes
+--   wallet_id     -- see above; moving a transaction between wallets is not
+--                    a Phase 1 feature (Task 16 is create/soft-delete/
+--                    restore, Task 20 is list+undo) -- reintroduce
+--                    deliberately with its own checks if a later phase
+--                    wants it
+--   created_by    -- see above (re-attribution)
+--   transfer_id   -- prevents re-linking a row to an arbitrary transfer
+--                    once Task 9's create_transfer lands; create_transfer
+--                    only INSERTs it, and INSERT is still a full-table grant
+--   created_at    -- nothing ever writes it
+-- Included: updated_at. Task 16's setDeletedAt (backing softDeleteTransaction
+-- and restoreTransaction, and therefore Task 20's undo) is the one UPDATE
+-- against this table anywhere in the plan, and it writes deleted_at and
+-- updated_at together in a single statement (no trigger maintains
+-- updated_at -- it's app-written by design). updated_at carries no
+-- boundary-crossing power, so granting it does not reopen the hole.
 revoke update on transactions from authenticated;
-grant update (kind, amount_minor, currency_code, category_id, occurred_on, note, deleted_at)
+grant update (kind, amount_minor, currency_code, category_id, occurred_on, note, deleted_at, updated_at)
   on transactions to authenticated;
 
 alter table wallets        enable row level security;

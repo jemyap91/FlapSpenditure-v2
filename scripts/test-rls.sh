@@ -13,12 +13,25 @@ DB_URL="${DB_URL:-postgresql://postgres:postgres@127.0.0.1:54322/postgres}"
 # kept overridable (useful for a non-default local port), but pointed at
 # anything reachable over the network that isn't loopback, those statements
 # would be genuinely destructive. Refuse rather than guess.
-case "$DB_URL" in
-  postgres://*@127.0.0.1:*|postgres://*@localhost:*|postgresql://*@127.0.0.1:*|postgresql://*@localhost:*)
+#
+# Parse the actual host libpq would connect to, rather than substring-
+# matching the raw URL: a glob like postgres://*@127.0.0.1:* is satisfied by
+# any string that merely CONTAINS "@127.0.0.1:" somewhere, which a crafted
+# userinfo/query component could contain while the real host (the part
+# after the LAST '@' in the authority, before the next ':' or '/') is
+# something else entirely.
+authority="${DB_URL#postgres://}"
+authority="${authority#postgresql://}"
+authority="${authority%%/*}"
+hostport="${authority##*@}"
+db_host="${hostport%%:*}"
+
+case "$db_host" in
+  127.0.0.1|localhost)
     ;;
   *)
     echo "refusing to run: DB_URL must point at a loopback host (127.0.0.1/localhost)." >&2
-    echo "got: $DB_URL" >&2
+    echo "got host: $db_host (from DB_URL: $DB_URL)" >&2
     exit 1
     ;;
 esac
