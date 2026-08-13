@@ -16,7 +16,7 @@ create table wallets (
 create table wallet_members (
   wallet_id uuid not null references wallets(id) on delete cascade,
   user_id   uuid not null references auth.users(id) on delete cascade,
-  role      member_role not null default 'owner',
+  role      member_role not null default 'member',
   joined_at timestamptz not null default now(),
   primary key (wallet_id, user_id)
 );
@@ -36,7 +36,7 @@ create table categories (
 
 -- Case-insensitive, scoped to ACTIVE rows so a name frees up after archiving (spec §5.3)
 create unique index categories_unique_active_name
-  on categories (owner_id, kind, lower(name))
+  on categories (owner_id, kind, lower(btrim(name)))
   where archived_at is null;
 
 create index wallets_owner    on wallets (owner_id) where archived_at is null;
