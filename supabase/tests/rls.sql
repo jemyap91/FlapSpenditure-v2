@@ -384,6 +384,88 @@ begin;
   end $$;
 commit;
 
+-- =====================================================================
+-- 10. Column-privilege boundary on transactions UPDATE. This closes the
+--     live vulnerability found and reported in round 1: transactions_member
+--     is `for all using (is_wallet_member(wallet_id)) with check
+--     (is_wallet_member(wallet_id)))`. On UPDATE, `using` evaluates against
+--     the OLD row and `with check` against the NEW one -- both ask the
+--     identical membership question, so a member of two different wallets
+--     satisfied both while moving a row between them. RLS cannot express
+--     "wallet_id must not change" -- `with check` has no access to the old
+--     row to compare against -- so 0004_rls.sql now narrows the blanket
+--     UPDATE grant on transactions to
+--     (kind, amount_minor, currency_code, category_id, occurred_on, note,
+--     deleted_at), excluding id, wallet_id, created_by and transfer_id.
+--     Column privilege is checked BEFORE RLS, so a denial here surfaces as
+--     SQLSTATE 42501 insufficient_privilege -- the SAME code an RLS
+--     `with check` denial uses. The failure messages below say "COLUMN
+--     PRIVILEGE" explicitly so a future engineer debugging a 42501 doesn't
+--     mistake this for a policy denial and go looking in the wrong place.
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002"}';
+  do $$ begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+  end $$;
+
+  -- Attack (the round-1 finding): bob, a real member of alice's wallet and
+  -- owner of his own separate wallet, tries to migrate alice's transaction
+  -- into his own wallet by reassigning wallet_id.
+  do $$
+  begin
+    update transactions set wallet_id = 'ffffffff-0000-0000-0000-000000000006'
+      where id = 'eeeeeeee-0000-0000-0000-000000000005';
+    raise exception 'LEAK: bob migrated alice''s transaction into his own wallet via wallet_id';
+  exception
+    when insufficient_privilege then
+      null; -- expected, COLUMN PRIVILEGE: authenticated has no UPDATE grant on wallet_id
+  end $$;
+
+  -- Attack: bob tries to re-attribute alice's transaction to himself via
+  -- created_by -- a separately deferred finding the same grant closes.
+  do $$
+  begin
+    update transactions set created_by = 'bbbbbbbb-0000-0000-0000-000000000002'
+      where id = 'eeeeeeee-0000-0000-0000-000000000005';
+    raise exception 'LEAK: bob re-attributed alice''s transaction to himself via created_by';
+  exception
+    when insufficient_privilege then
+      null; -- expected, COLUMN PRIVILEGE: authenticated has no UPDATE grant on created_by
+  end $$;
+
+  -- Positive control, shape-identical to both attacks above (same user,
+  -- same row, same wallet membership -- only the column touched differs):
+  -- bob CAN update allowed columns on the very same row. Proves the two
+  -- denials above are the column grant specifically, not a broken session
+  -- or a table that has become unreachable for every UPDATE.
+  update transactions set note = 'legit edit by member bob', amount_minor = -1300
+    where id = 'eeeeeeee-0000-0000-0000-000000000005';
+  do $$ begin
+    assert (select note from transactions where id = 'eeeeeeee-0000-0000-0000-000000000005')
+             = 'legit edit by member bob',
+      'PERMISSION BROKEN (COLUMN PRIVILEGE): member bob cannot update an allowed column (note)';
+    assert (select amount_minor from transactions where id = 'eeeeeeee-0000-0000-0000-000000000005') = -1300,
+      'PERMISSION BROKEN (COLUMN PRIVILEGE): member bob cannot update an allowed column (amount_minor)';
+    -- And the attacks truly left no trace: wallet_id/created_by unchanged.
+    assert (select wallet_id from transactions where id = 'eeeeeeee-0000-0000-0000-000000000005')
+             = 'cccccccc-0000-0000-0000-000000000003'::uuid,
+      'LEAK: transaction wallet_id changed despite the denied UPDATE';
+    assert (select created_by from transactions where id = 'eeeeeeee-0000-0000-0000-000000000005')
+             = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid,
+      'LEAK: transaction created_by changed despite the denied UPDATE';
+  end $$;
+
+  -- Positive control: soft delete (deleted_at) is in the granted column
+  -- list -- Task 16 (create/soft-delete/restore) depends on this working.
+  update transactions set deleted_at = now() where id = 'eeeeeeee-0000-0000-0000-000000000005';
+  do $$ begin
+    assert (select deleted_at from transactions where id = 'eeeeeeee-0000-0000-0000-000000000005') is not null,
+      'PERMISSION BROKEN (COLUMN PRIVILEGE): member bob cannot soft-delete (set deleted_at)';
+  end $$;
+commit;
+
 -- Final sanity check as alice: her wallet still has the name and owner she
 -- set in section 8 (not bob's forged rename or ownership-reassignment
 -- attempts from section 9), membership was never escalated, and the wallet
