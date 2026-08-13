@@ -13,6 +13,26 @@ create function is_wallet_member(w uuid) returns boolean
   )
 $$;
 
+-- RLS filters rows WITHIN what a role may already touch; it never grants reach
+-- to a table in the first place. This project's default ACL for schema public
+-- gives anon/authenticated only TRUNCATE/REFERENCES/TRIGGER/MAINTAIN — no
+-- SELECT/INSERT/UPDATE/DELETE — so without the grants below, the policies in
+-- this migration (and the ones already on profiles/currencies from 0001) are
+-- unreachable: every query from an authenticated user fails at the privilege
+-- check before RLS is ever consulted. Worse, TRUNCATE is table-level and is
+-- NOT subject to RLS at all, so leaving it granted would let any logged-in
+-- user wipe every table regardless of policy. `revoke all` first closes that
+-- hole and gives a clean, auditable baseline instead of layering onto an
+-- unknown starting state; the grants that follow are scoped to exactly what
+-- each table's policies below permit.
+revoke all on all tables in schema public from anon, authenticated;
+
+grant select on currencies to authenticated;
+
+grant select, insert, update, delete
+  on profiles, wallets, wallet_members, categories, transactions
+  to authenticated;
+
 alter table wallets        enable row level security;
 alter table wallet_members enable row level security;
 alter table categories     enable row level security;
