@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:rls": "./scripts/test-rls.sh",
     "validate:palette": "node scripts/validate-palette.mjs"
   },
   "dependencies": {
