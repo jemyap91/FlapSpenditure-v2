@@ -815,3 +815,210 @@ begin;
       'unexpected transaction count on alice''s wallet';
   end $$;
 commit;
+
+-- =====================================================================
+-- 11. Task 10: aggregate RPCs (get_wallet_balances, get_category_breakdown,
+--     get_cash_flow). A fresh, self-contained fixture is used (new wallets
+--     a2a2a2a2-...-001 / a3a3a3a3-...-001 and category a4a4a4a4-...-001)
+--     rather than reusing cccccccc-003: by this point in the file, that
+--     wallet's original expense (eeeeeeee-005) has had its amount edited to
+--     -1300 (section 10) and then been soft-deleted (also section 10), so
+--     it can no longer serve as a hand-computable breakdown fixture. The
+--     new fixture includes one ordinary expense, one income, one soft-
+--     deleted expense (must be ignored everywhere) and one transfer (must
+--     be excluded from the category breakdown but included in cash flow,
+--     per spec §3.3), so every filter each RPC relies on has something
+--     concrete to prove itself against.
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+  end $$;
+
+  insert into wallets (id, owner_id, name, kind, currency_code, starting_balance_minor, color_slot, icon)
+    values ('a2a2a2a2-0000-0000-0000-000000000001',
+            'aaaaaaaa-0000-0000-0000-000000000001', 'Agg Wallet A', 'bank', 'USD', 10000, 5, 'landmark');
+  insert into wallets (id, owner_id, name, kind, currency_code, starting_balance_minor, color_slot, icon)
+    values ('a3a3a3a3-0000-0000-0000-000000000001',
+            'aaaaaaaa-0000-0000-0000-000000000001', 'Agg Wallet B', 'bank', 'USD', 0, 6, 'piggy-bank');
+  insert into categories (id, owner_id, name, kind, color_slot, icon)
+    values ('a4a4a4a4-0000-0000-0000-000000000001',
+            'aaaaaaaa-0000-0000-0000-000000000001', 'Dining', 'expense', 7, 'utensils');
+
+  -- Ordinary expense: -12.50, category Dining.
+  insert into transactions (wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on)
+    values ('a2a2a2a2-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+            'expense', -1250, 'USD', 'a4a4a4a4-0000-0000-0000-000000000001', current_date);
+  -- Income: +50.00, no category.
+  insert into transactions (wallet_id, created_by, kind, amount_minor, currency_code, occurred_on)
+    values ('a2a2a2a2-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+            'income', 5000, 'USD', current_date);
+  -- Soft-deleted expense: -99.99, category Dining -- must be excluded from
+  -- get_wallet_balances, get_category_breakdown and get_cash_flow alike.
+  insert into transactions (id, wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on, deleted_at)
+    values ('a5a5a5a5-0000-0000-0000-000000000001',
+            'a2a2a2a2-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+            'expense', -9999, 'USD', 'a4a4a4a4-0000-0000-0000-000000000001', current_date, now());
+  -- Transfer: 20.00 out of A into B -- must be excluded from the category
+  -- breakdown (kind = 'expense' filter) but included in cash flow.
+  do $$ begin
+    perform create_transfer('a2a2a2a2-0000-0000-0000-000000000001',
+                             'a3a3a3a3-0000-0000-0000-000000000001',
+                             2000, 2000, current_date, 'agg test transfer');
+  end $$;
+commit;
+
+-- get_wallet_balances: hand-computed expected balances.
+-- Wallet A = starting 10000 + (-1250 expense) + 5000 (income) + (-2000
+--   transfer-out) = 11750. The -9999 soft-deleted expense must NOT count.
+-- Wallet B = starting 0 + 2000 (transfer-in) = 2000.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
+  do $$
+  declare bal_a bigint; bal_b bigint;
+  begin
+    select balance_minor into bal_a from get_wallet_balances()
+      where wallet_id = 'a2a2a2a2-0000-0000-0000-000000000001';
+    select balance_minor into bal_b from get_wallet_balances()
+      where wallet_id = 'a3a3a3a3-0000-0000-0000-000000000001';
+    assert bal_a = 11750, format('wallet A balance wrong: expected 11750, got %s', bal_a);
+    assert bal_b = 2000,  format('wallet B balance wrong: expected 2000, got %s', bal_b);
+  end $$;
+commit;
+
+-- get_category_breakdown: exactly 1 category (Dining), total_minor = 1250 --
+-- the income, the transfer and the soft-deleted expense must not contribute.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
+  do $$
+  declare n int; rec record;
+  begin
+    select count(*) into n from get_category_breakdown(
+      array['a2a2a2a2-0000-0000-0000-000000000001']::uuid[], current_date - 30, current_date);
+    assert n = 1,
+      format('breakdown should have exactly 1 category (income/transfer/soft-deleted excluded), got %s', n);
+
+    select * into rec from get_category_breakdown(
+      array['a2a2a2a2-0000-0000-0000-000000000001']::uuid[], current_date - 30, current_date) limit 1;
+    assert rec.category_id = 'a4a4a4a4-0000-0000-0000-000000000001'::uuid, 'breakdown returned the wrong category';
+    assert rec.total_minor = 1250,
+      format('breakdown total wrong: expected 1250 (only the -12.50 expense; the -20.00 transfer and -99.99 soft-deleted expense must not contribute), got %s', rec.total_minor);
+  end $$;
+commit;
+
+-- get_cash_flow: one bucket (all activity lands on current_date), in_minor =
+-- 5000 (income only), out_minor = 3250 (1250 expense + 2000 transfer-out --
+-- transfers ARE included here, unlike the breakdown above). The -99.99
+-- soft-deleted expense must not contribute to either side.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
+  do $$
+  declare n int; rec record;
+  begin
+    select count(*) into n from get_cash_flow(
+      array['a2a2a2a2-0000-0000-0000-000000000001']::uuid[], current_date - 30, current_date, 'day');
+    assert n = 1, format('cash flow should have exactly 1 bucket, got %s', n);
+
+    select * into rec from get_cash_flow(
+      array['a2a2a2a2-0000-0000-0000-000000000001']::uuid[], current_date - 30, current_date, 'day') limit 1;
+    assert rec.bucket_start = current_date, format('cash flow bucket_start wrong: %s', rec.bucket_start);
+    assert rec.in_minor = 5000,
+      format('cash flow in_minor wrong: expected 5000 (income only), got %s', rec.in_minor);
+    assert rec.out_minor = 3250,
+      format('cash flow out_minor wrong: expected 3250 (1250 expense + 2000 transfer-out; the -99.99 soft-deleted expense must not contribute), got %s', rec.out_minor);
+  end $$;
+commit;
+
+-- Bob's own data, in his own pre-existing wallet ffffffff-006 (created in
+-- section 5). This must be real, non-empty data: the mixed-array test below
+-- needs a case where a "silently filter to authorized wallets" (or
+-- "check only one array element") implementation would visibly return
+-- something, so that asserting an empty result actually proves every
+-- element of wallet_ids was checked, not just that bob's own data happens
+-- to be empty.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002"}';
+  do $$ begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+  end $$;
+
+  insert into categories (id, owner_id, name, kind, color_slot, icon)
+    values ('a4a4a4a4-0000-0000-0000-000000000002',
+            'bbbbbbbb-0000-0000-0000-000000000002', 'Bob Category', 'expense', 1, 'shopping-cart');
+  insert into transactions (wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on)
+    values ('ffffffff-0000-0000-0000-000000000006', 'bbbbbbbb-0000-0000-0000-000000000002',
+            'expense', -500, 'USD', 'a4a4a4a4-0000-0000-0000-000000000002', current_date);
+commit;
+
+-- Access control: bob (not a member of wallet A) must get nothing from it,
+-- from either RPC, and get_wallet_balances() must not leak alice's wallets
+-- to him either.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002"}';
+  do $$
+  declare n int;
+  begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+
+    select count(*) into n from get_category_breakdown(
+      array['a2a2a2a2-0000-0000-0000-000000000001']::uuid[], current_date - 30, current_date);
+    assert n = 0, 'LEAK: bob got category breakdown for alice''s wallet A';
+
+    select count(*) into n from get_cash_flow(
+      array['a2a2a2a2-0000-0000-0000-000000000001']::uuid[], current_date - 30, current_date, 'day');
+    assert n = 0, 'LEAK: bob got cash flow for alice''s wallet A';
+
+    assert not exists (select 1 from get_wallet_balances() where wallet_id = 'a2a2a2a2-0000-0000-0000-000000000001'),
+      'LEAK: bob''s get_wallet_balances() included alice''s wallet A';
+    assert not exists (select 1 from get_wallet_balances() where wallet_id = 'a3a3a3a3-0000-0000-0000-000000000001'),
+      'LEAK: bob''s get_wallet_balances() included alice''s wallet B';
+  end $$;
+commit;
+
+-- Access control, mixed array: exactly the case a naive membership check
+-- (e.g. checking only wallet_ids[1], or filtering to authorized elements
+-- instead of denying the whole batch) would pass. Bob is a real member of
+-- ffffffff-006 (with real data, inserted above) and NOT a member of
+-- alice's a2a2a2a2-...-001. Tested in both array orders, since a
+-- first-element-only bug would only be caught by one of them.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002"}';
+  do $$
+  declare n int;
+  begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+
+    -- Sanity/positive control: bob's own wallet alone DOES return his data.
+    select count(*) into n from get_category_breakdown(
+      array['ffffffff-0000-0000-0000-000000000006']::uuid[], current_date - 30, current_date);
+    assert n = 1, format('sanity: bob should see his own category breakdown, got %s rows', n);
+
+    -- Mixed array, unauthorized wallet FIRST: [alice's A, bob's own].
+    select count(*) into n from get_category_breakdown(
+      array['a2a2a2a2-0000-0000-0000-000000000001', 'ffffffff-0000-0000-0000-000000000006']::uuid[],
+      current_date - 30, current_date);
+    assert n = 0,
+      format('LEAK: mixed array (unauthorized first) returned %s rows -- bob got data despite an unauthorized wallet id in the array', n);
+
+    -- Mixed array, unauthorized wallet SECOND: [bob's own, alice's A].
+    select count(*) into n from get_category_breakdown(
+      array['ffffffff-0000-0000-0000-000000000006', 'a2a2a2a2-0000-0000-0000-000000000001']::uuid[],
+      current_date - 30, current_date);
+    assert n = 0,
+      format('LEAK: mixed array (unauthorized second) returned %s rows -- a naive first-element-only membership check would have passed this', n);
+
+    -- Same mixed-array proof for get_cash_flow.
+    select count(*) into n from get_cash_flow(
+      array['ffffffff-0000-0000-0000-000000000006', 'a2a2a2a2-0000-0000-0000-000000000001']::uuid[],
+      current_date - 30, current_date, 'day');
+    assert n = 0, format('LEAK: cash flow mixed array returned %s rows', n);
+  end $$;
+commit;
