@@ -2,7 +2,7 @@
 create table transactions (
   id            uuid primary key default gen_random_uuid(),
   wallet_id     uuid not null references wallets(id) on delete cascade,
-  created_by    uuid not null references auth.users(id),
+  created_by    uuid references auth.users(id) on delete set null,
   kind          txn_kind not null,
   amount_minor  bigint not null check (amount_minor <> 0),
   currency_code char(3) not null references currencies(code),
