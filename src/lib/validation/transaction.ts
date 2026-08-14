@@ -1,5 +1,67 @@
 import { z } from "zod";
 import { Constants } from "@/lib/database.types";
+import type { Database } from "@/lib/database.types";
+
+type TxnKind = Database["public"]["Enums"]["txn_kind"];
+
+/**
+ * Applies the sign the ledger requires. This is the ONE place in the app
+ * that turns a user-entered positive magnitude into the signed
+ * `amount_minor` the database stores — the four CHECK constraints in
+ * supabase/migrations/0003_transactions.sql (`expense_is_negative`,
+ * `income_is_positive`, `transfer_shape`, `non_transfer_no_link`) enforce
+ * the same rule again at the database layer, but failing here first gives
+ * a caller a real error message instead of a raw constraint-violation
+ * string.
+ *
+ * The sign comes from `kind` alone, never from the input's own sign —
+ * `positiveMinor` is required to already be a positive integer, so a
+ * caller cannot smuggle a negative income or a positive expense through by
+ * pre-negating its input. `Number.isSafeInteger`, not `Number.isInteger` —
+ * this is the app's single sign gate, and `Number.isInteger(2 ** 53 + 2)`
+ * is `true` despite that value losing precision; unreachable today only
+ * because `parseAmountInput` (src/lib/money.ts) already guards with
+ * `isSafeInteger` before calling this, and this function's own boundary
+ * test (`transactions.test.ts`) exercises `Number.MAX_SAFE_INTEGER`.
+ *
+ * `kind` is typed as the full three-value `txn_kind` union, not a
+ * hand-narrowed `"expense" | "income"`, and "transfer" is rejected
+ * explicitly rather than left to a default case. A transfer's two legs are
+ * signed by `create_transfer` itself (supabase/migrations/
+ * 0005_transfer_fn.sql: `-amount_out` / `amount_in`) — this function never
+ * touches them — so a caller reaching this with `kind: "transfer"` is
+ * always a mistake, and typing the parameter this way both makes that
+ * mistake a caught runtime error instead of a silently-accepted sign, and
+ * lets `transactions.test.ts` exercise every real `txn_kind` value against
+ * this helper without an `any` cast.
+ *
+ * Lives here, not in src/server/actions/transactions.ts, despite being
+ * conceptually a ledger/transaction concern: transactions.ts carries a
+ * file-level `"use server"` directive (needed so createTransaction/
+ * createTransfer/softDeleteTransaction/restoreTransaction can be imported
+ * from a future Client Component — Task 19's add-transaction screen, Task
+ * 20's undo toast), and per node_modules/next/dist/docs/01-app/
+ * 03-api-reference/01-directives/use-server.md, a file-level directive
+ * requires EVERY exported function in that file to be an `async function`.
+ * A synchronous pure helper cannot live there (confirmed live: Turbopack
+ * rejected it with "Server Actions must be async functions"). This file
+ * has no such directive and is already the transaction schemas' home for
+ * pure, pre-database logic (`precisionError` below), so it's the natural
+ * place for the other one.
+ */
+export function signedAmount(kind: TxnKind, positiveMinor: number): number {
+  if (!Number.isSafeInteger(positiveMinor) || positiveMinor <= 0) {
+    throw new Error("amount must be a positive integer in minor units");
+  }
+  switch (kind) {
+    case "expense":
+      return -positiveMinor;
+    case "income":
+      return positiveMinor;
+    case "transfer":
+      throw new Error("transfers are signed by create_transfer, not signedAmount");
+  }
+}
 
 /**
  * `txn_kind` also has a third value, "transfer" (supabase/migrations/

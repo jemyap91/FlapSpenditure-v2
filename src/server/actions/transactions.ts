@@ -1,70 +1,36 @@
+"use server";
+
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
-import { transactionInput, transferInput, precisionError } from "@/lib/validation/transaction";
+import {
+  transactionInput,
+  transferInput,
+  precisionError,
+  signedAmount,
+} from "@/lib/validation/transaction";
 import type { TransactionInput, TransferInput } from "@/lib/validation/transaction";
 import { parseAmountInput, minorUnitFor } from "@/lib/money";
-import type { Database } from "@/lib/database.types";
 
-type TxnKind = Database["public"]["Enums"]["txn_kind"];
-
-/**
- * No file-level `"use server"` directive here, unlike src/server/actions/
- * {auth,profile,wallets}.ts — deliberately. Per node_modules/next/dist/docs/
- * 01-app/03-api-reference/01-directives/use-server.md, a file-level
- * directive marks EVERY exported function in the file as a Server
- * Function, and React's compiler enforces that every such export be an
- * `async function` ("Server Actions must be async functions" — hit live
- * while wiring up this task's verification harness: it rejected `signedAmount`,
- * a deliberately synchronous pure helper the brief calls for, and rejected
- * the arrow-function forms of `softDeleteTransaction`/`restoreTransaction`
- * too, even though both return a `Promise`). The same doc documents an
- * inline, per-function alternative — `"use server"` as the first statement
- * inside a function body marks only that function as a Server Function,
- * leaving other exports in the same file (here, `signedAmount` and the
- * private `setDeletedAt`) as ordinary code. `createTransaction`,
- * `createTransfer`, `softDeleteTransaction`, and `restoreTransaction` each
- * carry their own inline directive below instead.
- */
+export type TransactionResult = { id: string } | { error: string };
+export type TransferResult = { transferId: string } | { error: string };
+export type MutationResult = { ok: true } | { error: string };
 
 /**
- * Applies the sign the ledger requires. This is the ONE place in the app
- * that turns a user-entered positive magnitude into the signed
- * `amount_minor` the database stores — the four CHECK constraints in
- * supabase/migrations/0003_transactions.sql (`expense_is_negative`,
- * `income_is_positive`, `transfer_shape`, `non_transfer_no_link`) enforce
- * the same rule again at the database layer, but failing here first gives
- * a caller a real error message instead of a raw constraint-violation
- * string.
- *
- * The sign comes from `kind` alone, never from the input's own sign —
- * `positiveMinor` is required to already be a positive integer, so a
- * caller cannot smuggle a negative income or a positive expense through by
- * pre-negating its input.
- *
- * `kind` is typed as the full three-value `txn_kind` union, not a
- * hand-narrowed `"expense" | "income"`, and "transfer" is rejected
- * explicitly rather than left to a default case. A transfer's two legs are
- * signed by `create_transfer` itself (supabase/migrations/
- * 0005_transfer_fn.sql: `-amount_out` / `amount_in`) — this function never
- * touches them — so a caller reaching this with `kind: "transfer"` is
- * always a mistake, and typing the parameter this way both makes that
- * mistake a caught runtime error instead of a silently-accepted sign, and
- * lets `transactions.test.ts` exercise every real `txn_kind` value against
- * this helper without an `any` cast.
+ * File-level `"use server"` (like src/server/actions/{auth,profile,
+ * wallets}.ts), not per-function inline directives. Per node_modules/
+ * next/dist/docs/01-app/03-api-reference/01-directives/use-server.md, a
+ * file-level directive is what lets a Server Function be imported directly
+ * into a Client Component (Task 19's add-transaction screen, Task 20's
+ * undo toast will both import from this file) — an inline, function-body
+ * directive does not: confirmed live, `next build` on a throwaway Client
+ * Component importing an inline-directive export fails with "It is not
+ * allowed to define inline 'use server' annotated Server Actions in Client
+ * Components." Every export below is consequently an `async function`
+ * (the file-level directive's own requirement); `signedAmount`, the one
+ * genuinely synchronous pure helper this task's brief calls for, lives in
+ * src/lib/validation/transaction.ts instead — see that file's doc comment
+ * for the full reasoning.
  */
-export function signedAmount(kind: TxnKind, positiveMinor: number): number {
-  if (!Number.isInteger(positiveMinor) || positiveMinor <= 0) {
-    throw new Error("amount must be a positive integer in minor units");
-  }
-  switch (kind) {
-    case "expense":
-      return -positiveMinor;
-    case "income":
-      return positiveMinor;
-    case "transfer":
-      throw new Error("transfers are signed by create_transfer, not signedAmount");
-  }
-}
 
 /**
  * Postgres error text that create_transfer (supabase/migrations/
@@ -99,10 +65,7 @@ const KNOWN_TRANSFER_ERRORS = new Set([
  * trusted from anywhere in `input` (there is no `created_by` or `owner_id`
  * field in the schema for exactly this reason).
  */
-export async function createTransaction(
-  input: TransactionInput,
-): Promise<{ id: string } | { error: string }> {
-  "use server";
+export async function createTransaction(input: TransactionInput): Promise<TransactionResult> {
   const parsed = transactionInput.safeParse(input);
   if (!parsed.success) return { error: parsed.error.issues[0]!.message };
 
@@ -131,7 +94,10 @@ export async function createTransaction(
   // The kind check catches a mismatch nothing in the schema's CHECK
   // constraints forbids — e.g. filing an expense against an income
   // category — which would otherwise silently corrupt Task 21's category
-  // breakdown.
+  // breakdown. (Whether an ARCHIVED category should also be rejected here
+  // is a deliberate open question, not an oversight — flagged in this
+  // task's report for Task 17 to decide, alongside the identical question
+  // for archived wallets.)
   const { data: category } = await supabase
     .from("categories")
     .select("kind")
@@ -188,10 +154,7 @@ export async function createTransaction(
  * the RPC's two positive bigint arguments and translating its errors, not
  * pairing the rows itself.
  */
-export async function createTransfer(
-  input: TransferInput,
-): Promise<{ transferId: string } | { error: string }> {
-  "use server";
+export async function createTransfer(input: TransferInput): Promise<TransferResult> {
   const parsed = transferInput.safeParse(input);
   if (!parsed.success) return { error: parsed.error.issues[0]!.message };
 
@@ -278,11 +241,26 @@ export async function createTransfer(
  * go together — undo must restore (or remove) an intact pair, never half of
  * one — so when the target row is a transfer leg, the UPDATE is scoped by
  * `transfer_id` instead of `id`, moving every row sharing that id in one
- * statement. (The database facts for this task note that a `transfer_id`
- * isn't *guaranteed* to have exactly two rows if something else ever wrote
- * a third — updating the whole set either way is still the correct
- * behavior: it fully soft-deletes/restores whatever shares the link,
- * rather than leaving a partial set in a mismatched state.)
+ * statement.
+ *
+ * That statement only ever affects rows RLS lets this caller see, though —
+ * `transactions_member` is keyed on `is_wallet_member(wallet_id)` per-row,
+ * not per-transfer, so if the caller is a member of only ONE of the two
+ * wallets a transfer touches (membership can change after a transfer is
+ * created — e.g. an owner removes a member from one wallet later), the
+ * other leg is invisible to this query and cannot be affected by it, full
+ * stop; there is no privilege this function can use to reach it without a
+ * service-role key, which this app does not have. An earlier version of
+ * this comment claimed the whole set "always" moves together — that was
+ * inaccurate, and this codebase has already been bitten twice by a comment
+ * asserting a property the code didn't actually deliver, so it isn't
+ * repeated here. What this function DOES do, as a defense-in-depth check
+ * against a *narrower* failure mode (a constraint or concurrent change
+ * blocking only some of the rows this caller can see): it counts how many
+ * rows share `transfer_id` and are visible to the caller BEFORE the
+ * update, then compares that to how many rows the UPDATE actually
+ * affected, and reports an error rather than a silent partial success if
+ * they differ.
  *
  * `authenticated`'s column-scoped UPDATE grant on `transactions`
  * (supabase/migrations/0004_rls.sql) includes `deleted_at` and
@@ -292,46 +270,60 @@ export async function createTransfer(
  * this table (unlike `created_at`'s default), so it has to be set
  * explicitly here.
  *
- * RLS's `transactions_member` policy (is_wallet_member) still applies to
- * both the SELECT and the UPDATE, so this can never touch a transaction in
- * a wallet the caller doesn't belong to — but the explicit `getUser()`
- * check below still runs first, per this task's instruction to verify
- * authentication inside every Server Function rather than relying on RLS
- * alone to reject an unauthenticated request.
+ * Returns a result object rather than throwing (a deliberate deviation
+ * from the brief's `Promise<void>` signature — see this task's report): a
+ * thrown Error inside a Server Function is masked to an opaque digest in
+ * production, which would leave Task 20's undo toast unable to
+ * distinguish "not signed in" from "not found" from "update failed," let
+ * alone render any of them.
  */
-async function setDeletedAt(id: string, value: string | null): Promise<void> {
+async function setDeletedAt(id: string, value: string | null): Promise<MutationResult> {
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) throw new Error("Not signed in");
+  if (!user) return { error: "Not signed in" };
 
   const { data: row, error: readError } = await supabase
     .from("transactions")
     .select("transfer_id")
     .eq("id", id)
     .single();
-  if (readError || !row) throw new Error("Transaction not found");
+  if (readError || !row) return { error: "Transaction not found" };
+
+  // How many rows sharing this transfer_id (or just this one row, for a
+  // non-transfer) are visible to the caller right now — the baseline the
+  // UPDATE's own affected-row count is checked against below.
+  let expectedCount = 1;
+  if (row.transfer_id) {
+    const { count } = await supabase
+      .from("transactions")
+      .select("id", { count: "exact", head: true })
+      .eq("transfer_id", row.transfer_id);
+    expectedCount = count ?? 1;
+  }
 
   const query = supabase.from("transactions").update({
     deleted_at: value,
     updated_at: new Date().toISOString(),
   });
 
-  const { error } = row.transfer_id
-    ? await query.eq("transfer_id", row.transfer_id)
-    : await query.eq("id", id);
-  if (error) throw new Error("Could not update transaction");
+  const { data: updated, error } = row.transfer_id
+    ? await query.eq("transfer_id", row.transfer_id).select("id")
+    : await query.eq("id", id).select("id");
+  if (error) return { error: "Could not update transaction" };
+  if (!updated || updated.length !== expectedCount) {
+    return { error: "Only part of this transfer could be updated" };
+  }
 
   revalidatePath("/", "layout");
+  return { ok: true };
 }
 
-export async function softDeleteTransaction(id: string): Promise<void> {
-  "use server";
-  await setDeletedAt(id, new Date().toISOString());
+export async function softDeleteTransaction(id: string): Promise<MutationResult> {
+  return setDeletedAt(id, new Date().toISOString());
 }
 
-export async function restoreTransaction(id: string): Promise<void> {
-  "use server";
-  await setDeletedAt(id, null);
+export async function restoreTransaction(id: string): Promise<MutationResult> {
+  return setDeletedAt(id, null);
 }
