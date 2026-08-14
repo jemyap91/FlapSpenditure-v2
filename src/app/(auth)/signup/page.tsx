@@ -32,7 +32,7 @@ export default function SignupPage() {
             aria-describedby={errorId}
             aria-invalid={state.field === "email" ? true : undefined}
             className="rounded-md border px-3 py-2 focus:outline-2 focus:outline-offset-2 focus:outline-[var(--cat-1)]"
-            style={{ borderColor: "var(--grid)" }}
+            style={{ borderColor: "var(--ink-2)" }}
           />
         </label>
         <label className="flex flex-col gap-1">
@@ -47,7 +47,7 @@ export default function SignupPage() {
             aria-describedby={errorId}
             aria-invalid={state.field === "password" ? true : undefined}
             className="rounded-md border px-3 py-2 focus:outline-2 focus:outline-offset-2 focus:outline-[var(--cat-1)]"
-            style={{ borderColor: "var(--grid)" }}
+            style={{ borderColor: "var(--ink-2)" }}
           />
         </label>
         {/* Always mounted (not conditionally rendered) so assistive tech

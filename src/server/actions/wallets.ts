@@ -3,10 +3,21 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { walletInput } from "@/lib/validation/wallet";
+import { walletInput, type WalletField } from "@/lib/validation/wallet";
 import { parseAmountInput, minorUnitFor } from "@/lib/money";
+import type { z } from "zod";
 
-export type WalletState = { error?: string };
+export type WalletState = { error?: string; field?: WalletField };
+
+/** Which field a failed parse's first issue is about, for `aria-invalid` —
+ * same idea as src/lib/validation/auth.ts's `credentialsValidationError`,
+ * but simpler: unlike auth, wallet validation messages are already safe to
+ * show verbatim (no enumeration-oracle concern), so only the field needs
+ * mapping out of the zod error, not the message text too. */
+function firstIssueField(error: z.ZodError): WalletField | undefined {
+  const path = error.issues[0]?.path[0];
+  return typeof path === "string" ? (path as WalletField) : undefined;
+}
 
 /**
  * Server Functions are reachable via direct POST requests, not just through
@@ -32,7 +43,9 @@ export async function createWallet(
   formData: FormData,
 ): Promise<WalletState> {
   const parsed = walletInput.safeParse(Object.fromEntries(formData));
-  if (!parsed.success) return { error: parsed.error.issues[0]!.message };
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]!.message, field: firstIssueField(parsed.error) };
+  }
 
   const supabase = await createClient();
   const {
@@ -46,12 +59,21 @@ export async function createWallet(
   // string->integer digit manipulation (never `parseFloat(x) * 100`, which
   // is banned project-wide) and is the only place in this action that
   // touches the amount, so this is correct for minor_unit 0 (JPY/KRW) and 3
-  // (KWD) alike, not just the 2-decimal common case.
+  // (KWD) alike, not just the 2-decimal common case. walletInput's
+  // superRefine already rejected a fraction longer than the currency
+  // allows, so this call never silently truncates a user-entered value.
+  //
+  // parseAmountInput's regex also never accepts a leading "-" (the sign
+  // comes from transaction kind in Task 18's keypad, not free text), so a
+  // card wallet cannot be given a negative opening balance here — the form
+  // states this limitation in its hint rather than silently flipping the
+  // sign. Widening parseAmountInput itself is out of scope: it's shared
+  // with Task 18, where a different caller supplies the sign.
   let startingMinor: number;
   try {
     startingMinor = parseAmountInput(starting_balance, minorUnitFor(currency_code));
   } catch {
-    return { error: "Starting balance is not a valid amount" };
+    return { error: "Starting balance is not a valid amount", field: "starting_balance" };
   }
 
   // add_owner_as_member() (supabase/migrations/0002_wallets_categories.sql)
@@ -83,11 +105,28 @@ export async function createWallet(
  * a future wallet-management screen is expected to bind it the same way
  * src/server/actions/profile.ts's setTheme is bound today.
  *
- * `starting_balance_minor` is deliberately NOT editable here: it only means
- * anything at creation time, seeding get_wallet_balances' running total.
- * Changing it later would silently rewrite historical balances instead of
- * recording a correction as its own event — a future "adjust balance"
- * feature belongs in transactions, not a field edit.
+ * `starting_balance_minor` and `currency_code` are deliberately NOT written
+ * here, even though `walletInput` validates both (the schema is shared with
+ * `createWallet`, which needs them):
+ *
+ *  - `starting_balance_minor` only means anything at creation time, seeding
+ *    get_wallet_balances' running total. Changing it later would silently
+ *    rewrite historical balances instead of recording a correction as its
+ *    own event — a future "adjust balance" feature belongs in transactions,
+ *    not a field edit.
+ *  - `currency_code` has the identical problem, worse: a wallet holding
+ *    `starting_balance_minor = 1000` under USD ($10.00) reinterpreted as
+ *    JPY becomes ¥1,000 — a 100x value change with no data written, and
+ *    `transactions` rows keep their own (now-mismatched) `currency_code`
+ *    while get_wallet_balances sums both under one label. Changing a
+ *    wallet's currency after it holds a balance or transactions is a
+ *    migration operation (recompute/relabel every dependent row), not a
+ *    field this action can safely touch.
+ *
+ * Both are reachable via direct POST regardless of what UI exists (see the
+ * module doc comment above), so excluding them from the update payload,
+ * not just from a form that doesn't render yet, is what actually closes
+ * this off.
  */
 export async function updateWallet(
   id: string,
@@ -95,7 +134,9 @@ export async function updateWallet(
   formData: FormData,
 ): Promise<WalletState> {
   const parsed = walletInput.safeParse(Object.fromEntries(formData));
-  if (!parsed.success) return { error: parsed.error.issues[0]!.message };
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]!.message, field: firstIssueField(parsed.error) };
+  }
 
   const supabase = await createClient();
   const {
@@ -103,11 +144,11 @@ export async function updateWallet(
   } = await supabase.auth.getUser();
   if (!user) return { error: "Not signed in" };
 
-  const { name, kind, currency_code, color_slot, icon } = parsed.data;
+  const { name, kind, color_slot, icon } = parsed.data;
 
   const { error } = await supabase
     .from("wallets")
-    .update({ name, kind, currency_code, color_slot, icon })
+    .update({ name, kind, color_slot, icon })
     .eq("id", id)
     .eq("owner_id", user.id);
   if (error) return { error: "Could not update wallet. Please try again." };
