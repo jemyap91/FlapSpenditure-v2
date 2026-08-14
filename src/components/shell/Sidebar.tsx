@@ -6,6 +6,7 @@ import { Home, Wallet, TrendingUp, Tags, LogOut } from "lucide-react";
 import { signOut } from "@/server/actions/auth";
 import type { ThemePref } from "@/lib/supabase/current-user";
 import { ThemeToggle } from "./ThemeToggle";
+import { isActive } from "./nav-active";
 
 const NAV = [
   { href: "/", label: "Home", Icon: Home },
@@ -13,6 +14,8 @@ const NAV = [
   { href: "/transactions", label: "Transactions", Icon: TrendingUp },
   { href: "/categories", label: "Categories", Icon: Tags },
 ];
+
+const NAV_HREFS = NAV.map((item) => item.href);
 
 const FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
@@ -30,14 +33,25 @@ export function Sidebar({ theme }: { theme: ThemePref }) {
         Ledger
       </p>
       {NAV.map(({ href, label, Icon }) => {
-        const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
+        const active = isActive(pathname, href, NAV_HREFS);
         return (
           <Link
             key={href}
             href={href}
             aria-current={active ? "page" : undefined}
-            className={`flex items-center gap-3 rounded-md px-2 py-2 text-sm ${FOCUS_RING}`}
-            style={{ background: active ? "var(--grid)" : "transparent", color: "var(--ink)" }}
+            className={`flex items-center gap-3 rounded-md px-2 py-2 text-sm ${active ? "font-medium" : ""} ${FOCUS_RING}`}
+            style={{
+              background: active ? "var(--grid)" : "transparent",
+              color: "var(--ink)",
+              // Background-only active state measured 1.29:1 (light) /
+              // 1.24:1 (dark) against the inactive rows — text colour is
+              // identical, so it fails WCAG 1.4.11's 3:1 floor for UI
+              // component state. A var(--cat-1) left border is the second
+              // differentiator: it measures 4.34:1 (light) / 4.18:1 (dark)
+              // against var(--grid), clearing 3:1 with margin in both
+              // themes (see task-14-report.md for the full computation).
+              borderLeft: `3px solid ${active ? "var(--cat-1)" : "transparent"}`,
+            }}
           >
             <Icon size={18} aria-hidden />
             {label}

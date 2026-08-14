@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Home, Wallet, Plus, TrendingUp, Tags } from "lucide-react";
+import { isActive } from "./nav-active";
 
 const NAV = [
   { href: "/", label: "Home", Icon: Home },
@@ -12,6 +13,8 @@ const NAV = [
   { href: "/categories", label: "Categories", Icon: Tags },
 ];
 
+const NAV_HREFS = NAV.map((item) => item.href);
+
 /**
  * Mobile navigation (<768px, see Sidebar for the desktop equivalent).
  *
@@ -20,6 +23,11 @@ const NAV = [
  * for this 12px text — the same class of contrast bug Task 13 fixed
  * (var(--cat-1) with literal #fff text). var(--ink-2) on var(--surface)
  * measures 7.73:1 light / 9.72:1 dark.
+ *
+ * Active state uses the shared isActive() (see ./nav-active.ts), not a bare
+ * `pathname.startsWith(href)`: this nav has both "/transactions" (Activity)
+ * and "/transactions/new" (Add), and a bare prefix check made both tabs
+ * report aria-current="page" simultaneously on "/transactions/new".
  */
 export function TabBar() {
   const pathname = usePathname();
@@ -30,7 +38,7 @@ export function TabBar() {
       style={{ borderColor: "var(--grid)", background: "var(--surface)" }}
     >
       {NAV.map(({ href, label, Icon, primary }) => {
-        const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
+        const active = isActive(pathname, href, NAV_HREFS);
         return (
           <Link
             key={href}
