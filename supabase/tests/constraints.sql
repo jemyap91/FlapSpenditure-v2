@@ -30,9 +30,15 @@ begin;
   insert into wallets (id,owner_id,name,kind,currency_code,color_slot,icon)
     values ('44444444-4444-4444-4444-444444444444',
             '22222222-2222-2222-2222-222222222222','Secondary','card','USD',2,'wallet');
+  -- Named 'Constraint Test Category', not 'Groceries': migration 0007's
+  -- new-user seed trigger fires on the auth.users insert above and gives
+  -- this user 16 default categories including one named 'Groceries'
+  -- ('expense' kind); reusing that name here would collide with
+  -- categories_unique_active_name instead of exercising this file's own
+  -- CHECK-constraint assertions.
   insert into categories (id,owner_id,name,kind,color_slot,icon)
     values ('55555555-5555-5555-5555-555555555555',
-            '22222222-2222-2222-2222-222222222222','Groceries','expense',1,'shopping-cart');
+            '22222222-2222-2222-2222-222222222222','Constraint Test Category','expense',1,'shopping-cart');
 
   -- ACCEPT: a valid expense row must succeed.
   insert into transactions (wallet_id,created_by,kind,amount_minor,currency_code,occurred_on)

@@ -36,9 +36,14 @@ begin;
   insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
     values ('cccccccc-0000-0000-0000-000000000003',
             'aaaaaaaa-0000-0000-0000-000000000001', 'Alice Bank', 'bank', 'USD', 1, 'landmark');
+  -- Named 'Custom Category', not 'Groceries': migration 0007's new-user
+  -- seed trigger already fired on the auth.users insert above and gave
+  -- alice 16 default categories including one named 'Groceries' ('expense'
+  -- kind); reusing that name here would collide with
+  -- categories_unique_active_name instead of proving RLS visibility.
   insert into categories (id, owner_id, name, kind, color_slot, icon)
     values ('dddddddd-0000-0000-0000-000000000004',
-            'aaaaaaaa-0000-0000-0000-000000000001', 'Groceries', 'expense', 2, 'basket');
+            'aaaaaaaa-0000-0000-0000-000000000001', 'Custom Category', 'expense', 2, 'basket');
   insert into transactions (id, wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on)
     values ('eeeeeeee-0000-0000-0000-000000000005',
             'cccccccc-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001',
@@ -46,7 +51,10 @@ begin;
 
   do $$ begin
     assert (select count(*) from wallets)      = 1, 'PERMISSION BROKEN: alice cannot see her own wallet';
-    assert (select count(*) from categories)   = 1, 'PERMISSION BROKEN: alice cannot see her own category';
+    -- 17, not 1: migration 0007's new-user seed trigger already gave alice
+    -- 16 default categories on the auth.users insert at the top of this
+    -- file, plus the one she just created above.
+    assert (select count(*) from categories)   = 17, 'PERMISSION BROKEN: alice cannot see her own category';
     assert (select count(*) from transactions) = 1, 'PERMISSION BROKEN: alice cannot see her own transaction';
     -- add_owner_as_member() trigger ran under security definer.
     assert (select role from wallet_members
@@ -341,7 +349,12 @@ begin;
   do $$ begin
     assert (select count(*) from wallets)        = 0, 'LEAK: bob can see alice''s wallet';
     assert (select count(*) from wallet_members) = 0, 'LEAK: bob can see alice''s wallet_members row';
-    assert (select count(*) from categories)     = 0, 'LEAK: bob can see alice''s category';
+    -- 16, not 0: migration 0007's new-user seed trigger already gave bob
+    -- his own 16 default categories on the auth.users insert at the top of
+    -- this file. The probative check is that this is exactly bob's own 16
+    -- (owner-scoped) and NOT 33 (his 16 plus alice's 17 from section 1) --
+    -- i.e. none of alice's categories leaked into what bob can see.
+    assert (select count(*) from categories)     = 16, 'LEAK: bob can see alice''s category';
     assert (select count(*) from transactions)   = 0, 'LEAK: bob can see alice''s transaction';
   end $$;
 commit;
@@ -644,8 +657,12 @@ begin;
     assert (select count(*) from transactions where wallet_id = 'cccccccc-0000-0000-0000-000000000003') = 2,
       'PERMISSION BROKEN: member bob cannot see the shared transaction ledger';
     -- Negative (extra attack, not named in the brief): membership does
-    -- NOT leak alice's categories -- categories are owner-scoped.
-    assert (select count(*) from categories) = 0,
+    -- NOT leak alice's categories -- categories are owner-scoped. 16, not
+    -- 0: migration 0007's seed trigger already gave bob his own 16
+    -- default categories; the probative check is that this is exactly
+    -- bob's own 16 and not 33 (his 16 plus alice's 17: her 16 seeded plus
+    -- the one she created in section 1).
+    assert (select count(*) from categories) = 16,
       'LEAK: wallet membership exposed alice''s private categories';
   end $$;
 
