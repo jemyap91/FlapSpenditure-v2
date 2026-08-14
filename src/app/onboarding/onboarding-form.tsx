@@ -39,28 +39,9 @@ export function OnboardingForm() {
   const errorId = useId();
   const hintId = useId();
   const errorRef = useRef<HTMLParagraphElement>(null);
-
-  // Derived fresh on every render from the action's returned state — not
-  // `useState`/`useEffect` (this project's eslint config forbids both
-  // set-state-in-effect and ref reads during render; see react-hooks/
-  // set-state-in-effect and react-hooks/refs). Used as part of the `key` on
-  // the native radio inputs and the currency `<select>` so each one gets a
-  // *fresh* DOM node on the render right after a failed submission, instead
-  // of patching the existing node. The hidden `kind`/`currency_code` inputs
-  // above already guarantee correct *submission* regardless of this, but the
-  // native `<select>`'s own visible box is what a sighted user actually
-  // reads as "the currently chosen currency" — left unkeyed, it visibly
-  // drifted to showing "USD" after a failed submit even while this
-  // component's own `currencyCode` state (and everything bound to it: the
-  // hint text below, the hidden input) correctly still read "KWD". A fresh
-  // DOM node, created directly from `currencyCode`/`kind` at mount, cannot
-  // inherit that drift — there's nothing prior for it to drift from.
-  //
-  // Content-based (error + field), not a counter: a resubmission of
-  // identical invalid data producing the identical error is the one case
-  // this doesn't force a remount for, which is fine — there is nothing new
-  // to correct in that case since the previous remount already applied.
-  const formResetKey = `${state.error ?? ""}|${state.field ?? ""}`;
+  const selectRef = useRef<HTMLSelectElement>(null);
+  const bankRadioRef = useRef<HTMLInputElement>(null);
+  const cardRadioRef = useRef<HTMLInputElement>(null);
 
   // Same technique as (auth)/login and (auth)/signup: move focus to the
   // always-mounted alert node whenever an error (re)appears, since a
@@ -69,6 +50,38 @@ export function OnboardingForm() {
   useEffect(() => {
     if (state.error) errorRef.current?.focus();
   }, [state.error]);
+
+  // Forcibly re-applies `kind`/`currencyCode` to the native radio/select
+  // DOM nodes after every action response. This is a correction, not a
+  // belt-and-suspenders extra: it is the only approach out of several tried
+  // that actually closes the bug (see the hidden-input comment below for
+  // what the bug is). React's normal controlled-prop reconciliation
+  // (`checked={...}`, `value={...}`) and a `key`-forced remount were BOTH
+  // tried first and both proved insufficient for the `<select>` specifically
+  // — confirmed by trapping `HTMLSelectElement.prototype`'s `value` setter:
+  // after a failed submission, the setter is never called again at all, yet
+  // the select's live value still changes (to the first `<option>`, i.e. the
+  // browser's own default-if-nothing-selected behavior). Something outside
+  // React's own property-setter path is what changes it, so nothing that
+  // only asks React to re-render can reliably win — an imperative,
+  // post-paint correction is required. `useEffect` (not the render body,
+  // which this project's eslint config forbids mutating DOM nodes from
+  // anyway) runs after the browser has committed and painted, i.e. after
+  // whatever causes the drift has already had its chance to run, so setting
+  // the properties here is what actually wins the race.
+  //
+  // Purely a display correction: submission was never at risk from this —
+  // the hidden `kind`/`currency_code` inputs below never depend on these
+  // native elements' own properties.
+  useEffect(() => {
+    if (selectRef.current) selectRef.current.value = currencyCode;
+    if (bankRadioRef.current) bankRadioRef.current.checked = kind === "bank";
+    if (cardRadioRef.current) cardRadioRef.current.checked = kind === "card";
+    // Re-run whenever the action produces a new result (covers the failed-
+    // submission case this exists for) or the user changes their selection
+    // interactively (harmless — re-asserting the value already showing is a
+    // no-op write).
+  }, [state, kind, currencyCode]);
 
   const selectedIcon = KINDS.find((k) => k.value === kind)!.icon;
   const minorUnit = minorUnitFor(currencyCode);
@@ -97,24 +110,45 @@ export function OnboardingForm() {
         <input type="hidden" name="icon" value={selectedIcon} />
         {/* `kind` and `currency_code` are submitted via these hidden inputs,
             not by giving `name="kind"`/`name="currency_code"` to the visible
-            radio/select below. Root-caused via reproduction: after a failed
-            submission re-renders this route (Server Component -> Client
-            Component boundary, per node_modules/next/dist/docs/01-app/02-guides/
-            server-actions.md's "seeded navigation" response model), the
+            radio/select below.
+
+            What's known, from direct reproduction (fill the form, submit an
+            invalid amount, inspect the DOM): after a failed submission, the
             native `<input type="radio">`'s `checked` PROPERTY and the native
-            `<select>`'s `.value` PROPERTY silently revert to their defaults
-            (bank/USD) — but this component's own `kind`/`currencyCode`
-            state does NOT (confirmed live: the `icon` hidden input above,
-            already bound to `kind`, kept reading "credit-card" — i.e. still
-            "card" — even while the native radio's `checked` read `false` for
-            "card" and `true` for "bank"). If `name` lived on the native
-            elements, a resubmit after fixing e.g. a precision error would
-            silently submit "bank"/"USD" instead of the user's actual "card"/
-            "KWD" choice — a silent wrong-wallet bug, not just a display
-            glitch. Routing submission through hidden inputs tied directly to
-            `kind`/`currencyCode` (proven reliable) instead removes the
-            native elements' live DOM properties from the trust chain
-            entirely; they remain purely presentational + input capture. */}
+            `<select>`'s `.value` PROPERTY silently revert toward their
+            defaults (bank/USD) — but this component's own `kind`/
+            `currencyCode` state does NOT (confirmed live: the `icon` hidden
+            input below, already bound to `kind`, kept reading "credit-card"
+            — i.e. still "card" — even while the native radio's `checked`
+            read `false` for "card" and `true` for "bank"). If `name` lived
+            on the native elements, a resubmit after fixing e.g. a precision
+            error would silently submit "bank"/"USD" instead of the user's
+            actual "card"/"KWD" choice — a silent wrong-wallet bug, not just
+            a display glitch.
+
+            What's NOT known: the exact mechanism. An earlier version of this
+            comment asserted it was Next's Server-Component-triggered
+            "seeded navigation" re-render (server-actions.md) — that's wrong
+            and was retracted: `createWallet`'s failure branches only
+            `return`, calling none of `revalidatePath`/`redirect`/
+            `updateTag`/cookie mutation, so per that same doc no re-rendered
+            RSC payload is produced for those branches. The best-supported
+            hypothesis instead is React 19's own `<form action>` performing a
+            native-style reset after each dispatch, colliding with React
+            DOM's controlled-input bailout for `checked`/`<select>` (skip the
+            DOM write if the value looks unchanged from what React last set)
+            — but this was not traced in React's source, so treat it as a
+            hypothesis, not fact.
+
+            The fix does not depend on diagnosing the mechanism: routing
+            submission through hidden inputs tied directly to
+            `kind`/`currencyCode` (proven reliable by the icon-field evidence
+            above) removes the native elements' live DOM properties from the
+            trust chain entirely for *submission*; they remain purely
+            presentational + input capture. See the ref-based `useEffect`
+            above for how the *visible* controls are kept honest too — plain
+            controlled props (`checked=`/`value=`) and a `key`-forced remount
+            were both tried and neither was sufficient on their own. */}
         <input type="hidden" name="kind" value={kind} />
         <input type="hidden" name="currency_code" value={currencyCode} />
 
@@ -144,15 +178,15 @@ export function OnboardingForm() {
             return (
               <label key={value} className="flex-1 cursor-pointer">
                 <input
-                  key={`${value}-${formResetKey}`}
+                  ref={value === "bank" ? bankRadioRef : cardRadioRef}
                   type="radio"
                   // No `name`: this native radio drives only the visible
                   // selected-state styling and accessible checked state,
                   // never submission — see the hidden `kind` input above.
-                  // `key` includes formResetKey so a failed submission gets
-                  // a fresh node (see formResetKey's doc comment) rather
-                  // than patching one whose `checked` property may have
-                  // drifted from `selected`.
+                  // Controlled (`checked=`, not `defaultChecked=`) for the
+                  // normal interactive case; the `useEffect` above is what
+                  // actually corrects it after a failed submission — see
+                  // that effect's comment.
                   value={value}
                   checked={selected}
                   onChange={() => setKind(value)}
@@ -179,19 +213,20 @@ export function OnboardingForm() {
             Currency
           </span>
           <select
-            key={formResetKey}
+            ref={selectRef}
             // No `name`: drives only the visible control and its onChange —
             // never submission. See the hidden `currency_code` input above.
-            // `key` forces a fresh node after a failed submission — see
-            // formResetKey's doc comment. Uncontrolled (`defaultValue`, not
-            // `value`) because a *controlled* `<select>` here kept showing
-            // "USD" post-remount even with the fresh key — Chromium's
-            // autofill/form-value-restoration for `<select>` elements
-            // reasserts itself against a JS-set `value` in a way it does not
-            // for the radio inputs above. `defaultValue` on a freshly-keyed
-            // node plus the `onChange` below (still updating `currencyCode`
-            // for the hint text and hidden input) reproducibly held.
-            defaultValue={currencyCode}
+            // Controlled (`value=`, not `defaultValue=`) for the normal
+            // interactive case; the `useEffect` above is what actually
+            // corrects it after a failed submission — see that effect's
+            // comment for why (a `key`-forced remount was tried first and
+            // was not sufficient: instrumenting `HTMLSelectElement.
+            // prototype`'s `value` setter showed it is never called again
+            // after a failed submission, yet the select's live value still
+            // changes — something outside React's own property-write path
+            // is responsible, so only a later, imperative, post-paint write
+            // reliably wins).
+            value={currencyCode}
             onChange={(e) => setCurrencyCode(e.target.value as WalletInput["currency_code"])}
             aria-describedby={errorId}
             aria-invalid={state.field === "currency_code" ? true : undefined}
