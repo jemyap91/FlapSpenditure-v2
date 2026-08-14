@@ -1,67 +1,19 @@
-"use client";
+import { LoginForm } from "./login-form";
 
-import { useActionState, useId } from "react";
-import Link from "next/link";
-import { signIn, type AuthState } from "@/server/actions/auth";
+/**
+ * Server Component so `?error=auth` (set by src/app/auth/callback/route.ts
+ * when a code exchange fails) can be read via the `searchParams` prop
+ * without needing `useSearchParams` + a Suspense boundary in the client
+ * form — see node_modules/next/dist/docs/01-app/03-api-reference/04-functions/use-search-params.md,
+ * "Server Components > Pages": "To access search params in Pages (Server
+ * Components), use the searchParams prop."
+ */
+export default async function LoginPage(props: PageProps<"/login">) {
+  const searchParams = await props.searchParams;
+  const notice =
+    searchParams.error === "auth"
+      ? "That sign-in link is invalid or has expired. Please sign in with your email and password."
+      : undefined;
 
-export default function LoginPage() {
-  const [state, action, pending] = useActionState<AuthState, FormData>(signIn, {});
-  const errorId = useId();
-
-  return (
-    <main className="mx-auto flex min-h-dvh max-w-sm flex-col justify-center gap-6 p-6">
-      <h1 className="text-3xl font-semibold">Sign in</h1>
-      <form action={action} className="flex flex-col gap-4" noValidate>
-        <label className="flex flex-col gap-1">
-          <span className="text-sm" style={{ color: "var(--ink-2)" }}>
-            Email
-          </span>
-          <input
-            name="email"
-            type="email"
-            required
-            autoComplete="email"
-            aria-describedby={state.error ? errorId : undefined}
-            aria-invalid={state.error ? true : undefined}
-            className="rounded-md border px-3 py-2 focus:outline-2 focus:outline-offset-2 focus:outline-[var(--cat-1)]"
-            style={{ borderColor: "var(--grid)" }}
-          />
-        </label>
-        <label className="flex flex-col gap-1">
-          <span className="text-sm" style={{ color: "var(--ink-2)" }}>
-            Password
-          </span>
-          <input
-            name="password"
-            type="password"
-            required
-            autoComplete="current-password"
-            aria-describedby={state.error ? errorId : undefined}
-            aria-invalid={state.error ? true : undefined}
-            className="rounded-md border px-3 py-2 focus:outline-2 focus:outline-offset-2 focus:outline-[var(--cat-1)]"
-            style={{ borderColor: "var(--grid)" }}
-          />
-        </label>
-        {state.error && (
-          <p id={errorId} role="alert" style={{ color: "var(--neg)" }}>
-            {state.error}
-          </p>
-        )}
-        <button
-          type="submit"
-          disabled={pending}
-          className="rounded-md px-4 py-2 font-medium focus:outline-2 focus:outline-offset-2 focus:outline-[var(--cat-1)] disabled:opacity-60"
-          style={{ background: "var(--cat-1)", color: "#fff" }}
-        >
-          {pending ? "Signing in…" : "Sign in"}
-        </button>
-      </form>
-      <p className="text-sm" style={{ color: "var(--ink-2)" }}>
-        No account?{" "}
-        <Link href="/signup" className="underline">
-          Create one
-        </Link>
-      </p>
-    </main>
-  );
+  return <LoginForm notice={notice} />;
 }
