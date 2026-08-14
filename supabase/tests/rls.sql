@@ -51,10 +51,16 @@ begin;
 
   do $$ begin
     assert (select count(*) from wallets)      = 1, 'PERMISSION BROKEN: alice cannot see her own wallet';
-    -- 17, not 1: migration 0007's new-user seed trigger already gave alice
-    -- 16 default categories on the auth.users insert at the top of this
-    -- file, plus the one she just created above.
-    assert (select count(*) from categories)   = 17, 'PERMISSION BROKEN: alice cannot see her own category';
+    -- Split into two assertions, not one count(*) = 17: a single combined
+    -- number fires identically whether the CAUSE is a broken RLS policy or
+    -- migration 0007's seed trigger simply not having run, which would
+    -- misdirect debugging toward RLS. is_default = true isolates the 16
+    -- seeded rows (proven correct in detail by supabase/tests/seed.sql);
+    -- the id lookup isolates the row alice just created above.
+    assert (select count(*) from categories where owner_id = 'aaaaaaaa-0000-0000-0000-000000000001' and is_default) = 16,
+      'PERMISSION BROKEN or SEED BROKEN: alice does not have her 16 seeded default categories';
+    assert (select count(*) from categories where id = 'dddddddd-0000-0000-0000-000000000004') = 1,
+      'PERMISSION BROKEN: alice cannot see her own category';
     assert (select count(*) from transactions) = 1, 'PERMISSION BROKEN: alice cannot see her own transaction';
     -- add_owner_as_member() trigger ran under security definer.
     assert (select role from wallet_members
@@ -351,10 +357,16 @@ begin;
     assert (select count(*) from wallet_members) = 0, 'LEAK: bob can see alice''s wallet_members row';
     -- 16, not 0: migration 0007's new-user seed trigger already gave bob
     -- his own 16 default categories on the auth.users insert at the top of
-    -- this file. The probative check is that this is exactly bob's own 16
-    -- (owner-scoped) and NOT 33 (his 16 plus alice's 17 from section 1) --
-    -- i.e. none of alice's categories leaked into what bob can see.
+    -- this file, so an unscoped total of 0 is no longer the right
+    -- expectation. This alone still isn't unfailable -- any of alice's rows
+    -- becoming visible would push the total above 16 -- but it proves "bob
+    -- sees 16 rows", not "bob sees none of alice's specifically". The
+    -- owner-scoped assertion below is the one that directly proves that:
+    -- it is 0 only because RLS restricts bob's view to his own owner_id,
+    -- not because alice happens to own zero categories.
     assert (select count(*) from categories)     = 16, 'LEAK: bob can see alice''s category';
+    assert (select count(*) from categories where owner_id = 'aaaaaaaa-0000-0000-0000-000000000001') = 0,
+      'LEAK: bob can see alice''s categories';
     assert (select count(*) from transactions)   = 0, 'LEAK: bob can see alice''s transaction';
   end $$;
 commit;
@@ -658,11 +670,15 @@ begin;
       'PERMISSION BROKEN: member bob cannot see the shared transaction ledger';
     -- Negative (extra attack, not named in the brief): membership does
     -- NOT leak alice's categories -- categories are owner-scoped. 16, not
-    -- 0: migration 0007's seed trigger already gave bob his own 16
-    -- default categories; the probative check is that this is exactly
-    -- bob's own 16 and not 33 (his 16 plus alice's 17: her 16 seeded plus
-    -- the one she created in section 1).
+    -- 0: migration 0007's seed trigger already gave bob his own 16 default
+    -- categories, so this unscoped total alone proves only "bob sees 16
+    -- rows" (it would still catch a full leak -- any of alice's becoming
+    -- visible pushes the total above 16 -- but not a partial one). The
+    -- owner-scoped assertion below is the one that directly proves none of
+    -- alice's specific categories are visible to bob, regardless of counts.
     assert (select count(*) from categories) = 16,
+      'LEAK: wallet membership exposed alice''s private categories';
+    assert (select count(*) from categories where owner_id = 'aaaaaaaa-0000-0000-0000-000000000001') = 0,
       'LEAK: wallet membership exposed alice''s private categories';
   end $$;
 

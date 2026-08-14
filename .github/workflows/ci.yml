@@ -17,3 +17,4 @@ jobs:
       - run: npx supabase start -x gotrue,realtime,storage-api,imgproxy,kong,mailpit,postgrest,postgres-meta,studio,edge-runtime,logflare,vector,supavisor
       - run: npm run test:rls
       - run: npm run test:constraints
+      - run: npm run test:seed
