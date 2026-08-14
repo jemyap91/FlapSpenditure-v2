@@ -50,11 +50,35 @@ export function CategoryPicker({
   onChange: (c: Category) => void;
 }) {
   const [query, setQuery] = useState("");
-  const [items, setItems] = useState(categories);
+  // Categories created inline during this mount, kept separately from the
+  // `categories` prop rather than merged into a snapshot of it. Two bugs
+  // this fixes together (both found in review, both would have first
+  // surfaced in Task 19): (1) a `useState(categories)` snapshot reads the
+  // prop once at mount — Task 19's chip row switches Expense/Income on the
+  // SAME mounted picker (spec §5.1), and a snapshot would keep showing the
+  // kind that was active at mount forever; deriving `items` fresh from
+  // `categories`+`kind` on every render fixes that. (2) filtering `items`
+  // by `kind` — the original version searched/deduped across BOTH kinds
+  // whenever the caller passed an unfiltered list, so an income "Vet"
+  // would silently suppress the create row for an expense "Vet", which the
+  // per-kind partial unique index explicitly allows and spec §5.3's line
+  // on reuse-across-kind requires to work.
+  const [created, setCreated] = useState<Category[]>([]);
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const labelId = useId();
   const errorId = useId();
+
+  const items = useMemo(() => {
+    const byKind = categories.filter((c) => c.kind === kind);
+    // `created` can include categories the parent's `categories` prop
+    // hasn't caught up to yet (it revalidates async) — de-duped by id so a
+    // just-created category never renders twice once the prop does catch
+    // up, and filtered by `kind` so a category created while a different
+    // kind was selected doesn't leak into this kind's list.
+    const extra = created.filter((c) => c.kind === kind && !byKind.some((x) => x.id === c.id));
+    return [...byKind, ...extra];
+  }, [categories, kind, created]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -74,7 +98,7 @@ export function CategoryPicker({
         return;
       }
       const c = res.category as Category;
-      setItems((prev) => [...prev, c]);
+      setCreated((prev) => [...prev, c]);
       setQuery("");
       onChange(c); // select it and return control to the caller (e.g. the keypad)
     });
@@ -119,8 +143,38 @@ export function CategoryPicker({
                 type="button"
                 onClick={() => onChange(c)}
                 aria-pressed={value === c.id}
-                className={`flex w-full items-center gap-3 rounded-md px-2 py-2 text-left ${FOCUS_RING}`}
-                style={{ background: value === c.id ? "var(--grid)" : "transparent", color: "var(--ink)" }}
+                className={`flex w-full items-center gap-3 rounded-md px-2 py-2 text-left ${value === c.id ? "font-medium" : ""} ${FOCUS_RING}`}
+                style={{
+                  // Selection used to be indicated with `background:
+                  // var(--grid)` alone — measured 1.29:1 (light) / 1.24:1
+                  // (dark) against the unselected rows' background, the
+                  // exact failure src/components/shell/Sidebar.tsx already
+                  // found and documented (same token, same numbers). It
+                  // also silently pulled every row's icon glyph onto a
+                  // *different* background than the unselected rows sit
+                  // on, which is what dropped 3 of the 8 category slots
+                  // below the 3:1 floor for a selected row (review-caught:
+                  // slots 2/4/6 measured 2.70/2.61/2.65 light,
+                  // 2.48/2.58/2.53 dark against var(--grid)).
+                  //
+                  // Fix, copied from Sidebar's own mitigation: background
+                  // stays var(--surface) — the <ul>'s own background,
+                  // identical for every row regardless of selection — and
+                  // selection is carried by a var(--cat-1) left border
+                  // plus a font-weight change instead. var(--cat-1)
+                  // measures 5.60:1 (light) / 5.20:1 (dark) against
+                  // var(--surface), clearing 3:1 with more margin than
+                  // Sidebar's own (measured against var(--grid) there)
+                  // 4.34:1 / 4.18:1. Because the background is now
+                  // constant, every slot's glyph sits on the SAME pairing
+                  // whether selected or not — the 3.09–6.03:1 range this
+                  // task's report already computed for glyph-vs-surface
+                  // now covers the selected row too, not just unselected
+                  // ones.
+                  background: "transparent",
+                  color: "var(--ink)",
+                  borderLeft: `3px solid ${value === c.id ? "var(--cat-1)" : "transparent"}`,
+                }}
               >
                 {/* Colour + icon shape + name together, never colour alone —
                     a swatch that also carries meaning must not rely on hue

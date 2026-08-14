@@ -194,13 +194,22 @@ export async function createTransfer(input: TransferInput): Promise<TransferResu
 
   const { from_wallet_id, to_wallet_id, amount, amount_in, occurred_on, note } = parsed.data;
 
+  // Archived wallets are rejected here for the identical reason
+  // createTransaction's wallet lookup rejects them (see that check's doc
+  // comment above): a transfer leg is a new transaction, and archiving a
+  // wallet is meant to remove it from every place a NEW transaction could
+  // reference it, not just single-leg expense/income entry. Half-applying
+  // that rule (rejecting it in createTransaction but not here) would leave
+  // an archived wallet reachable as a transfer endpoint — a gap the two
+  // functions being separate silently created despite sharing the same
+  // "Account not found" reasoning.
   const { data: wallets } = await supabase
     .from("wallets")
-    .select("id, currency_code")
+    .select("id, currency_code, archived_at")
     .in("id", [from_wallet_id, to_wallet_id]);
   const from = wallets?.find((w) => w.id === from_wallet_id);
   const to = wallets?.find((w) => w.id === to_wallet_id);
-  if (!from || !to) return { error: "Account not found" };
+  if (!from || !to || from.archived_at || to.archived_at) return { error: "Account not found" };
 
   const fromMinorUnit = minorUnitFor(from.currency_code);
   const toMinorUnit = minorUnitFor(to.currency_code);

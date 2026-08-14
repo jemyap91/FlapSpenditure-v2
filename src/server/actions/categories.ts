@@ -1,9 +1,21 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { categoryInput, nextColorSlot } from "@/lib/validation/category";
 import type { Database } from "@/lib/database.types";
+
+// Not exported: a file-level "use server" directive requires every EXPORT
+// to be async, but a plain internal const is invisible to that boundary —
+// it never leaves this module. Re-validates `archiveCategory`'s `id`
+// parameter the same way `categoryInput` re-validates `createCategory`'s
+// body: a Server Function is reachable via direct POST with any string,
+// not just a real uuid a `<button onClick>` would ever produce, and this
+// file's own doc comment already commits to "re-validate rather than trust
+// the caller's static type" — an untyped-but-assumed-uuid `id: string`
+// parameter was the one place that promise wasn't kept.
+const idSchema = z.uuid();
 
 /**
  * File-level `"use server"` (like src/server/actions/{auth,profile,wallets,
@@ -123,20 +135,41 @@ export async function createCategory(raw: unknown): Promise<CategoryResult> {
  * caller unable to distinguish "not signed in" from "not found" from
  * "update failed." Pre-empting that here rather than waiting for the same
  * review finding to land twice on this branch.
+ *
+ * The `UPDATE` is filtered to `.is("archived_at", null)` and its own
+ * affected-row count is checked (`.select("id")`, then `data.length`) —
+ * without this, a nonexistent id, another owner's id (an UPDATE with a
+ * `WHERE` clause matching zero rows is not an error in Postgres), or an
+ * already-archived row would all silently return `{ ok: true }` with the
+ * database left exactly as it was, and the caller (this task's
+ * CategorySection, or a future one) would remove the row from its local
+ * list on a lie. Same shape as src/server/actions/transactions.ts's
+ * `setDeletedAt` (Task 16), which counts affected rows for the identical
+ * reason — see that function's doc comment.
  */
 export async function archiveCategory(id: string): Promise<MutationResult> {
+  const parsedId = idSchema.safeParse(id);
+  // Deliberately the same "not found" message a real-but-nonexistent id
+  // gets below, not "invalid id" — nothing distinguishes a malformed id
+  // from one that simply doesn't belong to this caller, and there's no
+  // reason to give an adversarial caller a way to tell those apart.
+  if (!parsedId.success) return { error: "Category not found" };
+
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return { error: "Not signed in" };
 
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("categories")
     .update({ archived_at: new Date().toISOString() })
-    .eq("id", id)
-    .eq("owner_id", user.id);
+    .eq("id", parsedId.data)
+    .eq("owner_id", user.id)
+    .is("archived_at", null)
+    .select("id");
   if (error) return { error: "Could not archive category. Please try again." };
+  if (!data || data.length === 0) return { error: "Category not found" };
 
   revalidatePath("/", "layout");
   return { ok: true };
