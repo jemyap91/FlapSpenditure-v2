@@ -81,12 +81,27 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
   // back empty for a wallet the caller doesn't belong to — no separate
   // membership check is needed here, and the INSERT below is independently
   // gated by `transactions_member`'s own is_wallet_member check.
+  //
+  // Task 17's decision (this check was carried from Task 16, which flagged
+  // it and deferred the call): an archived wallet is rejected here exactly
+  // like a nonexistent one, with the identical "Account not found" message
+  // rather than a distinct "this account is archived" — archiving is meant
+  // to remove a wallet from every place a NEW transaction could reference
+  // it (mirroring wallets.ts's own doc comment: a wallets-management screen
+  // is expected to stop offering an archived wallet as a destination), and
+  // a distinct message would tell an adversarial caller a wallet with this
+  // id exists and belongs to someone (possibly not even the caller — RLS
+  // already filtered by membership before archived_at is even checked)
+  // without granting anything useful in return. This is about *creating*
+  // new transactions only; editing a transaction that already references a
+  // since-archived wallet is a different action (not built yet) and can
+  // make its own decision.
   const { data: wallet } = await supabase
     .from("wallets")
-    .select("currency_code")
+    .select("currency_code, archived_at")
     .eq("id", wallet_id)
     .single();
-  if (!wallet) return { error: "Account not found" };
+  if (!wallet || wallet.archived_at) return { error: "Account not found" };
 
   // categories_own RLS scopes this to the caller's own categories, so a
   // category_id belonging to someone else (or that doesn't exist) comes
@@ -94,16 +109,29 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
   // The kind check catches a mismatch nothing in the schema's CHECK
   // constraints forbids — e.g. filing an expense against an income
   // category — which would otherwise silently corrupt Task 21's category
-  // breakdown. (Whether an ARCHIVED category should also be rejected here
-  // is a deliberate open question, not an oversight — flagged in this
-  // task's report for Task 17 to decide, alongside the identical question
-  // for archived wallets.)
+  // breakdown.
+  //
+  // Task 17's decision on the archived-category question this comment used
+  // to carry: reject, with the same "Choose a category" message a
+  // nonexistent id gets (not a distinct "this category is archived" — same
+  // no-extra-information reasoning as the archived-wallet check above).
+  // Spec §5.3 is explicit that archiving "hides it from pickers" — the
+  // whole point of archiving a category is to stop it from being offered
+  // for anything NEW, while "Archived categories still appear in
+  // historical breakdowns" (same section) is a read-path guarantee about
+  // reports, not a licence for new transactions to keep targeting it.
+  // CategoryPicker and this task's /categories page both already query
+  // `.is("archived_at", null)`, so this closes the gap between what the UI
+  // offers and what a raw POST could otherwise still reach. As with the
+  // wallet check, this governs creating a NEW transaction only — editing
+  // one that already references a since-archived category is a different,
+  // not-yet-built action.
   const { data: category } = await supabase
     .from("categories")
-    .select("kind")
+    .select("kind, archived_at")
     .eq("id", category_id)
     .single();
-  if (!category) return { error: "Choose a category" };
+  if (!category || category.archived_at) return { error: "Choose a category" };
   if (category.kind !== kind) return { error: "That category doesn't match this transaction type" };
 
   const minorUnit = minorUnitFor(wallet.currency_code);
