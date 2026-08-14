@@ -40,6 +40,28 @@ export function OnboardingForm() {
   const hintId = useId();
   const errorRef = useRef<HTMLParagraphElement>(null);
 
+  // Derived fresh on every render from the action's returned state — not
+  // `useState`/`useEffect` (this project's eslint config forbids both
+  // set-state-in-effect and ref reads during render; see react-hooks/
+  // set-state-in-effect and react-hooks/refs). Used as part of the `key` on
+  // the native radio inputs and the currency `<select>` so each one gets a
+  // *fresh* DOM node on the render right after a failed submission, instead
+  // of patching the existing node. The hidden `kind`/`currency_code` inputs
+  // above already guarantee correct *submission* regardless of this, but the
+  // native `<select>`'s own visible box is what a sighted user actually
+  // reads as "the currently chosen currency" — left unkeyed, it visibly
+  // drifted to showing "USD" after a failed submit even while this
+  // component's own `currencyCode` state (and everything bound to it: the
+  // hint text below, the hidden input) correctly still read "KWD". A fresh
+  // DOM node, created directly from `currencyCode`/`kind` at mount, cannot
+  // inherit that drift — there's nothing prior for it to drift from.
+  //
+  // Content-based (error + field), not a counter: a resubmission of
+  // identical invalid data producing the identical error is the one case
+  // this doesn't force a remount for, which is fine — there is nothing new
+  // to correct in that case since the previous remount already applied.
+  const formResetKey = `${state.error ?? ""}|${state.field ?? ""}`;
+
   // Same technique as (auth)/login and (auth)/signup: move focus to the
   // always-mounted alert node whenever an error (re)appears, since a
   // conditionally-mounted role="alert" doesn't announce reliably across
@@ -73,6 +95,28 @@ export function OnboardingForm() {
       <form action={action} className="flex flex-col gap-4" noValidate>
         <input type="hidden" name="color_slot" value="1" />
         <input type="hidden" name="icon" value={selectedIcon} />
+        {/* `kind` and `currency_code` are submitted via these hidden inputs,
+            not by giving `name="kind"`/`name="currency_code"` to the visible
+            radio/select below. Root-caused via reproduction: after a failed
+            submission re-renders this route (Server Component -> Client
+            Component boundary, per node_modules/next/dist/docs/01-app/02-guides/
+            server-actions.md's "seeded navigation" response model), the
+            native `<input type="radio">`'s `checked` PROPERTY and the native
+            `<select>`'s `.value` PROPERTY silently revert to their defaults
+            (bank/USD) — but this component's own `kind`/`currencyCode`
+            state does NOT (confirmed live: the `icon` hidden input above,
+            already bound to `kind`, kept reading "credit-card" — i.e. still
+            "card" — even while the native radio's `checked` read `false` for
+            "card" and `true` for "bank"). If `name` lived on the native
+            elements, a resubmit after fixing e.g. a precision error would
+            silently submit "bank"/"USD" instead of the user's actual "card"/
+            "KWD" choice — a silent wrong-wallet bug, not just a display
+            glitch. Routing submission through hidden inputs tied directly to
+            `kind`/`currencyCode` (proven reliable) instead removes the
+            native elements' live DOM properties from the trust chain
+            entirely; they remain purely presentational + input capture. */}
+        <input type="hidden" name="kind" value={kind} />
+        <input type="hidden" name="currency_code" value={currencyCode} />
 
         <label className="flex flex-col gap-1">
           <span className="text-sm" style={{ color: "var(--ink-2)" }}>
@@ -100,8 +144,15 @@ export function OnboardingForm() {
             return (
               <label key={value} className="flex-1 cursor-pointer">
                 <input
+                  key={`${value}-${formResetKey}`}
                   type="radio"
-                  name="kind"
+                  // No `name`: this native radio drives only the visible
+                  // selected-state styling and accessible checked state,
+                  // never submission — see the hidden `kind` input above.
+                  // `key` includes formResetKey so a failed submission gets
+                  // a fresh node (see formResetKey's doc comment) rather
+                  // than patching one whose `checked` property may have
+                  // drifted from `selected`.
                   value={value}
                   checked={selected}
                   onChange={() => setKind(value)}
@@ -128,8 +179,19 @@ export function OnboardingForm() {
             Currency
           </span>
           <select
-            name="currency_code"
-            value={currencyCode}
+            key={formResetKey}
+            // No `name`: drives only the visible control and its onChange —
+            // never submission. See the hidden `currency_code` input above.
+            // `key` forces a fresh node after a failed submission — see
+            // formResetKey's doc comment. Uncontrolled (`defaultValue`, not
+            // `value`) because a *controlled* `<select>` here kept showing
+            // "USD" post-remount even with the fresh key — Chromium's
+            // autofill/form-value-restoration for `<select>` elements
+            // reasserts itself against a JS-set `value` in a way it does not
+            // for the radio inputs above. `defaultValue` on a freshly-keyed
+            // node plus the `onChange` below (still updating `currencyCode`
+            // for the hint text and hidden input) reproducibly held.
+            defaultValue={currencyCode}
             onChange={(e) => setCurrencyCode(e.target.value as WalletInput["currency_code"])}
             aria-describedby={errorId}
             aria-invalid={state.field === "currency_code" ? true : undefined}
