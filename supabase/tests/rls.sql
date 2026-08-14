@@ -847,6 +847,19 @@ begin;
     values ('a4a4a4a4-0000-0000-0000-000000000001',
             'aaaaaaaa-0000-0000-0000-000000000001', 'Dining', 'expense', 7, 'utensils');
 
+  -- Wallet C: EXISTS SOLELY to prove the LEFT JOIN ... ON (t.wallet_id = w.id
+  -- AND t.deleted_at is null) shape still preserves a wallet whose ONLY
+  -- transaction is soft-deleted (join match fails, LEFT JOIN still emits
+  -- one null-t row, outer coalesce(sum(...), 0) yields 0) -- the semantic-
+  -- parity claim the 0006 migration's own comment makes about moving
+  -- deleted_at from FILTER into ON.
+  insert into wallets (id, owner_id, name, kind, currency_code, starting_balance_minor, color_slot, icon)
+    values ('a6a6a6a6-0000-0000-0000-000000000001',
+            'aaaaaaaa-0000-0000-0000-000000000001', 'Agg Wallet C', 'bank', 'USD', 7500, 8, 'wallet');
+  insert into transactions (wallet_id, created_by, kind, amount_minor, currency_code, occurred_on, deleted_at)
+    values ('a6a6a6a6-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+            'expense', -500, 'USD', current_date, now());
+
   -- Ordinary expense: -12.50, category Dining.
   insert into transactions (wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on)
     values ('a2a2a2a2-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
@@ -874,18 +887,26 @@ commit;
 -- Wallet A = starting 10000 + (-1250 expense) + 5000 (income) + (-2000
 --   transfer-out) = 11750. The -9999 soft-deleted expense must NOT count.
 -- Wallet B = starting 0 + 2000 (transfer-in) = 2000.
+-- Wallet C = starting 7500 + 0 (its only transaction is soft-deleted) = 7500.
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
   do $$
-  declare bal_a bigint; bal_b bigint;
+  declare bal_a bigint; bal_b bigint; bal_c bigint;
   begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed: auth.uid()';
+
     select balance_minor into bal_a from get_wallet_balances()
       where wallet_id = 'a2a2a2a2-0000-0000-0000-000000000001';
     select balance_minor into bal_b from get_wallet_balances()
       where wallet_id = 'a3a3a3a3-0000-0000-0000-000000000001';
+    select balance_minor into bal_c from get_wallet_balances()
+      where wallet_id = 'a6a6a6a6-0000-0000-0000-000000000001';
     assert bal_a = 11750, format('wallet A balance wrong: expected 11750, got %s', bal_a);
     assert bal_b = 2000,  format('wallet B balance wrong: expected 2000, got %s', bal_b);
+    assert bal_c = 7500,
+      format('wallet C balance wrong: expected 7500 (its only transaction is soft-deleted, so it must not count, but the wallet itself must still appear via the LEFT JOIN), got %s', bal_c);
   end $$;
 commit;
 
@@ -897,6 +918,9 @@ begin;
   do $$
   declare n int; rec record;
   begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed: auth.uid()';
+
     select count(*) into n from get_category_breakdown(
       array['a2a2a2a2-0000-0000-0000-000000000001']::uuid[], current_date - 30, current_date);
     assert n = 1,
@@ -920,6 +944,9 @@ begin;
   do $$
   declare n int; rec record;
   begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed: auth.uid()';
+
     select count(*) into n from get_cash_flow(
       array['a2a2a2a2-0000-0000-0000-000000000001']::uuid[], current_date - 30, current_date, 'day');
     assert n = 1, format('cash flow should have exactly 1 bucket, got %s', n);
@@ -931,6 +958,101 @@ begin;
       format('cash flow in_minor wrong: expected 5000 (income only), got %s', rec.in_minor);
     assert rec.out_minor = 3250,
       format('cash flow out_minor wrong: expected 3250 (1250 expense + 2000 transfer-out; the -99.99 soft-deleted expense must not contribute), got %s', rec.out_minor);
+
+    -- Same fixture, 'week' bucket: still a single group (all activity is on
+    -- current_date), same totals, bucket_start independently computed via
+    -- date_trunc('week', ...) rather than hand-derived.
+    select count(*) into n from get_cash_flow(
+      array['a2a2a2a2-0000-0000-0000-000000000001']::uuid[], current_date - 30, current_date, 'week');
+    assert n = 1, format('cash flow (week) should have exactly 1 bucket, got %s', n);
+    select * into rec from get_cash_flow(
+      array['a2a2a2a2-0000-0000-0000-000000000001']::uuid[], current_date - 30, current_date, 'week') limit 1;
+    assert rec.bucket_start = date_trunc('week', current_date)::date,
+      format('cash flow (week) bucket_start wrong: %s', rec.bucket_start);
+    assert rec.in_minor = 5000 and rec.out_minor = 3250,
+      format('cash flow (week) totals wrong: in=%s out=%s', rec.in_minor, rec.out_minor);
+
+    -- 'month' bucket: same story.
+    select count(*) into n from get_cash_flow(
+      array['a2a2a2a2-0000-0000-0000-000000000001']::uuid[], current_date - 30, current_date, 'month');
+    assert n = 1, format('cash flow (month) should have exactly 1 bucket, got %s', n);
+    select * into rec from get_cash_flow(
+      array['a2a2a2a2-0000-0000-0000-000000000001']::uuid[], current_date - 30, current_date, 'month') limit 1;
+    assert rec.bucket_start = date_trunc('month', current_date)::date,
+      format('cash flow (month) bucket_start wrong: %s', rec.bucket_start);
+    assert rec.in_minor = 5000 and rec.out_minor = 3250,
+      format('cash flow (month) totals wrong: in=%s out=%s', rec.in_minor, rec.out_minor);
+
+    -- Invalid bucket must raise, not silently accept or silently return empty.
+    begin
+      perform get_cash_flow(
+        array['a2a2a2a2-0000-0000-0000-000000000001']::uuid[], current_date - 30, current_date, 'year');
+      raise exception 'LEAK: get_cash_flow accepted an invalid bucket';
+    exception
+      when others then
+        assert sqlerrm = 'bucket must be day, week or month',
+          format('wrong rejection reason: %s', sqlerrm);
+    end;
+  end $$;
+commit;
+
+-- Array edge cases, both functions: empty array, NULL array, and an array
+-- containing a NULL element alongside a wallet Alice genuinely owns. All
+-- three must return empty rather than erroring or leaking -- reasoned
+-- through in review (unnest(NULL) and unnest('{}') both yield zero rows, so
+-- the membership guard's exists(...) is vacuously false and the guard does
+-- NOT fire, but wallet_id = any(wallet_ids) is NULL/always-false for every
+-- row either way, so the main query still returns nothing; a NULL element
+-- makes is_wallet_member(NULL) evaluate to false, which DOES fire the
+-- guard) -- tested here rather than left as reasoning only.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
+  do $$
+  declare n int;
+  begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed: auth.uid()';
+
+    select count(*) into n from get_category_breakdown(
+      array[]::uuid[], current_date - 30, current_date);
+    assert n = 0, format('breakdown: empty array should return empty, got %s rows', n);
+    select count(*) into n from get_category_breakdown(
+      null::uuid[], current_date - 30, current_date);
+    assert n = 0, format('breakdown: NULL array should return empty, got %s rows', n);
+    select count(*) into n from get_category_breakdown(
+      array[null::uuid, 'a2a2a2a2-0000-0000-0000-000000000001'::uuid], current_date - 30, current_date);
+    assert n = 0,
+      format('breakdown: array with a NULL element (alongside a wallet alice genuinely owns) should return empty, got %s rows', n);
+
+    select count(*) into n from get_cash_flow(
+      array[]::uuid[], current_date - 30, current_date, 'day');
+    assert n = 0, format('cash flow: empty array should return empty, got %s rows', n);
+    select count(*) into n from get_cash_flow(
+      null::uuid[], current_date - 30, current_date, 'day');
+    assert n = 0, format('cash flow: NULL array should return empty, got %s rows', n);
+    select count(*) into n from get_cash_flow(
+      array[null::uuid, 'a2a2a2a2-0000-0000-0000-000000000001'::uuid], current_date - 30, current_date, 'day');
+    assert n = 0,
+      format('cash flow: array with a NULL element (alongside a wallet alice genuinely owns) should return empty, got %s rows', n);
+  end $$;
+commit;
+
+-- get_wallet_balances' archived_at filter: an archived wallet must not
+-- appear, even to its own owner. Uses wallet B (a3a3a3a3-...-001); the
+-- denial block below also asserts bob (never a member) doesn't see it,
+-- which holds independent of archived_at, so archiving it here does not
+-- invalidate that later assertion.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+  end $$;
+  update wallets set archived_at = now() where id = 'a3a3a3a3-0000-0000-0000-000000000001';
+  do $$ begin
+    assert not exists (select 1 from get_wallet_balances() where wallet_id = 'a3a3a3a3-0000-0000-0000-000000000001'),
+      'get_wallet_balances() included an archived wallet';
   end $$;
 commit;
 
@@ -979,6 +1101,12 @@ begin;
       'LEAK: bob''s get_wallet_balances() included alice''s wallet A';
     assert not exists (select 1 from get_wallet_balances() where wallet_id = 'a3a3a3a3-0000-0000-0000-000000000001'),
       'LEAK: bob''s get_wallet_balances() included alice''s wallet B';
+
+    -- Positive control, paired with the two denials above: get_wallet_balances()
+    -- is not simply returning nothing for everyone -- bob does get his own
+    -- wallet back.
+    assert exists (select 1 from get_wallet_balances() where wallet_id = 'ffffffff-0000-0000-0000-000000000006'),
+      'PERMISSION BROKEN: bob does not see his own wallet in get_wallet_balances()';
   end $$;
 commit;
 

@@ -20,14 +20,27 @@
 -- RLS, so wallets_select (is_wallet_member) already restricts the join to
 -- wallets the caller belongs to -- no explicit membership check is needed
 -- or performed here.
+--
+-- deleted_at is null lives in the JOIN condition, not a FILTER on the
+-- aggregate: a partial index is only usable when the query's predicates
+-- IMPLY the index predicate, so putting the filter inside FILTER (evaluated
+-- per aggregated row, after the join) would not let the planner use
+-- transactions_wallet_date ... where deleted_at is null -- there is no
+-- non-partial index on wallet_id, so the join would fall back to a
+-- sequential scan of all of transactions, soft-deleted rows included, with
+-- this function's own RLS policy re-evaluated per scanned row. That is
+-- exactly the cost this migration's opening comment exists to avoid. Moving
+-- the predicate into ON is semantically identical for a LEFT JOIN: a wallet
+-- whose only transactions are soft-deleted still has one null-t row
+-- preserved, and the outer coalesce(..., 0) still yields 0 for it.
 create function get_wallet_balances()
   returns table(wallet_id uuid, balance_minor bigint, currency_code char(3))
   language sql stable security invoker set search_path = '' as $$
   select w.id,
-         w.starting_balance_minor + coalesce(sum(t.amount_minor) filter (where t.deleted_at is null), 0),
+         w.starting_balance_minor + coalesce(sum(t.amount_minor), 0),
          w.currency_code
   from public.wallets w
-  left join public.transactions t on t.wallet_id = w.id
+  left join public.transactions t on t.wallet_id = w.id and t.deleted_at is null
   where w.archived_at is null
   group by w.id, w.starting_balance_minor, w.currency_code
 $$;
