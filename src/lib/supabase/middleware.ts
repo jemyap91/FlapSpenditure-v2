@@ -1,8 +1,8 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import type { Database } from "@/lib/database.types";
-
-const PUBLIC = ["/login", "/signup", "/auth"];
+import { supabaseAnonKey, supabaseUrl } from "@/lib/supabase/env";
+import { isPublicPath } from "@/lib/supabase/public-paths";
 
 /**
  * Refreshes the Supabase session cookie on every request and redirects
@@ -13,20 +13,16 @@ const PUBLIC = ["/login", "/signup", "/auth"];
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });
 
-  const supabase = createServerClient<Database>(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll: () => request.cookies.getAll(),
-        setAll: (list) => {
-          list.forEach(({ name, value }) => request.cookies.set(name, value));
-          response = NextResponse.next({ request });
-          list.forEach(({ name, value, options }) => response.cookies.set(name, value, options));
-        },
+  const supabase = createServerClient<Database>(supabaseUrl, supabaseAnonKey, {
+    cookies: {
+      getAll: () => request.cookies.getAll(),
+      setAll: (list) => {
+        list.forEach(({ name, value }) => request.cookies.set(name, value));
+        response = NextResponse.next({ request });
+        list.forEach(({ name, value, options }) => response.cookies.set(name, value, options));
       },
     },
-  );
+  });
 
   // getUser() revalidates against the auth server; getSession() trusts the
   // cookie and must not be used for authorization decisions.
@@ -35,10 +31,18 @@ export async function updateSession(request: NextRequest) {
   } = await supabase.auth.getUser();
   const path = request.nextUrl.pathname;
 
-  if (!user && !PUBLIC.some((p) => path.startsWith(p))) {
+  if (!user && !isPublicPath(path)) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
-    return NextResponse.redirect(url);
+    const redirect = NextResponse.redirect(url);
+    // `setAll` above may have written cookie deletions onto `response` (e.g.
+    // auth-js clearing a stale/invalid session via _removeSession()). A
+    // fresh NextResponse.redirect(...) starts with an empty cookie jar, so
+    // without this the dead cookie would never be cleared and every
+    // subsequent navigation would re-send it, pay another auth-server round
+    // trip, and redirect again.
+    response.cookies.getAll().forEach((cookie) => redirect.cookies.set(cookie));
+    return redirect;
   }
   return response;
 }

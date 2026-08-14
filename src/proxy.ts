@@ -7,5 +7,12 @@ import { updateSession } from "@/lib/supabase/middleware";
 export const proxy = (request: NextRequest) => updateSession(request);
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|webp)$).*)"],
+  matcher: [
+    // Exclude Next.js internals, image assets (including fonts), and the
+    // fixed metadata-route URLs, so auth logic never blocks CSS/JS/images
+    // from loading or shadows a route that must stay reachable when logged
+    // out (robots.txt, sitemap.xml, the PWA manifest, the default favicon,
+    // and file-convention OG/Twitter images).
+    "/((?!_next/static|_next/image|favicon\\.ico|robots\\.txt|sitemap\\.xml|manifest\\.webmanifest|opengraph-image|twitter-image|.*\\.(?:svg|png|jpg|jpeg|gif|webp|avif|ico|woff2?|ttf|otf|eot)$).*)",
+  ],
 };
