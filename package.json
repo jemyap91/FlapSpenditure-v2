@@ -15,7 +15,8 @@
     "test:rls": "./scripts/test-rls.sh",
     "test:constraints": "./scripts/test-constraints.sh",
     "test:seed": "./scripts/test-seed.sh",
-    "validate:palette": "node scripts/validate-palette.mjs"
+    "validate:palette": "node scripts/validate-palette.mjs",
+    "db:types": "supabase gen types typescript --local > src/lib/database.types.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",
