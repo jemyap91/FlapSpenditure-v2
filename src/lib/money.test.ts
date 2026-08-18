@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatMoney, parseAmountInput, appendDigit } from "./money";
+import { formatMoney, parseAmountInput, appendDigit, clampAmountInput } from "./money";
 
 describe("parseAmountInput", () => {
   it("converts a 2-decimal string to minor units without floating point", () => {
@@ -55,6 +55,31 @@ describe("appendDigit", () => {
 
   it("refuses a decimal point for zero-decimal currencies", () => {
     expect(appendDigit("1200", ".", 0)).toBe("1200");
+  });
+});
+
+describe("clampAmountInput", () => {
+  it("truncates a fraction longer than the target minor unit", () => {
+    expect(clampAmountInput("1.505", 2)).toBe("1.50"); // KWD (3) -> USD (2)
+    expect(clampAmountInput("12.3", 3)).toBe("12.3"); // already within precision
+  });
+
+  it("drops the decimal point entirely for a zero-decimal target", () => {
+    expect(clampAmountInput("1.505", 0)).toBe("1");
+    expect(clampAmountInput("42.", 0)).toBe("42");
+  });
+
+  it("leaves a value with no decimal point unchanged", () => {
+    expect(clampAmountInput("0", 2)).toBe("0");
+    expect(clampAmountInput("1200", 0)).toBe("1200");
+  });
+
+  it("leaves a dangling trailing dot alone when the target still allows decimals", () => {
+    expect(clampAmountInput("5.", 2)).toBe("5.");
+  });
+
+  it("is a no-op when the value already fits the target precision exactly", () => {
+    expect(clampAmountInput("12.34", 2)).toBe("12.34");
   });
 });
 

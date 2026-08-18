@@ -6,6 +6,7 @@ import { TrendingDown, TrendingUp, ArrowRightLeft } from "lucide-react";
 import { AmountKeypad } from "./AmountKeypad";
 import { CategoryPicker, type Category } from "./CategoryPicker";
 import { createTransaction, createTransfer } from "@/server/actions/transactions";
+import { appendDigit, clampAmountInput, minorUnitFor, parseAmountInput } from "@/lib/money";
 
 type Wallet = { id: string; name: string; currency_code: string };
 type Kind = "expense" | "income" | "transfer";
@@ -21,6 +22,22 @@ const FOCUS_RING =
 
 const CHIP_BORDER =
   `rounded-full border px-3 py-1 text-sm ${FOCUS_RING}`;
+
+/**
+ * Today's date as `YYYY-MM-DD` in the USER'S LOCAL calendar day, for the
+ * `date` field's initial value — matches what `<input type="date">` itself
+ * expects and displays. `new Date().toISOString()` is UTC, not local: at
+ * 01:00 in Kuwait (UTC+3) that would slice off *yesterday's* date, which is
+ * wrong for a till-side entry screen where "today" means the user's own
+ * calendar day, not Greenwich's.
+ */
+function todayLocalDate(): string {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
 
 /**
  * Task 19's add-transaction screen — spec §5.1's "amount-first" flow (the
@@ -84,7 +101,7 @@ export function TransactionForm({
   );
   const [amountIn, setAmountIn] = useState("0");
   const [category, setCategory] = useState<Category | null>(null);
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(todayLocalDate);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
 
@@ -92,6 +109,7 @@ export function TransactionForm({
   const amountLabelId = useId();
   const destLabelId = useId();
   const errorRef = useRef<HTMLParagraphElement>(null);
+  const amountGroupRef = useRef<HTMLDivElement>(null);
 
   // Same technique as login-form.tsx / onboarding-form.tsx: a
   // conditionally-mounted role="alert" doesn't announce reliably across
@@ -101,6 +119,23 @@ export function TransactionForm({
   useEffect(() => {
     if (error) errorRef.current?.focus();
   }, [error]);
+
+  // Spec §5.1: "the screen opens with the amount focused and zeroed" — a
+  // keyboard user must be able to type digits the instant the page loads,
+  // without tabbing past the kind radiogroup first. AmountKeypad's own
+  // <output> can never be a focus target (it's non-editable by design —
+  // see this task's report for why that's the right call for the "OS
+  // keyboard never appears" requirement), so the focus target is this
+  // wrapping group div instead: tabIndex={-1} makes it programmatically
+  // focusable without adding a new stop to the NORMAL Tab order (the
+  // keypad's own buttons are already independently tabbable). Empty deps:
+  // this must fire once on mount only, not every time `kind` or anything
+  // else changes later — re-focusing here after the user has deliberately
+  // moved focus elsewhere (e.g. into the category search box) would be a
+  // regression, not a fix.
+  useEffect(() => {
+    amountGroupRef.current?.focus();
+  }, []);
 
   // Invariant: page.tsx only renders this component when `wallets.length
   // >= 1` (it redirects to /onboarding otherwise), and `walletId` only ever
@@ -115,6 +150,45 @@ export function TransactionForm({
     kind === "transfer" && !!toWallet && toWallet.currency_code !== wallet.currency_code;
   const visibleKinds = canTransfer ? KIND_META : KIND_META.filter((k) => k.value !== "transfer");
 
+  // Physical-keyboard digit entry for the primary amount, routed through
+  // the exact same pure functions (appendDigit/parseAmountInput from
+  // src/lib/money.ts) AmountKeypad's own press()/backspace() use internally
+  // — not a reimplementation of the precision/overflow rules, just a
+  // second caller of the single source of truth for them. This exists
+  // because AmountKeypad exposes no imperative API for a physical
+  // keydown (it is a "use client" leaf with `value`/`onChange` only, and
+  // per this task's brief it is not to be modified without a real defect
+  // — there isn't one here, the gap is that nothing outside it drives
+  // keyboard input into it), and the effect above needs a real handler to
+  // focus onto for "type immediately on load" to mean anything.
+  function handleAmountKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    const minorUnit = minorUnitFor(wallet.currency_code);
+    if (e.key === "Backspace") {
+      e.preventDefault();
+      setError(null);
+      setAmount((prev) => {
+        const current = prev === "" ? "0" : prev;
+        return current.length <= 1 ? "0" : current.slice(0, -1);
+      });
+      return;
+    }
+    if (e.key === "." || /^\d$/.test(e.key)) {
+      e.preventDefault();
+      setError(null);
+      setAmount((prev) => {
+        const current = prev === "" ? "0" : prev;
+        const candidate = appendDigit(current, e.key, minorUnit);
+        if (candidate === current) return current;
+        try {
+          parseAmountInput(candidate, minorUnit);
+        } catch {
+          return current;
+        }
+        return candidate;
+      });
+    }
+  }
+
   function handleKindChange(next: Kind) {
     setKind(next);
     // A transfer has no category; switching between expense/income also
@@ -126,7 +200,19 @@ export function TransactionForm({
   }
 
   function handleWalletChange(next: string) {
+    const nextWallet = wallets.find((w) => w.id === next);
     setWalletId(next);
+    setError(null);
+    // The account just changed currency (possibly to a different
+    // `minorUnit`) — an amount already typed under the OLD currency's
+    // precision can be over-precise for the new one (e.g. "1.505" typed
+    // against KWD's 3 decimals is invalid for USD's 2). Clamp it, the same
+    // truncate-not-reject rule parseAmountInput itself already applies to
+    // an over-precise fraction, so the displayed preview and the state
+    // driving submission never disagree after a currency change.
+    if (nextWallet) {
+      setAmount((prev) => clampAmountInput(prev, minorUnitFor(nextWallet.currency_code)));
+    }
     // The destination <select> below already excludes whatever wallet is
     // currently selected as the source, so a user can never pick the same
     // wallet on both sides *through that control*. But changing the SOURCE
@@ -134,8 +220,44 @@ export function TransactionForm({
     // "to" would silently end up equal until the user happens to touch the
     // destination select too.
     if (next === toWalletId) {
-      setToWalletId(wallets.find((w) => w.id !== next)?.id ?? "");
+      const fallback = wallets.find((w) => w.id !== next);
+      setToWalletId(fallback?.id ?? "");
+      if (fallback) {
+        setAmountIn((prev) => clampAmountInput(prev, minorUnitFor(fallback.currency_code)));
+      }
     }
+  }
+
+  function handleToWalletChange(next: string) {
+    const nextWallet = wallets.find((w) => w.id === next);
+    setToWalletId(next);
+    setError(null);
+    // Same reasoning as handleWalletChange above, for the destination leg
+    // of a cross-currency transfer: the destination amount already typed
+    // may be over-precise for the newly-selected destination currency.
+    if (nextWallet) {
+      setAmountIn((prev) => clampAmountInput(prev, minorUnitFor(nextWallet.currency_code)));
+    }
+  }
+
+  function handleDateChange(next: string) {
+    setDate(next);
+    setError(null);
+  }
+
+  function handleCategoryChange(next: Category) {
+    setCategory(next);
+    setError(null);
+  }
+
+  function handleAmountChange(next: string) {
+    setAmount(next);
+    setError(null);
+  }
+
+  function handleAmountInChange(next: string) {
+    setAmountIn(next);
+    setError(null);
   }
 
   function handleFormKeyDown(e: React.KeyboardEvent<HTMLFormElement>) {
@@ -207,7 +329,17 @@ export function TransactionForm({
       onSubmit={handleSubmit}
       onKeyDown={handleFormKeyDown}
       noValidate
-      className="mx-auto flex min-h-dvh max-w-md flex-col gap-4 p-4"
+      // No min-h-dvh here: the (app) shell (src/app/(app)/layout.tsx) is
+      // already min-h-dvh, and its <main> carries pb-20 on mobile
+      // specifically to clear the fixed TabBar — stacking a SECOND
+      // min-h-dvh inside that padded area made this form's own content
+      // (including mt-auto's Save button) render dvh + 80px tall, pushing
+      // Save under the TabBar at initial paint (confirmed: needed ~80px of
+      // scroll to reach it). That directly broke spec §5.1's "Save is
+      // always reachable." This form's height now comes from its own
+      // content, which is what mt-auto needs to push Save down when there
+      // IS extra room, without ever double-counting the shell's own.
+      className="mx-auto flex max-w-md flex-col gap-4 p-4"
     >
       <fieldset className="flex gap-2" aria-describedby={errorId}>
         <legend className="sr-only">Transaction type</legend>
@@ -260,13 +392,26 @@ export function TransactionForm({
             wrapping group gives a second, distinguishing accessible name
             for when the destination keypad below is also on screen, since
             two AmountKeypad instances would otherwise both announce
-            "Amount" with no way to tell them apart from context alone. */}
-        <div role="group" aria-labelledby={amountLabelId}>
-          <AmountKeypad value={amount} onChange={setAmount} currencyCode={wallet.currency_code} />
+            "Amount" with no way to tell them apart from context alone.
+
+            tabIndex={-1} + the mount-effect above make this the initial
+            focus target (spec §5.1: "opens with the amount focused") —
+            programmatically focusable without adding a manual Tab stop,
+            since the keypad's own buttons are already tabbable on their
+            own. onKeyDown routes a physical digit/./Backspace press into
+            the same money.ts functions AmountKeypad itself uses. */}
+        <div
+          ref={amountGroupRef}
+          role="group"
+          aria-labelledby={amountLabelId}
+          tabIndex={-1}
+          onKeyDown={handleAmountKeyDown}
+        >
+          <AmountKeypad value={amount} onChange={handleAmountChange} currencyCode={wallet.currency_code} />
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-2" aria-describedby={errorId}>
+      <div className="flex flex-wrap gap-2">
         {/* A transfer has no category, so the chip is REMOVED, not
             disabled — a greyed-out control invites a click that can never
             succeed (spec §5.1). */}
@@ -280,6 +425,7 @@ export function TransactionForm({
           <select
             value={walletId}
             onChange={(e) => handleWalletChange(e.target.value)}
+            aria-describedby={errorId}
             className={CHIP_BORDER}
             style={{ borderColor: "var(--ink-2)", color: "var(--ink)" }}
           >
@@ -295,7 +441,8 @@ export function TransactionForm({
             <span className="sr-only">To account</span>
             <select
               value={toWalletId}
-              onChange={(e) => setToWalletId(e.target.value)}
+              onChange={(e) => handleToWalletChange(e.target.value)}
+              aria-describedby={errorId}
               className={CHIP_BORDER}
               style={{ borderColor: "var(--ink-2)", color: "var(--ink)" }}
             >
@@ -314,7 +461,8 @@ export function TransactionForm({
           <input
             type="date"
             value={date}
-            onChange={(e) => setDate(e.target.value)}
+            onChange={(e) => handleDateChange(e.target.value)}
+            aria-describedby={errorId}
             className={CHIP_BORDER}
             style={{ borderColor: "var(--ink-2)", color: "var(--ink)" }}
           />
@@ -327,7 +475,7 @@ export function TransactionForm({
             {`They receive (${toWallet.currency_code})`}
           </p>
           <div role="group" aria-labelledby={destLabelId}>
-            <AmountKeypad value={amountIn} onChange={setAmountIn} currencyCode={toWallet.currency_code} />
+            <AmountKeypad value={amountIn} onChange={handleAmountInChange} currencyCode={toWallet.currency_code} />
           </div>
         </div>
       )}
@@ -337,7 +485,7 @@ export function TransactionForm({
           categories={categories}
           kind={kind}
           value={category?.id ?? null}
-          onChange={setCategory}
+          onChange={handleCategoryChange}
         />
       )}
 
@@ -347,10 +495,29 @@ export function TransactionForm({
         {error}
       </p>
 
+      {/*
+        `sticky`, not just `mt-auto` — dropping min-h-dvh (see the <form>'s
+        own className comment above) fixed the DOUBLE min-height bug, but
+        measured directly (390x844 viewport, this task's real content: kind
+        chips + AmountKeypad + wallet/date chips + CategoryPicker's full
+        category list): the genuine, un-doubled content is ~1088px tall —
+        still taller than an 844px phone screen on its own, entirely from
+        AmountKeypad and CategoryPicker's own sizing (neither modified here,
+        per this task's scope). `mt-auto` alone only pushes Save to the
+        bottom of a container that's SHORTER than the viewport; it does
+        nothing once content overflows, which is exactly the case that
+        matters here. `sticky` keeps Save pinned `bottom-20` (80px, the
+        exact height TabBar reserves via `<main>`'s own `pb-20` in
+        src/app/(app)/layout.tsx — so Save sits flush above TabBar, never
+        under or over it) above the viewport bottom regardless of how tall
+        the category list grows, on this account or a future one with many
+        more categories. `md:bottom-0`: no TabBar exists at that
+        breakpoint, matching `pb-20 md:pb-0`'s own breakpoint exactly.
+      */}
       <button
         type="submit"
         disabled={pending}
-        className={`mt-auto rounded-lg py-4 text-lg font-medium disabled:opacity-60 ${FOCUS_RING}`}
+        className={`sticky bottom-20 mt-auto rounded-lg py-4 text-lg font-medium disabled:opacity-60 md:bottom-0 ${FOCUS_RING}`}
         style={{ background: "var(--cat-1)", color: "var(--surface)" }}
       >
         {pending ? "Saving…" : "Save"}

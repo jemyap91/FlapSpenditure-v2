@@ -41,6 +41,34 @@ export function appendDigit(current: string, digit: string, minorUnit: number): 
   return current + digit;
 }
 
+/**
+ * Re-clamps an already-typed keypad-format amount string (see `appendDigit`)
+ * to a possibly DIFFERENT currency's `minorUnit` — needed when the account a
+ * transaction is filed against changes mid-entry (Task 19's add-transaction
+ * screen: switching accounts, or a transfer's destination account, after
+ * some digits are already typed). Pure string manipulation, like every
+ * other function in this file — the value never becomes a float.
+ *
+ * Unlike `appendDigit` (which only ever GROWS a string one keystroke at a
+ * time and is already precision-safe because it enforces the CURRENT
+ * `minorUnit` while typing), this can SHRINK an already-typed value: e.g.
+ * `clampAmountInput("1.505", 2)` returns `"1.50"` — truncated, not rounded,
+ * matching `parseAmountInput`'s own truncate-not-reject handling of an
+ * over-precise fraction (`padEnd(...).slice(...)`) rather than inventing a
+ * second, divergent rounding rule. Clamped to `minorUnit` 0, the decimal
+ * point itself is dropped rather than left dangling as `"1."`:
+ * `clampAmountInput("1.505", 0)` returns `"1"`.
+ *
+ * A string with no `"."` (including `"0"`, the seed value every caller of
+ * this module uses) is returned unchanged — there is nothing to clamp.
+ */
+export function clampAmountInput(raw: string, minorUnit: number): string {
+  const dot = raw.indexOf(".");
+  if (dot < 0) return raw;
+  if (minorUnit === 0) return raw.slice(0, dot) || "0";
+  return raw.slice(0, dot + 1 + minorUnit);
+}
+
 export function formatMoney(
   minorUnits: number,
   currencyCode: string,
