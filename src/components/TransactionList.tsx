@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { ArrowRightLeft } from "lucide-react";
 import { formatMoney } from "@/lib/money";
 import { slotVar } from "@/lib/palette";
@@ -22,6 +23,10 @@ import { UndoToast, type ToastState } from "./UndoToast";
  * (the schema does not force `category_id` to be non-null; see
  * `supabase/migrations/0003_transactions.sql`), and that "Uncategorised"
  * case must render differently from a transfer.
+ *
+ * `note` is deliberately absent — see page.tsx's doc comment on its
+ * select for why (review-caught: it was being fetched and typed here
+ * without ever being rendered, a dead payload on every request).
  */
 export type Row = {
   id: string;
@@ -29,7 +34,6 @@ export type Row = {
   amount_minor: number;
   currency_code: string;
   occurred_on: string;
-  note: string | null;
   wallet_name: string;
   category_name: string | null;
   category_icon: string | null;
@@ -58,6 +62,23 @@ function formatDayHeading(occurredOn: string): string {
     day: "numeric",
     year: "numeric",
   }).format(d);
+}
+
+/** What a row's own line shows — accurate even when there's genuinely no
+ * category ("Uncategorised" is real, informative content there). */
+function rowLabel(row: Row): string {
+  return row.category_name ?? (row.kind === "transfer" ? "Transfer" : "Uncategorised");
+}
+
+/**
+ * What a TOAST says was deleted. Deliberately NOT `rowLabel` for the
+ * uncategorised case: "Uncategorised deleted" reads like something broke
+ * (review-caught) — "Transaction deleted" says the same true thing without
+ * sounding like a defect. The row's own line still says "Uncategorised";
+ * only the toast's wording differs.
+ */
+function toastSubject(row: Row): string {
+  return row.category_name ?? (row.kind === "transfer" ? "Transfer" : "Transaction");
 }
 
 function RowIcon({ row }: { row: Row }) {
@@ -150,11 +171,44 @@ function RowIcon({ row }: { row: Row }) {
  * this component re-renders with, and a successful restore makes it
  * reappear — no separate client-side list-filtering state needed, and no
  * risk of that state disagreeing with what the database actually holds.
+ *
+ * ## Why the ERROR branches call `router.refresh()`
+ *
+ * `revalidatePath` only runs on `setDeletedAt`'s SUCCESS path
+ * (`transactions.ts`) — on any `{ error }` return it has already returned
+ * before reaching that call. That's fine when nothing changed. It is NOT
+ * fine for `"Only part of this transfer could be updated"`: `setDeletedAt`
+ * runs its UPDATE FIRST and only afterwards compares the affected-row
+ * count against what was expected, so on that specific error some rows
+ * genuinely WERE soft-deleted (or restored) in the database before the
+ * mismatch was detected. Without a refresh, this component — which, by
+ * design (previous section), does no optimistic client-side row removal —
+ * would keep rendering those rows as if nothing had happened: stale,
+ * disagreeing with the database (review-caught, Important 2). Calling
+ * `router.refresh()` in every error branch (not just that one — it's a
+ * harmless no-op re-fetch when nothing actually changed, and cheap
+ * insurance against reasoning precisely about which of `setDeletedAt`'s
+ * four error strings can and cannot leave partial state) makes the list
+ * reconcile against the server every time, success or failure alike.
  */
 export function TransactionList({ rows }: { rows: Row[] }) {
+  const router = useRouter();
   const [toast, setToast] = useState<ToastState | null>(null);
   const [pendingIds, setPendingIds] = useState<ReadonlySet<string>>(new Set());
   const [, start] = useTransition();
+  // Programmatic focus target for when the toast closes entirely (Dismiss,
+  // or a successful Undo) — the row/button that triggered it is long gone
+  // by then (removed by revalidation), so focus would otherwise fall all
+  // the way back to <body> (review-caught). `tabIndex={-1}` makes this
+  // focusable without adding a new stop to the normal Tab order, the same
+  // technique (app)/layout.tsx's <main> and TransactionForm.tsx's amount
+  // group already use in this codebase.
+  const listRef = useRef<HTMLDivElement>(null);
+
+  function closeToast() {
+    setToast(null);
+    listRef.current?.focus();
+  }
 
   function run(id: string, fn: () => Promise<void>) {
     setPendingIds((prev) => new Set(prev).add(id));
@@ -173,31 +227,77 @@ export function TransactionList({ rows }: { rows: Row[] }) {
 
   function handleUndo(id: string) {
     run(id, async () => {
-      // Surfaced, not assumed: an id that no longer exists (already
-      // restored from another tab, or never existed) or a partial-transfer
-      // guard failure comes back as `{ error }`, and the toast is made to
-      // SAY so rather than silently clearing as if the restore had worked.
       const res = await restoreTransaction(id);
       if ("error" in res) {
-        setToast({ kind: "error", message: res.error });
+        // See this component's doc comment: some of setDeletedAt's error
+        // strings can follow a genuine (partial) database change, so the
+        // list is reconciled against the server regardless of which one
+        // this is.
+        router.refresh();
+        if (res.error === "Transaction not found") {
+          // Genuinely, permanently gone — there is nothing left to act
+          // on, so this is the one case with no action button.
+          setToast({ kind: "error", message: res.error });
+          return;
+        }
+        // Every other failure ("Not signed in," "Could not update
+        // transaction," a partial-transfer mismatch) is recoverable: an
+        // expired session can be re-authenticated in another tab, a
+        // transient update failure can succeed on retry, and re-running
+        // the same transfer-scoped restore repairs a partial one. Losing
+        // the only path back to a soft-deleted row over a retryable
+        // failure would be worse than the failure itself (review-caught,
+        // Important 1) — so the SAME action (retry the restore) stays
+        // offered, just relabelled and tinted to signal this is a retry
+        // following a failure, not the original offer.
+        setToast({
+          kind: "undo",
+          id,
+          message: res.error,
+          actionLabel: "Retry",
+          onAction: () => handleUndo(id),
+          tone: "error",
+        });
         return;
       }
-      setToast(null);
+      closeToast();
     });
   }
 
   function handleDelete(row: Row) {
-    const label = row.category_name ?? (row.kind === "transfer" ? "Transfer" : "Uncategorised");
     run(row.id, async () => {
       const res = await softDeleteTransaction(row.id);
       if ("error" in res) {
+        // Same reconciliation reasoning as handleUndo's error branch.
+        router.refresh();
+        if (res.error === "Only part of this transfer could be updated") {
+          // Some rows sharing this transfer_id genuinely WERE soft-deleted
+          // before the mismatch was caught — offering Undo here isn't the
+          // original delete-confirmation offer, it's a repair action:
+          // restoreTransaction is scoped by transfer_id too, so retrying
+          // it un-deletes whatever this partial delete actually touched.
+          setToast({
+            kind: "undo",
+            id: row.id,
+            message: res.error,
+            actionLabel: "Undo",
+            onAction: () => handleUndo(row.id),
+            tone: "error",
+          });
+          return;
+        }
+        // "Not signed in" / "Could not update transaction": a single
+        // UPDATE statement is atomic, so neither of these can have
+        // changed anything — the row is still exactly where it was, still
+        // showing its own Delete button, which IS the retry path. No
+        // action button needed on the toast itself.
         setToast({ kind: "error", message: res.error });
         return;
       }
       setToast({
         kind: "undo",
         id: row.id,
-        message: `${label} deleted`,
+        message: `${toastSubject(row)} deleted`,
         actionLabel: "Undo",
         onAction: () => handleUndo(row.id),
       });
@@ -212,7 +312,7 @@ export function TransactionList({ rows }: { rows: Row[] }) {
   const undoPending = toast?.kind === "undo" && pendingIds.has(toast.id);
 
   return (
-    <>
+    <div ref={listRef} tabIndex={-1} aria-label="Transaction list" className="focus:outline-none">
       {rows.length === 0 ? (
         <p className="p-8 text-center text-sm" style={{ color: "var(--ink-2)" }}>
           No transactions yet. Add your first one to get started.
@@ -229,7 +329,8 @@ export function TransactionList({ rows }: { rows: Row[] }) {
             <ul>
               {list.map((r) => {
                 const pending = pendingIds.has(r.id);
-                const label = r.category_name ?? (r.kind === "transfer" ? "Transfer" : "Uncategorised");
+                const label = rowLabel(r);
+                const amountText = formatMoney(r.amount_minor, r.currency_code, { signed: true });
                 return (
                   <li
                     key={r.id}
@@ -248,17 +349,24 @@ export function TransactionList({ rows }: { rows: Row[] }) {
                     {/* Sign is always rendered (`−12.50`/`+3,200.00`);
                         colour only reinforces it, never replaces it (spec
                         §6.4). `var(--pos)`/`var(--neg)` both clear 4.5:1
-                        against `var(--surface)`/`var(--page)` in both
-                        themes — see this task's report's contrast table. */}
+                        against `var(--page)` (this row's actual background
+                        — see this task's report's corrected contrast
+                        table) in both themes. */}
                     <span
                       className="shrink-0 tabular-nums"
                       style={{ color: r.amount_minor < 0 ? "var(--neg)" : "var(--pos)" }}
                     >
-                      {formatMoney(r.amount_minor, r.currency_code, { signed: true })}
+                      {amountText}
                     </span>
                     <button
                       type="button"
-                      aria-label={`Delete ${label}`}
+                      // Includes the amount, not just the category name —
+                      // several rows can share "Delete Groceries" as an
+                      // accessible name otherwise (review-caught); the
+                      // amount is already visible next to the button, so a
+                      // screen-reader user hears the same disambiguator a
+                      // sighted user already sees.
+                      aria-label={`Delete ${label}, ${amountText}`}
                       disabled={pending}
                       onClick={() => handleDelete(r)}
                       className={`shrink-0 text-xs underline disabled:opacity-60 ${FOCUS_RING}`}
@@ -274,7 +382,7 @@ export function TransactionList({ rows }: { rows: Row[] }) {
         ))
       )}
 
-      <UndoToast toast={toast} onDismiss={() => setToast(null)} pending={undoPending} />
-    </>
+      <UndoToast toast={toast} onDismiss={closeToast} pending={undoPending} />
+    </div>
   );
 }

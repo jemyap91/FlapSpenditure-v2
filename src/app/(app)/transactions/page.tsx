@@ -30,16 +30,28 @@ import { TransactionList, type Row } from "@/components/TransactionList";
  * `Relationships` (`isOneToOne: false` from the `transactions` side, i.e.
  * many transactions to one wallet/category — PostgREST embeds the "one"
  * side of a many-to-one as a single object).
+ *
+ * `note` is deliberately NOT selected — review caught it being fetched and
+ * carried into `Row` in an earlier draft without ever being rendered
+ * anywhere in `TransactionList`, a dead payload on every request. If a
+ * future task renders it, add it back to both this select and `Row` then.
+ *
+ * `.order("occurred_on", ...)` alone lets rows sharing a day reshuffle
+ * between renders (Postgres makes no ordering promise among ties), which
+ * would be visible as list-reordering after every `revalidatePath`/
+ * `router.refresh()` a delete or undo triggers. `created_at desc` as a
+ * secondary key gives same-day rows a stable, most-recent-first order.
  */
 export default async function TransactionsPage() {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("transactions")
     .select(
-      "id, kind, amount_minor, currency_code, occurred_on, note, wallets(name), categories(name, color_slot, icon)",
+      "id, kind, amount_minor, currency_code, occurred_on, wallets(name), categories(name, color_slot, icon)",
     )
     .is("deleted_at", null)
     .order("occurred_on", { ascending: false })
+    .order("created_at", { ascending: false })
     .limit(100);
 
   // A query error is not "no transactions" — src/app/(app)/layout.tsx's
@@ -60,7 +72,6 @@ export default async function TransactionsPage() {
     amount_minor: number;
     currency_code: string;
     occurred_on: string;
-    note: string | null;
     wallets: { name: string } | null;
     categories: { name: string; color_slot: number; icon: string } | null;
   };
@@ -71,7 +82,6 @@ export default async function TransactionsPage() {
     amount_minor: r.amount_minor,
     currency_code: r.currency_code,
     occurred_on: r.occurred_on,
-    note: r.note,
     wallet_name: r.wallets?.name ?? "",
     category_name: r.categories?.name ?? null,
     category_icon: r.categories?.icon ?? null,
