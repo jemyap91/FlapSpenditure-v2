@@ -9,18 +9,48 @@ import { formatMoney } from "@/lib/money";
  * why the route lives here rather than at `src/app/page.tsx` — see that
  * file's history / this task's report for the landmine it avoided).
  *
- * Current calendar month, inclusive both ends. `to` is the LAST day of the
- * month (`new Date(y, m + 1, 0)` — day 0 of next month is the last day of
- * this one), not "today," so a user looking back mid-month still sees the
- * whole month's range in one query rather than the range silently growing
- * as the day advances (a stable, whole-period boundary matches what
- * `get_category_breakdown`'s `between from_date and to_date` expects).
+ * Current calendar month, inclusive both ends, as LOCAL calendar-date
+ * strings built directly — never via `Date.toISOString()`.
+ *
+ * REVIEW-CAUGHT (Critical): the first version of this function built
+ * `from`/`to` with `new Date(y, m, 1)` (a LOCAL midnight) and then read it
+ * back with `.toISOString().slice(0, 10)` (a UTC re-interpretation). In any
+ * UTC+ timezone that silently shifts the whole window backward by one day:
+ * on this codebase's own dev machine (Asia/Singapore, UTC+8),
+ * `new Date(2026,7,1).toISOString().slice(0,10)` is `"2026-07-31"`, not
+ * `"2026-08-01"`. `occurred_on` (supabase/migrations/0003_transactions.sql)
+ * is a plain `date` column with no time zone — a LOCAL calendar date — so
+ * that shifted window silently counted a 31 July expense into "August" and
+ * dropped a 31 August expense from it, while the header below still read
+ * "August 2026". This is the exact bug class `TransactionForm.tsx`'s
+ * `todayLocalDate()` doc comment exists to warn about (Task 19), on the
+ * INPUT side of the same local/UTC round-trip this function was doing on
+ * the OUTPUT side. Fixed by never constructing a `Date` for the boundary
+ * values at all — `y`/`m`/`last` are plain numbers, and the returned
+ * strings are built by direct interpolation, so there is no local-midnight-
+ * to-UTC step for a UTC+ offset to corrupt.
+ *
+ * Residual, deliberately NOT fixed here (flagged, not solved): this still
+ * matches the SERVER's calendar month/day, not necessarily the actual
+ * viewer's — a request straddling local midnight in a timezone far from
+ * the server's could still see a one-day-off window, and the `:93` header
+ * label (`new Date().toLocaleString(...)`, also evaluated server-side) has
+ * the identical exposure. A real fix needs the viewer's timezone to reach
+ * the server (a client-set cookie, an `Intl`-derived offset sent up, or a
+ * profile-level timezone field — none of which exist in this schema
+ * today) and is out of this task's scope; see this task's report.
  */
 function monthRange(now = new Date()) {
-  const from = new Date(now.getFullYear(), now.getMonth(), 1);
-  const to = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-  const iso = (d: Date) => d.toISOString().slice(0, 10);
-  return { from: iso(from), to: iso(to) };
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const y = now.getFullYear();
+  const m = now.getMonth(); // 0-11
+  const lastDay = new Date(y, m + 1, 0).getDate(); // still a Date, but only
+  // ever used for its LOCAL getDate() — never round-tripped through
+  // toISOString(), so it carries no UTC-shift risk.
+  return {
+    from: `${y}-${pad(m + 1)}-01`,
+    to: `${y}-${pad(m + 1)}-${pad(lastDay)}`,
+  };
 }
 
 export default async function DashboardPage() {
@@ -65,6 +95,13 @@ export default async function DashboardPage() {
   // silently mislabel a JPY-only or EUR-only account as USD.
   const currency = activeWallets[0]?.currency_code ?? "USD";
   const walletIds = activeWallets.filter((w) => w.currency_code === currency).map((w) => w.id);
+  // REVIEW-CAUGHT (Important): excluding non-primary-currency wallets keeps
+  // the arithmetic honest (see the comment above), but doing so SILENTLY
+  // was itself a defect — a user with both USD and JPY wallets would see a
+  // figure captioned only "spent this month" that quietly omits real JPY
+  // spend, with nothing on screen saying so. `hasExcludedWallets` drives a
+  // caption qualifier below so the omission is disclosed, not just correct.
+  const hasExcludedWallets = walletIds.length < activeWallets.length;
 
   const { data: breakdown, error: breakdownError } = await supabase.rpc(
     "get_category_breakdown",
@@ -81,6 +118,12 @@ export default async function DashboardPage() {
   if (breakdownError) throw new Error("Failed to load category breakdown");
 
   const rows: BreakdownRow[] = breakdown ?? [];
+  // REVIEW-CAUGHT (small): this used to be recomputed a second time inside
+  // CategoryBreakdown from the same `rows` array — two independent sums of
+  // the same data that could only ever agree by construction, never by a
+  // guarantee. `spent` is now the ONE place this sum is computed; it drives
+  // the hero figure directly and is passed down as `total` so the bar's
+  // percentage math uses the exact same number instead of re-deriving it.
   const spent = rows.reduce((s, r) => s + r.total_minor, 0);
 
   return (
@@ -101,11 +144,17 @@ export default async function DashboardPage() {
         <p className="text-5xl font-semibold" style={{ color: "var(--ink)" }}>
           {formatMoney(spent, currency)}
         </p>
+        {/* REVIEW-CAUGHT (Important): the caption now says WHICH wallets
+            this figure covers whenever some were excluded (different
+            currency), rather than reading as a total that silently isn't
+            one. Unqualified whenever every active wallet shares one
+            currency — the common case, and the only case the un-qualified
+            text was ever accurate for. */}
         <p className="text-sm" style={{ color: "var(--ink-2)" }}>
-          spent this month
+          spent this month{hasExcludedWallets ? ` · ${currency} wallets` : ""}
         </p>
       </header>
-      <CategoryBreakdown rows={rows} currencyCode={currency} />
+      <CategoryBreakdown rows={rows} currencyCode={currency} total={spent} />
     </div>
   );
 }
