@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { CategoryBreakdown, type BreakdownRow } from "@/components/CategoryBreakdown";
+import { CashFlow, type FlowRow } from "@/components/CashFlow";
 import { formatMoney } from "@/lib/money";
 
 /**
@@ -117,6 +118,30 @@ export default async function DashboardPage() {
   // state `CategoryBreakdown` shows for a genuinely quiet month.
   if (breakdownError) throw new Error("Failed to load category breakdown");
 
+  // Same fail-open-on-authorised-empty / fail-closed-on-error split as the
+  // breakdown RPC above, and the SAME `walletIds`/`from`/`to` — but, per
+  // spec §3.3 ("category and income/expense rollups filter `kind <>
+  // 'transfer'`; cash flow does not"), `get_cash_flow` deliberately applies
+  // no `kind` filter server-side, so a transfer's legs show up here even
+  // though they never contribute to `breakdown`/`spent` above. Nothing here
+  // adds one back. `bucket` is fixed at "day" — this task's brief and
+  // interface (`<CashFlow rows currencyCode />`) don't expose a
+  // week/month selector; `week`/`month` were exercised directly against the
+  // RPC for this task's verification instead (see this task's report).
+  const { data: flow, error: flowError } = await supabase.rpc("get_cash_flow", {
+    wallet_ids: walletIds,
+    from_date: from,
+    to_date: to,
+    bucket: "day",
+  });
+  // Identical reasoning to `breakdownError` above: a Postgres/network
+  // failure (`error` set) is not the same claim as "no cash flow this
+  // month" (`data: []`, no error) — the two trap warnings called out in this
+  // task's brief (a silent UTC round-trip, and an error rendered as an empty
+  // state) are both about exactly this class of mistake, so this is checked
+  // the same explicit way as every other RPC call on this page.
+  if (flowError) throw new Error("Failed to load cash flow");
+
   const rows: BreakdownRow[] = breakdown ?? [];
   // REVIEW-CAUGHT (small): this used to be recomputed a second time inside
   // CategoryBreakdown from the same `rows` array — two independent sums of
@@ -155,6 +180,7 @@ export default async function DashboardPage() {
         </p>
       </header>
       <CategoryBreakdown rows={rows} currencyCode={currency} total={spent} />
+      <CashFlow rows={(flow ?? []) as FlowRow[]} currencyCode={currency} />
     </div>
   );
 }
