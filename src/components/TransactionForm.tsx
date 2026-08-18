@@ -315,12 +315,14 @@ export function TransactionForm({
         return;
       }
 
-      // /transactions (Task 20) does not exist yet, so this cannot land
-      // there without 404ing — redirect to "/" instead, the same
-      // post-mutation destination src/server/actions/wallets.ts's
-      // createWallet already uses for the identical "nothing to send the
-      // user to yet" situation.
-      router.push("/");
+      // /transactions (Task 20) now exists and is where this redirect
+      // lands: it is this app's ledger review screen, the save just
+      // recorded a row in it, and (unlike "/", still Task 14's dashboard
+      // placeholder pending Task 21/22) navigating there gives the user
+      // real, immediate confirmation their save worked — the new row is
+      // visible at the top of today's group. This was previously "/" only
+      // because /transactions didn't exist yet (see this task's report).
+      router.push("/transactions");
     });
   }
 
