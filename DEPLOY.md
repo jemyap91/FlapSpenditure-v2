@@ -158,6 +158,28 @@ nothing.
 
 `.env.local.example` documents the same two variables.
 
+> **If the build fails with `Missing required environment variable`**, this is
+> the step that was skipped:
+>
+> ```
+> Error: Failed to collect configuration for /auth/callback
+>   [cause]: Error: Missing required environment variable: NEXT_PUBLIC_SUPABASE_URL
+> ```
+>
+> `env.ts` throws at import time, and Next imports it while collecting page
+> data, so the build fails rather than shipping a broken deployment. Set both
+> variables for the environment being built — on Vercel, a variable scoped
+> only to Production will still fail a Preview build — then **redeploy**.
+> Adding variables does not rebuild an already-failed deployment on its own.
+
+### Which key
+
+Newer Supabase projects issue a `sb_publishable_…` key alongside the legacy
+`anon` JWT. Either works with `@supabase/ssr`; prefer the publishable one, as
+legacy keys are on a deprecation path. Local development uses the legacy JWT
+simply because that is what `supabase start` emits for the local stack — the
+two environments do not need to match in key format.
+
 ---
 
 ## 4. Deploy the app
