@@ -51,12 +51,23 @@ Pick one:
 ## 1. Create the Supabase project
 
 Create a project at [supabase.com](https://supabase.com), then link this repo
-to it and apply the schema:
+to it and apply the schema. Run these **from the repo root**:
 
 ```bash
-supabase link --project-ref <your-project-ref>
-supabase db push
+npx supabase login                                # interactive, opens a browser
+npx supabase link --project-ref <your-project-ref>
+npx supabase db push
 ```
+
+`npx` is required. The CLI is a devDependency (pinned to `2.114.0`, the same
+version CI uses), not a global install — a bare `supabase` is
+`command not found` unless you have separately installed it system-wide, and
+if you have, it may be a different version than the migrations were written
+against.
+
+**Do not run `supabase init`.** This repo is already initialised:
+`supabase/config.toml` and all seven migrations are committed. `init` would
+scaffold a fresh config over them.
 
 `db push` applies all seven migrations in `supabase/migrations/`:
 
@@ -74,8 +85,8 @@ supabase db push
 and starting categories. Without it, signup succeeds and then every screen
 downstream fails on missing data.
 
-The CLI is pinned to `2.114.0` as a devDependency, so `npx supabase` uses the
-same version CI does.
+`db push` reads `supabase/config.toml` and the migration directory relative to
+the repo root, so run it from there rather than from inside `supabase/`.
 
 ### Verify the schema landed
 
@@ -94,7 +105,7 @@ npm run test:seed         # the new-user trigger seeds correctly
 > `scripts/test-rls.sh` refuses any `DB_URL` that is not loopback for this
 > reason — do not work around that check.
 
-Run them locally (`supabase start`, then the commands above) against the same
+Run them locally (`npx supabase start`, then the commands above) against the same
 migrations you are about to push. A clean `db push` plus a green local run is
 the bar before pointing the app at the hosted project.
 
