@@ -162,12 +162,22 @@ export default async function DashboardPage() {
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-8 p-6">
       <header>
-        <p
+        {/* An `<h1>`, not a `<p>`: this page had no level-one heading at
+            all, so its first heading was CategoryBreakdown's `<h2>` and
+            the document outline started at level 2 (caught by axe's
+            `page-has-heading-one` in e2e/ledger.spec.ts — a best-practice
+            rule, which is why the WCAG A/AA gate never flagged it).
+            Promoting the month rather than adding a hidden title keeps the
+            heading something a sighted user can actually see, and the
+            month IS what this dashboard is scoped to — every figure below
+            is "this month". Tag only; the classes are unchanged, so
+            nothing moves. */}
+        <h1
           className="text-sm font-medium uppercase tracking-wide"
           style={{ color: "var(--ink-2)" }}
         >
           {new Date().toLocaleString("en-US", { month: "long", year: "numeric" })}
-        </p>
+        </h1>
         {/* Hero figure: >=48px, system sans, proportional figures (§6.4).
             `total_minor` here is a SUM of already-positive per-category
             magnitudes (get_category_breakdown's own `sum(-t.amount_minor)`),

@@ -18,3 +18,42 @@ jobs:
       - run: npm run test:rls
       - run: npm run test:constraints
       - run: npm run test:seed
+
+  # A SEPARATE job, not more steps on `check`. `check` starts Supabase with
+  # almost every service excluded (`-x gotrue,kong,postgrest,...`) because
+  # its SQL suites only ever talk to Postgres directly — but the app itself
+  # needs gotrue (signup/session), kong (the API gateway the anon key is
+  # presented to) and postgrest (every read and Server Action). Reusing
+  # `check`'s stripped stack would fail at the first signup; widening it
+  # would slow the fast feedback job down for every push. So: full stack
+  # here, stripped stack there.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22", cache: "npm" }
+      - run: npm ci
+      - uses: supabase/setup-cli@v1
+        with: { version: 2.114.0 }
+      - run: npx supabase start
+      # The app reads these at import time (src/lib/supabase/env.ts throws
+      # on a missing one). They are the local stack's own fixed demo
+      # credentials — `supabase start` prints the same anon key on every
+      # machine — so they are not secrets and are read back from the CLI
+      # rather than pinned here, which would silently rot if the CLI
+      # version above ever changes them.
+      - name: Write .env.local from the local stack
+        run: |
+          echo "NEXT_PUBLIC_SUPABASE_URL=$(npx supabase status -o env | grep '^API_URL=' | cut -d= -f2- | tr -d '"')" >> .env.local
+          echo "NEXT_PUBLIC_SUPABASE_ANON_KEY=$(npx supabase status -o env | grep '^ANON_KEY=' | cut -d= -f2- | tr -d '"')" >> .env.local
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        # Only useful when something failed, and `trace: "on-first-retry"`
+        # means a trace only exists in that case anyway.
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

@@ -65,10 +65,23 @@ export default async function NewTransactionPage() {
   if (!wallets?.length) redirect("/onboarding");
 
   return (
-    <TransactionForm
-      wallets={wallets}
-      categories={categories ?? ([] satisfies Category[])}
-      defaultWalletId={wallets[0]!.id}
-    />
+    <>
+      {/* This screen had no level-one heading, so its outline started at
+          the `<h2>`-less form itself (caught by axe's `page-has-heading-one`
+          in e2e/ledger.spec.ts). `sr-only` rather than a visible title:
+          `sr-only` is absolutely positioned and so adds no layout height,
+          which matters here specifically — TransactionForm's own comment
+          records this form's mobile content already measuring ~1088px on a
+          390x844 viewport, with the sticky Save button's reachability
+          (spec §5.1) the thing that broke last time height grew. A visible
+          title would push every control down for no information a user of
+          this screen doesn't already have from the TabBar's own "Add". */}
+      <h1 className="sr-only">New transaction</h1>
+      <TransactionForm
+        wallets={wallets}
+        categories={categories ?? ([] satisfies Category[])}
+        defaultWalletId={wallets[0]!.id}
+      />
+    </>
   );
 }
