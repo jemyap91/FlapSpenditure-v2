@@ -44,7 +44,44 @@ Pick one:
 | Option | What it costs |
 |---|---|
 | Turn confirmation **off** in the hosted project | Matches the code as written. No changes. Weaker signup hygiene — anyone can register any address. |
-| Keep confirmation **on** | Requires a "check your email" state in the signup UI and a re-check of the enumeration mitigation. Not just config. |
+| Keep confirmation **on** | Requires a "check your email" state in the signup UI, teaching `signInErrorMessage` to distinguish `email_not_confirmed`, AND custom SMTP — Supabase's built-in email sender is rate-limited (`email_sent = 2` per hour) and is not intended for production. Not just config. |
+
+Turn it off under **Authentication → Sign In / Providers → Email → Confirm email**.
+
+### What it looks like when this is wrong
+
+Signup appears to succeed, and then signing in reports **"Invalid email or
+password."** — even though the password is correct.
+
+The chain: `signUp` creates an unconfirmed user and returns no session, so the
+redirect to `/onboarding` finds nothing and bounces to `/login`; the sign-in
+attempt then fails with GoTrue's `email_not_confirmed`, and
+`signInErrorMessage` (`src/lib/validation/auth.ts`) deliberately collapses
+every 4xx into one generic message so it cannot be used to enumerate accounts.
+Correct behaviour, unhelpful symptom.
+
+To confirm it is this and not a wrong password, call the hosted auth API
+directly — a rate-limit error on signup proves emails are being sent, which
+only happens when confirmation is enabled:
+
+```bash
+curl -s -X POST "https://<ref>.supabase.co/auth/v1/signup" \
+  -H "apikey: <publishable-key>" -H "Content-Type: application/json" \
+  -d '{"email":"probe@example.com","password":"test-password-123"}'
+# {"code":429,"error_code":"over_email_send_rate_limit",...}  -> confirmation is ON
+```
+
+After turning confirmation off, **delete any users created while it was on**
+(Authentication → Users). They are stored with `email_confirmed_at = null` and
+may keep being rejected.
+
+### Do not fix this with `supabase config push`
+
+`config push` sends the whole local `config.toml` to the linked project,
+including `site_url = "http://127.0.0.1:3000"` and
+`additional_redirect_urls = ["https://127.0.0.1:3000"]` — which would
+overwrite the production Site URL and wipe the `/auth/callback` allow-list
+configured in step 2. Use the dashboard toggle.
 
 ---
 
@@ -188,8 +225,16 @@ Node 22 (what CI uses). No `engines` field is set, so nothing enforces this —
 match it deliberately.
 
 **Vercel** is the least-effort path. Import the GitHub repo, add the two
-environment variables, deploy. Next 16 is detected automatically and
-`next.config.ts` is empty, so there is nothing to configure.
+environment variables, deploy.
+
+`vercel.json` pins `"framework": "nextjs"` deliberately. Importing into a
+project whose Framework Preset is **Other** — the default for a project
+created before the repo was attached to it — produces a deployment that
+builds successfully, reports **Ready**, and then 404s on every route
+including the production domain: "Other" serves `public/` if that directory
+exists, so this repo's `public/` ships as a static site with no functions at
+all. `vercel inspect <url>` showing `Builds: . [0ms]` is the tell. Keeping the
+setting in `vercel.json` means it cannot silently differ per project.
 
 **Any other Node host** works the same way — build with `npm run build`, serve
 with `npm start`. Nothing in the codebase is Vercel-specific. The host must
