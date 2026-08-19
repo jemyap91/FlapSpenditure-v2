@@ -7,17 +7,10 @@ import AxeBuilder from "@axe-core/playwright";
  * `[auth.email] enable_confirmations = false`, so a signup here is
  * immediately signed in and no mailbox step is needed.
  *
- * SCOPE NOTE — no transfer test. The plan's sketch for this task walked
- * "signup through TRANSFER and undo", but a transfer needs two wallets and
- * there is no UI that creates a second one: `createWallet` is imported by
- * exactly one file (src/app/onboarding/onboarding-form.tsx), and
- * /onboarding redirects to / the moment an active wallet exists. The
- * plan's own "known gaps" section lists the /wallets management screen as
- * deferred, so this is the deferral surfacing, not a regression. Transfer
- * behaviour IS covered below the UI — src/server/actions/transactions.test.ts
- * for the action and scripts/test-rls.sh for `create_transfer`'s
- * membership/pair invariants — so what's missing is browser coverage
- * specifically, and it stays missing until a wallet-creation screen exists.
+ * The transfer flow below is reachable only because /wallets can create a
+ * SECOND wallet — TransactionForm gates its Transfer chip on
+ * `wallets.length >= 2`. Before that screen existed this suite could not
+ * exercise a transfer at all.
  */
 
 /** `formatMoney` renders U+2212 MINUS SIGN, not an ASCII hyphen (src/lib/money.ts). */
@@ -131,6 +124,113 @@ test.describe("ledger", () => {
   });
 });
 
+/** Adds a wallet from /wallets, which is the only screen that can create a
+ *  second one (onboarding only ever runs at zero wallets). */
+async function addWallet(page: Page, name: string) {
+  await page.goto("/wallets");
+  await page.getByLabel("Name").fill(name);
+  await page.getByRole("button", { name: "Add account" }).click();
+  await expect(page.getByText(name)).toBeVisible();
+}
+
+test.describe("wallets", () => {
+  test("lists the onboarding wallet with a balance and refuses to archive the last one", async ({
+    page,
+  }) => {
+    await signUpAndOnboard(page, "Everyday");
+    await page.goto("/wallets");
+
+    await expect(page.getByText("Everyday")).toBeVisible();
+    // A brand-new wallet's starting balance is 0 — a real computed zero,
+    // which must render as an amount rather than the "not computed" dash.
+    await expect(page.getByText("$0.00")).toBeVisible();
+
+    await expect(page.getByRole("button", { name: "Archive Everyday" })).toBeDisabled();
+    await expect(page.getByText(/need at least one account/i)).toBeVisible();
+  });
+
+  test("refuses to archive the last wallet when a stale tab still offers it", async ({ page }) => {
+    await signUpAndOnboard(page, "Everyday");
+    await addWallet(page, "Savings");
+
+    // This tab now renders two wallets, so Archive is enabled on both.
+    await expect(page.getByRole("button", { name: "Archive Everyday" })).toBeEnabled();
+
+    // A second tab (same session) archives one, leaving the account count
+    // at 1 — but THIS tab does not know that. `revalidatePath` runs on the
+    // server; it does not reach into an already-rendered client.
+    const otherTab = await page.context().newPage();
+    await otherTab.goto("/wallets");
+    await otherTab.getByRole("button", { name: "Archive Savings" }).click();
+    await expect(otherTab.getByText("Savings")).toHaveCount(0);
+    await otherTab.close();
+
+    // The stale tab still offers Archive on the only remaining wallet.
+    // This is the exact case the UI's disabled state cannot cover and the
+    // guard inside `archiveWallet` exists for — and it is a real scenario
+    // (two tabs, or a page left open), not a synthetic tamper. Note the
+    // DOM cannot be tampered into this state instead: React decides
+    // whether to dispatch a click from the fiber's own props, so
+    // un-disabling the button in the DOM does not deliver the event.
+    await page.getByRole("button", { name: "Archive Everyday" }).click();
+
+    // Asserts on the SERVER message's distinctive tail, not on "need at
+    // least one account" — WalletList renders a static hint containing
+    // that phrase whenever it is showing a lone wallet, so a looser
+    // pattern could match text that was already on the page.
+    await expect(page.getByText(/Add another before archiving this one/i)).toBeVisible();
+  });
+
+  test("a second wallet unlocks Archive on both", async ({ page }) => {
+    await signUpAndOnboard(page, "Everyday");
+    await addWallet(page, "Savings");
+
+    await expect(page.getByRole("button", { name: "Archive Everyday" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Archive Savings" })).toBeEnabled();
+
+    await page.getByRole("button", { name: "Archive Savings" }).click();
+    await expect(page.getByText("Savings")).toHaveCount(0);
+    // Back down to one wallet, so the guard re-engages.
+    await expect(page.getByRole("button", { name: "Archive Everyday" })).toBeDisabled();
+  });
+
+  test("a second wallet unlocks transfers, and undo restores BOTH legs", async ({ page }) => {
+    await signUpAndOnboard(page, "Everyday");
+    await addWallet(page, "Savings");
+
+    await page.goto("/transactions/new");
+    // The Transfer chip does not exist at one wallet (TransactionForm's
+    // `canTransfer`), so its presence is itself the assertion.
+    const transferChip = page.getByRole("radio", { name: "Transfer" });
+    await expect(transferChip).toBeAttached();
+    // Clicked via the visible chip, not `.check()` on the radio: the radio
+    // is `peer sr-only` (styling is driven off it by its sibling <div>), so
+    // it is deliberately not the hit target — its own <label> intercepts
+    // the pointer, which is exactly what a real user clicks.
+    await page.getByText("Transfer", { exact: true }).click();
+    await expect(transferChip).toBeChecked();
+    await pressAmount(page, "25");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page).toHaveURL("/transactions");
+
+    // A transfer is a PAIR of rows with opposite signs (spec §3.2), not one
+    // row — the money leaves one wallet and arrives in the other.
+    await expect(page.getByText(`${MINUS}$25.00`)).toBeVisible();
+    await expect(page.getByText("+$25.00")).toBeVisible();
+
+    // Deleting either leg soft-deletes both (setDeletedAt scopes its UPDATE
+    // by transfer_id, not id), and Undo has to restore both.
+    await page.getByRole("button", { name: `Delete Transfer, ${MINUS}$25.00` }).click();
+    await expect(page.getByText("Transfer deleted", { exact: true })).toBeVisible();
+    await expect(page.getByText(`${MINUS}$25.00`)).toHaveCount(0);
+    await expect(page.getByText("+$25.00")).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Undo", exact: true }).click();
+    await expect(page.getByText(`${MINUS}$25.00`)).toBeVisible();
+    await expect(page.getByText("+$25.00")).toBeVisible();
+  });
+});
+
 /**
  * Accessibility gates. Signed-out pages are scanned directly; the signed-in
  * pages need a user first, which is why they share one test rather than
@@ -164,7 +264,7 @@ test.describe("accessibility", () => {
   test("signed-in pages have no accessibility violations", async ({ page }) => {
     await signUpAndOnboard(page);
 
-    for (const path of ["/", "/transactions", "/transactions/new", "/categories"]) {
+    for (const path of ["/", "/wallets", "/transactions", "/transactions/new", "/categories"]) {
       await page.goto(path);
       await expectNoViolations(page, path);
     }

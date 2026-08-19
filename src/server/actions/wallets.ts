@@ -38,10 +38,22 @@ function firstIssueField(error: z.ZodError): WalletField | undefined {
  * could only ever leak implementation detail, never useful guidance.
  */
 
-export async function createWallet(
-  _prev: WalletState,
-  formData: FormData,
-): Promise<WalletState> {
+/**
+ * The shared body of `createWallet` and `addWallet`. Not exported (a
+ * file-level `"use server"` makes every export a callable endpoint, and
+ * this is not one) and returns a discriminated result rather than
+ * redirecting, so each caller decides where the user goes next.
+ *
+ * This split exists because the two entry points need DIFFERENT
+ * navigation: onboarding must leave /onboarding or the user is stranded on
+ * a form they have already completed, while /wallets must stay put or
+ * adding a second account throws the user back to the dashboard. Taking a
+ * redirect target as a parameter was the obvious alternative and is worse:
+ * a bound Server Function argument is serialized to the client and can be
+ * tampered with, so it would put an open-redirect surface behind a
+ * behaviour that is fully known at build time.
+ */
+async function insertWallet(formData: FormData): Promise<WalletState | { ok: true }> {
   const parsed = walletInput.safeParse(Object.fromEntries(formData));
   if (!parsed.success) {
     return { error: parsed.error.issues[0]!.message, field: firstIssueField(parsed.error) };
@@ -90,11 +102,44 @@ export async function createWallet(
   });
   if (error) return { error: "Could not create wallet. Please try again." };
 
+  return { ok: true };
+}
+
+/**
+ * Onboarding's entry point: creates the user's first wallet and leaves the
+ * onboarding flow.
+ */
+export async function createWallet(
+  _prev: WalletState,
+  formData: FormData,
+): Promise<WalletState> {
+  const result = await insertWallet(formData);
+  if (!("ok" in result)) return result;
+
   // "layout", not just "/": (app)/layout.tsx's wallet-count gate lives
   // above every route in that group, and this is what stops it from
   // bouncing the now-onboarded user straight back to /onboarding.
   revalidatePath("/", "layout");
   redirect("/");
+}
+
+/**
+ * /wallets' entry point: same insert, but returns to the caller so the
+ * management screen re-renders in place with the new wallet in its list.
+ * `revalidatePath("/", "layout")` still runs — the layout's wallet-count
+ * gate reads the same data, and a second wallet is also what unlocks
+ * transfers in TransactionForm.
+ */
+export async function addWallet(
+  _prev: WalletState,
+  formData: FormData,
+): Promise<WalletState> {
+  const result = await insertWallet(formData);
+  if (!("ok" in result)) return result;
+
+  revalidatePath("/", "layout");
+  revalidatePath("/wallets");
+  return {};
 }
 
 /**
@@ -165,25 +210,60 @@ export async function updateWallet(
  * profile.ts's setTheme scopes its UPDATE despite `profiles_own` already
  * covering it.
  *
+ * Returns `WalletState` rather than throwing (its original shape, which
+ * had no consumer). Next replaces errors forwarded from the server with a
+ * generic digest in production — see node_modules/next/dist/docs/01-app/
+ * 03-api-reference/03-file-conventions/error.md: "Errors forwarded from
+ * Server Components show a generic message with an identifier. This is to
+ * prevent leaking sensitive details." The last-wallet refusal below is
+ * guidance the user must actually be able to read, so it cannot travel as
+ * a thrown message. This also matches every other action in this file and
+ * in categories.ts/transactions.ts.
+ *
  * Also revalidates the `(app)` layout: archiving a user's last wallet drops
  * their active-wallet count to zero, and that count is exactly what sends a
  * user to /onboarding, so a stale layout render would leave them stranded
  * on a shell with nothing to show instead of being routed back.
  */
-export async function archiveWallet(id: string): Promise<void> {
+export async function archiveWallet(id: string): Promise<WalletState> {
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) throw new Error("Not signed in");
+  if (!user) return { error: "Not signed in" };
+
+  // The app is unusable with zero active wallets — (app)/layout.tsx
+  // redirects such a user straight to /onboarding — so archiving the last
+  // one is refused rather than performed and then explained. WalletList
+  // disables the button too; this is the enforcement, that is the
+  // affordance. A Server Function is reachable by direct POST regardless
+  // of what any UI renders (see this module's doc comment), so the UI
+  // check alone would not actually hold the line.
+  //
+  // Counted, not derived from the client: the count must reflect the
+  // database at the moment of the write, not what some page render
+  // believed a while ago.
+  const { count, error: countError } = await supabase
+    .from("wallets")
+    .select("id", { count: "exact", head: true })
+    .is("archived_at", null)
+    .eq("owner_id", user.id);
+  // A count error is not "no wallets" — `count` is null for both, and
+  // treating a transient failure as zero would flip this guard from
+  // refusing to permitting, which is the wrong way for a guard to fail.
+  if (countError) return { error: "Could not archive wallet. Please try again." };
+  if ((count ?? 0) <= 1) {
+    return { error: "You need at least one account. Add another before archiving this one." };
+  }
 
   const { error } = await supabase
     .from("wallets")
     .update({ archived_at: new Date().toISOString() })
     .eq("id", id)
     .eq("owner_id", user.id);
-  if (error) throw new Error("Could not archive wallet");
+  if (error) return { error: "Could not archive wallet. Please try again." };
 
   revalidatePath("/", "layout");
   revalidatePath("/wallets");
+  return {};
 }
