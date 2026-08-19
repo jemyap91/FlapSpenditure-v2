@@ -69,6 +69,15 @@ against.
 `supabase/config.toml` and all seven migrations are committed. `init` would
 scaffold a fresh config over them.
 
+> **After linking, the first local `db reset` may fail once.** `link` records
+> the remote project's Postgres version in `supabase/.temp/postgres-version`,
+> so the local stack switches to a matching image. If that image is not
+> cached yet, Docker pulls it and recreates the DB container, and a `db reset`
+> racing that startup fails with `Initialising schema... error running
+> container: exit 1`. The image is cached afterwards — just run the command
+> again. This also affects `npm run test:rls`, which calls `db reset`
+> internally. It is a one-time race on the version swap, not a broken schema.
+
 `db push` applies all seven migrations in `supabase/migrations/`:
 
 | Migration | What it establishes |
