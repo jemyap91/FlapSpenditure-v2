@@ -39,7 +39,7 @@ body {
   --surface: #fcfcfb; --page: #f9f9f7;
   --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781; --grid: #e1e0d9;
   --pos: #006300; --neg: #d03b3b;
-  --div-in: #17a2a2; --div-out: #e36a1f; --div-mid: #f0efec;
+  --div-in: #17a0a0; --div-out: #e36a1f; --div-mid: #f0efec;
   color-scheme: light;
 }
 

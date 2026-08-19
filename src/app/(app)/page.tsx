@@ -143,6 +143,14 @@ export default async function DashboardPage() {
   if (flowError) throw new Error("Failed to load cash flow");
 
   const rows: BreakdownRow[] = breakdown ?? [];
+  // Same pattern as `rows` above: an explicit type annotation, not an
+  // inline `as FlowRow[]` cast. `database.types.ts` already types
+  // `get_cash_flow`'s return shape identically to `FlowRow` (regenerated
+  // from the RPC's own `returns table(...)` clause), so a cast here would
+  // buy nothing and would silence a genuine mismatch if that generated type
+  // ever drifted from `FlowRow` — the sibling `rows` line doesn't cast, and
+  // review-caught (small) this shouldn't either.
+  const flowRows: FlowRow[] = flow ?? [];
   // REVIEW-CAUGHT (small): this used to be recomputed a second time inside
   // CategoryBreakdown from the same `rows` array — two independent sums of
   // the same data that could only ever agree by construction, never by a
@@ -180,7 +188,7 @@ export default async function DashboardPage() {
         </p>
       </header>
       <CategoryBreakdown rows={rows} currencyCode={currency} total={spent} />
-      <CashFlow rows={(flow ?? []) as FlowRow[]} currencyCode={currency} />
+      <CashFlow rows={flowRows} currencyCode={currency} hasExcludedWallets={hasExcludedWallets} />
     </div>
   );
 }

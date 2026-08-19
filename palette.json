@@ -20,7 +20,7 @@
     "neg":   { "light": "#d03b3b", "dark": "#e66767" }
   },
   "diverging": {
-    "in":  { "light": "#17a2a2", "dark": "#17a2a2" },
+    "in":  { "light": "#17a0a0", "dark": "#17a0a0" },
     "out": { "light": "#e36a1f", "dark": "#e36a1f" },
     "mid": { "light": "#f0efec", "dark": "#383835" }
   }

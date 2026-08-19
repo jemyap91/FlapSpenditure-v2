@@ -31,14 +31,60 @@ const HALF_HEIGHT = 88;
  * visible rather than getting rounded away to nothing. A bucket with a true
  * zero (no inflow, or no outflow, that period) renders no bar at all on that
  * side — that absence IS the correct information, not something to pad. */
-const MIN_BAR_PX = 2;
+export const MIN_BAR_PX = 2;
 
-function barHeight(magnitude: number, maxMagnitude: number): number {
+export function barHeight(magnitude: number, maxMagnitude: number): number {
   if (magnitude <= 0) return 0;
   return Math.max(MIN_BAR_PX, (magnitude / maxMagnitude) * HALF_HEIGHT);
 }
 
-export function CashFlow({ rows, currencyCode }: { rows: FlowRow[]; currencyCode: string }) {
+/**
+ * One shared scale across every bucket and BOTH directions, so a day's
+ * in-bar and out-bar — and every other bucket's bars — are all drawn against
+ * the same yardstick (review-caught, Important: stronger than the brief's
+ * own sample, which didn't specify this). `Math.max(1, ...)` guards only the
+ * degenerate all-zero case: without it, a month with literally no flow would
+ * divide by zero inside `barHeight` and turn every height into `NaN`/`Infinity`
+ * rather than the `0` an all-quiet month should render. Exported so this
+ * guard is unit-testable without rendering the whole component.
+ */
+export function computeMaxMagnitude(rows: readonly FlowRow[]): number {
+  return Math.max(1, ...rows.flatMap((r) => [r.in_minor, r.out_minor]));
+}
+
+/**
+ * `formatMoney({ signed: true })` renders `0` as `"+$0.00"` — correct for
+ * `TransactionList.tsx`'s use (an already-signed `amount_minor` that is
+ * genuinely never exactly zero there) but wrong here: an exactly-balanced
+ * bucket (`in === out`, e.g. a transfer's two legs landing in the same
+ * bucket) has not "gained" anything and shouldn't read as if it had.
+ * Review-caught (small). Deliberately NOT fixed in `src/lib/money.ts` —
+ * three other tasks depend on its existing sign behaviour — so the zero
+ * case is special-cased at this one call site instead.
+ */
+function formatNet(netMinor: number, currencyCode: string): string {
+  return netMinor === 0 ? formatMoney(0, currencyCode) : formatMoney(netMinor, currencyCode, { signed: true });
+}
+
+export function CashFlow({
+  rows,
+  currencyCode,
+  hasExcludedWallets = false,
+}: {
+  rows: FlowRow[];
+  currencyCode: string;
+  /**
+   * Mirrors `page.tsx`'s own `hasExcludedWallets` (Task 21, REVIEW-CAUGHT
+   * Important): the hero total already discloses when non-primary-currency
+   * wallets are silently excluded from `wallet_ids`. This chart is built
+   * from the SAME `wallet_ids`, so it's subject to the identical omission —
+   * without this, a mixed-currency user reads a full month of in/out
+   * figures with the qualifier several hundred pixels away on the hero and
+   * no indication THIS chart is scoped the same way. Optional (defaults to
+   * `false`) so existing callers/tests that don't pass it still compile.
+   */
+  hasExcludedWallets?: boolean;
+}) {
   if (!rows.length) {
     return (
       <p className="text-sm" style={{ color: "var(--ink-2)" }}>
@@ -47,20 +93,27 @@ export function CashFlow({ rows, currencyCode }: { rows: FlowRow[]; currencyCode
     );
   }
 
-  // One shared scale across every bucket and both directions — `Math.max(1, ...)`
-  // only guards the degenerate case where every row is exactly zero (division by
-  // zero would otherwise turn every bar height into NaN, not 0).
-  const maxMagnitude = Math.max(1, ...rows.flatMap((r) => [r.in_minor, r.out_minor]));
+  const maxMagnitude = computeMaxMagnitude(rows);
 
   return (
     <section aria-labelledby="flow-heading" className="flex flex-col gap-4">
-      <h2
-        id="flow-heading"
-        className="text-sm font-medium uppercase tracking-wide"
-        style={{ color: "var(--ink-2)" }}
-      >
-        Cash flow
-      </h2>
+      <div>
+        <h2
+          id="flow-heading"
+          className="text-sm font-medium uppercase tracking-wide"
+          style={{ color: "var(--ink-2)" }}
+        >
+          Cash flow
+        </h2>
+        {/* Same disclosure convention as the hero caption in `page.tsx`:
+            unqualified in the common case (every active wallet shares one
+            currency), qualified whenever some were excluded. */}
+        {hasExcludedWallets && (
+          <p className="text-xs" style={{ color: "var(--ink-2)" }}>
+            {currencyCode} wallets only
+          </p>
+        )}
+      </div>
 
       {/* Text legend, not a colour-only cue: "In"/"Out" are stated in words,
           so a viewer who can't distinguish teal from rust (spec §6.2's whole
@@ -80,14 +133,13 @@ export function CashFlow({ rows, currencyCode }: { rows: FlowRow[]; currencyCode
 
       {/*
         Hand-rolled, like `CategoryBreakdown` — see this task's report for why
-        Recharts (present in package.json, unused so far) isn't pulled in here
-        either. Two coloured bars per bucket, split into a top ("in") half and
-        a bottom ("out") half around a zero baseline, is exactly as achievable
-        with plain flex/percentage-height `<div>`s as the breakdown's stacked
-        bar was — keeping this a Server Component (no client JS shipped for
-        this chart at all) and getting the same accessibility primitives (a
-        native `title` per bar, a real `<table>` twin below) without a chart
-        library's own SVG/ARIA gaps to patch.
+        Recharts isn't pulled in here either. Two coloured bars per bucket,
+        split into a top ("in") half and a bottom ("out") half around a zero
+        baseline, is exactly as achievable with plain flex/percentage-height
+        `<div>`s as the breakdown's stacked bar was — keeping this a Server
+        Component (no client JS shipped for this chart at all) and getting
+        the same accessibility primitives (a hover tooltip, a real `<table>`
+        twin below) without a chart library's own SVG/ARIA gaps to patch.
 
         Polarity is conveyed STRUCTURALLY — which half of the baseline a bar
         occupies — not only by colour (spec §6.5: "money above and below a
@@ -95,10 +147,22 @@ export function CashFlow({ rows, currencyCode }: { rows: FlowRow[]; currencyCode
         rust still reads "in" vs "out" from position alone; the two hues are a
         second, deliberately cool/warm-opposite cue layered on top (§6.2), not
         the only one. `role="img"` + a full aria-label follows the same
-        pattern `CategoryBreakdown` established for its stacked bar: one
-        announcement carries the whole chart's content for a screen-reader
-        user, in addition to (not instead of) the table below and each bar's
-        own `title`.
+        pattern `CategoryBreakdown` established for its stacked bar.
+
+        REVIEW-CAUGHT (Important): position is only legible relative to a
+        baseline the viewer can actually see. The first version drew a 2px
+        `--div-mid` rule INSIDE each column, which — combined with the
+        columns' own `gap-[2px]` — rendered as a DASHED line (10px on, 2px
+        off per bucket), and only existed under the columns that happened to
+        render (three buckets = three short dashes at the left edge, not a
+        line spanning the chart). Spec §6.5 says gridlines are "never
+        dashed." Worse, a bucket with only an out-bar (no in-bar to visually
+        meet it) had nothing at all to anchor "below what" against except the
+        rust bar's own top edge. Fixed by drawing ONE continuous 2px rule,
+        absolutely positioned across the full (scrollable) width of this
+        `relative` container, independent of how many columns exist or what
+        they contain — load-bearing for exactly the one-sided-bucket case
+        above.
       */}
       <div
         role="img"
@@ -108,9 +172,27 @@ export function CashFlow({ rows, currencyCode }: { rows: FlowRow[]; currencyCode
               `${r.bucket_start}, in ${formatMoney(r.in_minor, currencyCode)}, out ${formatMoney(r.out_minor, currencyCode)}`,
           )
           .join("; ")}`}
-        className="flex items-stretch gap-[2px] overflow-x-auto"
+        tabIndex={0}
+        className="relative flex items-stretch gap-[2px] overflow-x-auto"
         style={{ height: HALF_HEIGHT * 2 + 2 }}
       >
+        {/* The single continuous baseline rule — see the doc comment above.
+            Positioned at the exact seam between the top/bottom halves,
+            spanning the container's full content width (which grows with
+            the scrollable content, not just the visible viewport), so it's
+            present under every column including ones with only an in- or
+            only an out-bar. */}
+        <div
+          aria-hidden
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            top: HALF_HEIGHT,
+            height: 2,
+            background: "var(--div-mid)",
+          }}
+        />
         {rows.map((r) => {
           const inPx = barHeight(r.in_minor, maxMagnitude);
           const outPx = barHeight(r.out_minor, maxMagnitude);
@@ -121,10 +203,17 @@ export function CashFlow({ rows, currencyCode }: { rows: FlowRow[]; currencyCode
               style={{ width: 10, minWidth: 10 }}
             >
               {/* Top half: bottom-anchored, so the "in" bar grows UPWARD away
-                  from the baseline as its value increases. */}
-              <div className="flex flex-col justify-end" style={{ height: HALF_HEIGHT }}>
+                  from the baseline as its value increases. `title` sits on
+                  this whole half (10x88px), not the (possibly 2px-tall) bar
+                  itself — review-caught (small): a hover target as small as
+                  10x2px falls well short of spec §6.5's ~24px hit-area
+                  guidance for a low-magnitude bucket. */}
+              <div
+                title={`${r.bucket_start}: in ${formatMoney(r.in_minor, currencyCode)}`}
+                className="flex flex-col justify-end"
+                style={{ height: HALF_HEIGHT }}
+              >
                 <div
-                  title={`${r.bucket_start}: in ${formatMoney(r.in_minor, currencyCode)}`}
                   style={{
                     height: inPx,
                     background: "var(--div-in)",
@@ -132,20 +221,19 @@ export function CashFlow({ rows, currencyCode }: { rows: FlowRow[]; currencyCode
                   }}
                 />
               </div>
-              {/* The zero baseline itself. `--div-mid` is the spec's own
-                  third diverging colour (§6.2's "neutral grey midpoint"), so
-                  it's used here rather than `--grid`/`--muted` even though —
-                  see this task's report — its contrast against `--page` is
-                  low in both themes: it is a structural marker (the boundary
-                  between the two already-labelled, already-positioned
-                  halves), not the sole carrier of any information a viewer
-                  couldn't already get from which half a bar is in. */}
-              <div style={{ height: 2, background: "var(--div-mid)" }} />
+              {/* 2px spacer reserving the same visual gap the old per-column
+                  baseline occupied — purely structural now (no background of
+                  its own); the absolutely-positioned rule above supplies the
+                  actual colour, once, for the whole chart. */}
+              <div aria-hidden style={{ height: 2 }} />
               {/* Bottom half: top-anchored, so the "out" bar grows DOWNWARD
                   away from the baseline as its value increases. */}
-              <div className="flex flex-col justify-start" style={{ height: HALF_HEIGHT }}>
+              <div
+                title={`${r.bucket_start}: out ${formatMoney(r.out_minor, currencyCode)}`}
+                className="flex flex-col justify-start"
+                style={{ height: HALF_HEIGHT }}
+              >
                 <div
-                  title={`${r.bucket_start}: out ${formatMoney(r.out_minor, currencyCode)}`}
                   style={{
                     height: outPx,
                     background: "var(--div-out)",
@@ -165,10 +253,9 @@ export function CashFlow({ rows, currencyCode }: { rows: FlowRow[]; currencyCode
         is also stated as a number. `in`/`out` stay unsigned (they're already
         positive magnitudes labelled by column header, matching
         `CategoryBreakdown`'s convention for its own always-positive amounts);
-        `net` uses `formatMoney`'s `signed` option — the same one
-        `TransactionList.tsx` uses for its already-signed `amount_minor` — since
-        net flow genuinely can be positive or negative and that sign is the
-        point of the column.
+        `net` uses `formatNet` (see its doc comment above for why a plain
+        `formatMoney(..., { signed: true })` isn't quite right at exactly
+        zero).
       */}
       <table className="w-full text-sm">
         <caption className="sr-only">Cash flow by period</caption>
@@ -203,7 +290,7 @@ export function CashFlow({ rows, currencyCode }: { rows: FlowRow[]; currencyCode
                   {formatMoney(r.out_minor, currencyCode)}
                 </td>
                 <td className="py-1.5 text-right tabular-nums" style={{ color: "var(--ink)" }}>
-                  {formatMoney(net, currencyCode, { signed: true })}
+                  {formatNet(net, currencyCode)}
                 </td>
               </tr>
             );

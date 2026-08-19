@@ -17,11 +17,26 @@
  *                         Machado-Oliveira-Fernandes 2009 at severity 1.0
  *   4. Normal-vision      worst ADJACENT pair >= 15.0 ΔE unsimulated
  *   5. Contrast           every slot >= 3:1 against its surface
+ *   6. Diverging contrast `diverging.in`/`.out` >= 3:1 against BOTH the
+ *                         surface AND the page background
  *
  * SCOPE: the adjacent pairlist is what stacked bars, ranked lists and lines
  * need. It is NOT sufficient for scatter / bubble / small-multiples, where any
  * two marks can touch. If such a chart is ever added, cap it at three series
  * and fold the tail into "Other" -- do not widen the palette.
+ *
+ * Check 6 exists because check 5 never covered `diverging.in`/`.out` at all
+ * -- it was built from `raw.categorical` + `raw.surfaces` only, so a
+ * diverging chart's own poles (spec §6.2: teal in / rust out) could silently
+ * fail contrast with nothing here to catch it. That happened: Task 22 found
+ * `diverging.in` (`#17a2a2`) at 2.962:1 against `--page` in light mode --
+ * under the 3:1 floor -- even though it cleared 3:1 against `--surface`
+ * (3.041:1). Charts are drawn directly on `--page` (no `--surface` card
+ * wraps them, same as `CategoryBreakdown`/`CashFlow`), so `--surface` alone
+ * was the wrong plane to certify against. `diverging.in` was nudged to
+ * `#17a0a0` (visually indistinguishable, 3.031:1 against `--page`) and this
+ * check was added so a future edit to `palette.json`'s `diverging` block
+ * can't reintroduce the same gap silently.
  */
 
 // ── palette under test ────────────────────────────────────────────────────────
@@ -39,8 +54,24 @@ const here = dirname(fileURLToPath(import.meta.url));
 const raw = JSON.parse(readFileSync(join(here, "..", "palette.json"), "utf8"));
 
 export const PALETTE = {
-  light: { surface: raw.surfaces.light, slots: raw.categorical.map((c) => [c.name, c.light]) },
-  dark:  { surface: raw.surfaces.dark,  slots: raw.categorical.map((c) => [c.name, c.dark])  },
+  light: {
+    surface: raw.surfaces.light,
+    page: raw.chrome.page.light,
+    slots: raw.categorical.map((c) => [c.name, c.light]),
+    diverging: [
+      ["diverging.in", raw.diverging.in.light],
+      ["diverging.out", raw.diverging.out.light],
+    ],
+  },
+  dark: {
+    surface: raw.surfaces.dark,
+    page: raw.chrome.page.dark,
+    slots: raw.categorical.map((c) => [c.name, c.dark]),
+    diverging: [
+      ["diverging.in", raw.diverging.in.dark],
+      ["diverging.out", raw.diverging.out.dark],
+    ],
+  },
 };
 
 const BAND = { light: [0.43, 0.77], dark: [0.48, 0.67] };
@@ -105,7 +136,7 @@ const deltaE = (h1, h2, kind) => {
 
 // ── checks ────────────────────────────────────────────────────────────────────
 function check(mode) {
-  const { surface, slots } = PALETTE[mode];
+  const { surface, page, slots, diverging } = PALETTE[mode];
   const [lo, hi] = BAND[mode];
   const rows = [];
   let ok = true;
@@ -141,6 +172,29 @@ function check(mode) {
   const dim = slots.filter(([, hex]) => contrast(hex, surface) < CONTRAST_MIN);
   dim.length ? fail("Contrast vs surface", dim.map(([n, h]) => `${n} ${contrast(h, surface).toFixed(2)}:1`).join(", "))
              : pass("Contrast vs surface", `all ${slots.length} >= ${CONTRAST_MIN}:1`);
+
+  // Diverging poles get their OWN check against BOTH planes they're actually
+  // drawn on -- `--surface` (what check 5 above certifies for the
+  // categorical slots) AND `--page` (what CashFlow/CategoryBreakdown
+  // actually render on, with no card wrapper). A pair can clear one and miss
+  // the other -- see the doc comment at the top of this file for the exact
+  // case that happened.
+  const divDim = diverging.flatMap(([n, hex]) => {
+    const vsSurface = contrast(hex, surface);
+    const vsPage = contrast(hex, page);
+    const misses = [];
+    if (vsSurface < CONTRAST_MIN) misses.push(`${n} ${hex} vs surface ${vsSurface.toFixed(3)}:1`);
+    if (vsPage < CONTRAST_MIN) misses.push(`${n} ${hex} vs page ${vsPage.toFixed(3)}:1`);
+    return misses;
+  });
+  divDim.length
+    ? fail("Diverging contrast", divDim.join(", "))
+    : pass(
+        "Diverging contrast",
+        diverging
+          .map(([n, hex]) => `${n} ${contrast(hex, surface).toFixed(2)}:1 surface / ${contrast(hex, page).toFixed(2)}:1 page`)
+          .join(", "),
+      );
 
   return { rows, ok };
 }
