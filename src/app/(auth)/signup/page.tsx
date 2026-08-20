@@ -3,6 +3,7 @@
 import { useActionState, useEffect, useId, useRef } from "react";
 import Link from "next/link";
 import { signUp, type AuthState } from "@/server/actions/auth";
+import { GoogleButton } from "@/components/GoogleButton";
 
 export default function SignupPage() {
   const [state, action, pending] = useActionState<AuthState, FormData>(signUp, {});
@@ -66,6 +67,24 @@ export default function SignupPage() {
           {pending ? "Creating…" : "Create account"}
         </button>
       </form>
+
+      {/* A labelled separator, not a bare rule: the two blocks above and
+          below are alternative ways to do the same thing, and "or" is what
+          says so. aria-hidden on the rules leaves just the word in the
+          accessibility tree. */}
+      <div className="flex items-center gap-3">
+        <span aria-hidden className="h-px flex-1" style={{ background: "var(--grid)" }} />
+        {/* `--ink-2`, not `--muted`: measured 3.41:1 against `--page` in
+            light mode, under WCAG AA's 4.5:1 for normal text (axe caught
+            it). `--ink-2` is 7.53:1 light / 10.85:1 dark. `--muted` is a
+            de-emphasis token for non-text chrome, not a text colour at
+            this size. */}
+        <span className="text-xs uppercase tracking-wide" style={{ color: "var(--ink-2)" }}>
+          or
+        </span>
+        <span aria-hidden className="h-px flex-1" style={{ background: "var(--grid)" }} />
+      </div>
+      <GoogleButton />
       <p className="text-sm" style={{ color: "var(--ink-2)" }}>
         Already have an account?{" "}
         <Link href="/login" className="underline">

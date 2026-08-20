@@ -289,6 +289,26 @@ async function expectNoViolations(page: Page, context: string) {
   ).toEqual([]);
 }
 
+test.describe("google sign-in", () => {
+  for (const path of ["/login", "/signup"]) {
+    test(`${path} offers Continue with Google`, async ({ page }) => {
+      await page.goto(path);
+      await expect(page.getByRole("button", { name: /continue with google/i })).toBeEnabled();
+      // The email/password form is an alternative, not a replacement.
+      await expect(page.getByLabel("Email")).toBeVisible();
+      await expect(page.getByLabel("Password")).toBeVisible();
+    });
+  }
+
+  // NOT covered here: the Google round trip itself. Completing it needs a
+  // real Google account and its consent screen, which a headless run cannot
+  // drive and which would make this suite depend on a third party being up.
+  // What is covered is everything on this side of the handoff — the button
+  // exists, is enabled, and (in GoogleButton.test.tsx) calls
+  // signInWithOAuth with the right provider and redirectTo. The leg from
+  // Google back into /auth/callback stays a manual check.
+});
+
 test.describe("accessibility", () => {
   for (const path of ["/login", "/signup"]) {
     test(`${path} has no accessibility violations`, async ({ page }) => {
