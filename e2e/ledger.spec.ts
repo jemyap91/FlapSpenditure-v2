@@ -105,6 +105,21 @@ test.describe("ledger", () => {
     await expect(page.getByText(amountText)).toBeVisible();
   });
 
+  test("the add-transaction screen is reachable from the nav, not only by URL", async ({ page }) => {
+    await signUpAndOnboard(page);
+    await page.goto("/transactions");
+
+    // Deliberately ONE locator for both projects. Sidebar (`hidden md:flex`)
+    // and TabBar (`md:hidden`) are mutually exclusive by breakpoint and only
+    // one is in the accessibility tree at a time, so this resolves to
+    // whichever nav the viewport actually shows — and fails on the viewport
+    // whose nav is missing an entry point. The desktop sidebar had no "Add"
+    // item at all, so /transactions/new was unreachable there except by
+    // typing the URL, while the mobile tab bar had its "+" the whole time.
+    await page.getByRole("link", { name: "Add" }).click();
+    await expect(page).toHaveURL("/transactions/new");
+  });
+
   test("an expense reaches the dashboard's total, breakdown and cash flow", async ({ page }) => {
     await signUpAndOnboard(page);
 

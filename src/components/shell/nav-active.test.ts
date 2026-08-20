@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { isActive } from "./nav-active";
 
-const SIDEBAR_HREFS = ["/", "/wallets", "/transactions", "/categories"];
+// Kept in sync with Sidebar.tsx's own NAV. "/transactions/new" now lives in
+// BOTH navs, so the prefix-collision case below (a longer href winning over
+// the shorter one it contains) is exercised for the sidebar too, not just
+// the tab bar.
+const SIDEBAR_HREFS = ["/", "/wallets", "/transactions/new", "/transactions", "/categories"];
 const TABBAR_HREFS = ["/", "/wallets", "/transactions/new", "/transactions", "/categories"];
 
 describe("isActive", () => {
@@ -44,5 +48,17 @@ describe("isActive", () => {
 
   it("activates the shorter href for a deeper sub-path that isn't under the longer href", () => {
     expect(isActive("/transactions/456/edit", "/transactions", TABBAR_HREFS)).toBe(true);
+  });
+});
+
+describe("isActive — the sidebar's own /transactions vs /transactions/new pair", () => {
+  it("marks only Add active on the add screen", () => {
+    expect(isActive("/transactions/new", "/transactions/new", SIDEBAR_HREFS)).toBe(true);
+    expect(isActive("/transactions/new", "/transactions", SIDEBAR_HREFS)).toBe(false);
+  });
+
+  it("marks only Transactions active on the list screen", () => {
+    expect(isActive("/transactions", "/transactions", SIDEBAR_HREFS)).toBe(true);
+    expect(isActive("/transactions", "/transactions/new", SIDEBAR_HREFS)).toBe(false);
   });
 });

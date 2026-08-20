@@ -2,15 +2,23 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Wallet, TrendingUp, Tags, LogOut } from "lucide-react";
+import { Home, Wallet, TrendingUp, Tags, LogOut, Plus } from "lucide-react";
 import { signOut } from "@/server/actions/auth";
 import type { ThemePref } from "@/lib/supabase/current-user";
 import { ThemeToggle } from "./ThemeToggle";
 import { isActive } from "./nav-active";
 
+// Mirrors TabBar's own order and labels, "Add" included. That entry used to
+// exist ONLY in TabBar (`md:hidden`), while this Sidebar is `hidden md:flex`
+// — so at desktop widths the two navs never overlap and /transactions/new
+// had no entry point at all, reachable only by typing the URL. The
+// deferred work here was the add-transaction MODAL and its keyboard
+// shortcut; a plain link is not that refinement, it is the affordance the
+// refinement was going to replace, and leaving it out stranded the screen.
 const NAV = [
   { href: "/", label: "Home", Icon: Home },
   { href: "/wallets", label: "Wallets", Icon: Wallet },
+  { href: "/transactions/new", label: "Add", Icon: Plus },
   { href: "/transactions", label: "Transactions", Icon: TrendingUp },
   { href: "/categories", label: "Categories", Icon: Tags },
 ];
