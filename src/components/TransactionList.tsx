@@ -35,6 +35,10 @@ export type Row = {
   currency_code: string;
   occurred_on: string;
   wallet_name: string;
+  /** The transactions table's own `note` column (<=280 chars). Typically a
+   *  merchant. Nullable, and may also arrive as "" — `noteOf` below treats
+   *  both as absent. */
+  note: string | null;
   category_name: string | null;
   category_icon: string | null;
   color_slot: number | null;
@@ -66,8 +70,21 @@ function formatDayHeading(occurredOn: string): string {
 
 /** What a row's own line shows — accurate even when there's genuinely no
  * category ("Uncategorised" is real, informative content there). */
+/** A note that is present but blank is not a name. The zod schemas accept
+ *  `""` (the actions coerce it to null on write), so a row can still reach
+ *  the client with one — rendering that as the primary line would give the
+ *  row an empty heading. */
+function noteOf(row: Row): string | null {
+  const trimmed = row.note?.trim();
+  return trimmed ? trimmed : null;
+}
+
+/** What the row's primary line says. The note wins when present: it is the
+ *  name the user chose for this transaction, and it is more specific than
+ *  the category. The category is not dropped — it moves to the secondary
+ *  line beside the wallet (see the row markup below). */
 function rowLabel(row: Row): string {
-  return row.category_name ?? (row.kind === "transfer" ? "Transfer" : "Uncategorised");
+  return noteOf(row) ?? row.category_name ?? (row.kind === "transfer" ? "Transfer" : "Uncategorised");
 }
 
 /**
@@ -78,7 +95,7 @@ function rowLabel(row: Row): string {
  * only the toast's wording differs.
  */
 function toastSubject(row: Row): string {
-  return row.category_name ?? (row.kind === "transfer" ? "Transfer" : "Transaction");
+  return noteOf(row) ?? row.category_name ?? (row.kind === "transfer" ? "Transfer" : "Transaction");
 }
 
 function RowIcon({ row }: { row: Row }) {
@@ -342,8 +359,14 @@ export function TransactionList({ rows }: { rows: Row[] }) {
                       <span className="block truncate" style={{ color: "var(--ink)" }}>
                         {label}
                       </span>
+                      {/* When the note has taken over the primary line, the
+                          category joins the wallet here rather than being
+                          dropped — the row still carries everything it did
+                          before, just reordered by specificity. */}
                       <span className="block truncate text-xs" style={{ color: "var(--ink-2)" }}>
-                        {r.wallet_name}
+                        {noteOf(r) && r.category_name
+                          ? `${r.category_name} · ${r.wallet_name}`
+                          : r.wallet_name}
                       </span>
                     </span>
                     {/* Sign is always rendered (`−12.50`/`+3,200.00`);

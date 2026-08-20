@@ -102,6 +102,10 @@ export function TransactionForm({
   const [amountIn, setAmountIn] = useState("0");
   const [category, setCategory] = useState<Category | null>(null);
   const [date, setDate] = useState(todayLocalDate);
+  /** The transactions table's own `note` column — what a user types to name
+   *  a transaction, typically a merchant. Optional on both the expense and
+   *  the transfer path; the actions coerce "" to null on write. */
+  const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
 
@@ -299,6 +303,7 @@ export function TransactionForm({
               // stringified zero, whenever `crossCurrency` is false.
               amount_in: crossCurrency ? amountIn : undefined,
               occurred_on: date,
+              note,
             })
           : await createTransaction({
               wallet_id: walletId,
@@ -308,6 +313,7 @@ export function TransactionForm({
               // set whenever `kind !== "transfer"` reaches this branch.
               category_id: category!.id,
               occurred_on: date,
+              note,
             });
 
       if ("error" in res) {
@@ -490,6 +496,33 @@ export function TransactionForm({
           onChange={handleCategoryChange}
         />
       )}
+
+      {/* Deliberately BELOW the keypad and the category picker, not beside
+          the amount. This is the one control on this screen that raises the
+          OS keyboard — the whole reason AmountKeypad exists is that the
+          amount must not (spec §5.1: standing at a till). Putting it last
+          keeps the amount-first flow intact and makes the keyboard strictly
+          opt-in: it appears only once the user taps this field.
+
+          `maxLength` matches the column's own CHECK (`length(note) <= 280`)
+          and the zod schema's `.max(280)`, so the limit is enforced at the
+          input, at the schema and in Postgres rather than only at the last
+          of the three. */}
+      <label className="flex flex-col gap-1">
+        <span className="text-sm" style={{ color: "var(--ink-2)" }}>
+          Note
+        </span>
+        <input
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          maxLength={280}
+          placeholder="Merchant or description"
+          autoComplete="off"
+          aria-describedby={errorId}
+          className={`rounded-md border px-3 py-2 ${FOCUS_RING}`}
+          style={{ borderColor: "var(--ink-2)", background: "var(--surface)", color: "var(--ink)" }}
+        />
+      </label>
 
       {/* Always mounted, not conditionally rendered — see the useEffect
           above for why. Empty when there's nothing to say. */}

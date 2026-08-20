@@ -31,10 +31,13 @@ import { TransactionList, type Row } from "@/components/TransactionList";
  * many transactions to one wallet/category — PostgREST embeds the "one"
  * side of a many-to-one as a single object).
  *
- * `note` is deliberately NOT selected — review caught it being fetched and
- * carried into `Row` in an earlier draft without ever being rendered
- * anywhere in `TransactionList`, a dead payload on every request. If a
- * future task renders it, add it back to both this select and `Row` then.
+ * `note` IS selected, and is rendered — `TransactionList` shows it as each
+ * row's primary line, demoting the category to the secondary line beside
+ * the wallet. It was excluded for a while on review, having been fetched
+ * and carried into `Row` without anything displaying it (a dead payload on
+ * every request); that comment said to add it back once something rendered
+ * it, and that is now the case. Keep the two in step: if the note ever
+ * stops being displayed, drop it from this select again.
  *
  * `.order("occurred_on", ...)` alone lets rows sharing a day reshuffle
  * between renders (Postgres makes no ordering promise among ties), which
@@ -47,7 +50,7 @@ export default async function TransactionsPage() {
   const { data, error } = await supabase
     .from("transactions")
     .select(
-      "id, kind, amount_minor, currency_code, occurred_on, wallets(name), categories(name, color_slot, icon)",
+      "id, kind, amount_minor, currency_code, occurred_on, note, wallets(name), categories(name, color_slot, icon)",
     )
     .is("deleted_at", null)
     .order("occurred_on", { ascending: false })
@@ -72,6 +75,7 @@ export default async function TransactionsPage() {
     amount_minor: number;
     currency_code: string;
     occurred_on: string;
+    note: string | null;
     wallets: { name: string } | null;
     categories: { name: string; color_slot: number; icon: string } | null;
   };
@@ -82,6 +86,7 @@ export default async function TransactionsPage() {
     amount_minor: r.amount_minor,
     currency_code: r.currency_code,
     occurred_on: r.occurred_on,
+    note: r.note,
     wallet_name: r.wallets?.name ?? "",
     category_name: r.categories?.name ?? null,
     category_icon: r.categories?.icon ?? null,

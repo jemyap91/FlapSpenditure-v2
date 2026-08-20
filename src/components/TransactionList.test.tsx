@@ -37,6 +37,7 @@ const baseRow: Row = {
   currency_code: "USD",
   occurred_on: "2026-08-18",
   wallet_name: "USD Checking",
+  note: null,
   category_name: "Groceries",
   category_icon: "shopping-basket",
   color_slot: 1,
@@ -142,5 +143,55 @@ describe("TransactionList — delete/undo state machine", () => {
     // Undo/Retry/Dismiss) unmounts along with it.
     expect(screen.queryByText("Groceries deleted")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Dismiss notification" })).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * `note` (the transactions table's own `text` column, <=280 chars) is what a
+ * user types to name a transaction — typically a merchant. The column, the
+ * zod schemas and both server actions have always written it; nothing
+ * displayed it.
+ */
+describe("TransactionList — note", () => {
+  it("shows the note as the row's primary line, with the category demoted beside the wallet", () => {
+    render(
+      <TransactionList
+        rows={[{ ...baseRow, note: "Starbucks", category_name: "Coffee", wallet_name: "Everyday" }]}
+      />,
+    );
+    expect(screen.getByText("Starbucks")).toBeInTheDocument();
+    // The category is not lost — it moves to the secondary line next to the
+    // wallet, so no information the row used to carry disappears.
+    expect(screen.getByText("Coffee · Everyday")).toBeInTheDocument();
+  });
+
+  it("falls back to the category as the primary line when there is no note", () => {
+    render(<TransactionList rows={[{ ...baseRow, note: null, category_name: "Coffee", wallet_name: "Everyday" }]} />);
+    expect(screen.getByText("Coffee")).toBeInTheDocument();
+    expect(screen.getByText("Everyday")).toBeInTheDocument();
+    expect(screen.queryByText("Coffee · Everyday")).not.toBeInTheDocument();
+  });
+
+  it("names the Delete button after the note, matching what is on screen", () => {
+    render(<TransactionList rows={[{ ...baseRow, note: "Starbucks", category_name: "Coffee" }]} />);
+    // Would otherwise read "Delete Coffee, ..." while the row visibly says
+    // "Starbucks" — a screen-reader user and a sighted user must be told the
+    // same thing about the same button.
+    expect(screen.getByRole("button", { name: /Delete Starbucks/ })).toBeInTheDocument();
+  });
+
+  it("says the note in the deletion toast rather than the category", async () => {
+    vi.mocked(softDeleteTransaction).mockResolvedValue({} as never);
+    const user = userEvent.setup();
+    render(<TransactionList rows={[{ ...baseRow, note: "Starbucks", category_name: "Coffee" }]} />);
+    await user.click(screen.getByRole("button", { name: /Delete Starbucks/ }));
+    expect(await screen.findByText("Starbucks deleted", { exact: true })).toBeInTheDocument();
+  });
+
+  it("treats an empty-string note as absent, not as a blank primary line", () => {
+    // The zod schema accepts `""` and the actions coerce it to null, but a
+    // row that reaches the client as "" must not render an empty heading.
+    render(<TransactionList rows={[{ ...baseRow, note: "", category_name: "Coffee" }]} />);
+    expect(screen.getByText("Coffee")).toBeInTheDocument();
   });
 });

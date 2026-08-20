@@ -120,6 +120,27 @@ test.describe("ledger", () => {
     await expect(page).toHaveURL("/transactions/new");
   });
 
+  test("a note names the transaction and survives to the list", async ({ page }) => {
+    await signUpAndOnboard(page);
+
+    await page.goto("/transactions/new");
+    await pressAmount(page, "4.75");
+    await page.getByRole("button", { name: "Groceries" }).click();
+    await page.getByLabel("Note").fill("Starbucks");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page).toHaveURL("/transactions");
+
+    // The note becomes the row's name; the category is demoted rather than
+    // dropped, so both are still on screen.
+    await expect(page.getByText("Starbucks", { exact: true })).toBeVisible();
+    await expect(page.getByText("Groceries · Everyday", { exact: true })).toBeVisible();
+
+    // The Delete button and the toast both say what the row says, rather
+    // than falling back to the category behind the user's own label.
+    await page.getByRole("button", { name: `Delete Starbucks, ${MINUS}$4.75` }).click();
+    await expect(page.getByText("Starbucks deleted", { exact: true })).toBeVisible();
+  });
+
   test("an expense reaches the dashboard's total, breakdown and cash flow", async ({ page }) => {
     await signUpAndOnboard(page);
 
