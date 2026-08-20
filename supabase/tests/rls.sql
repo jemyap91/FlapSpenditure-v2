@@ -1212,6 +1212,11 @@ insert into auth.users (id, email) values ('cccccccc-0000-0000-0000-000000000009
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid,
+      'impersonation failed: auth.uid() did not resolve to alice';
+  end $$;
   insert into public.wallet_invites (id, wallet_id, invited_email, invited_by)
   select '77777777-0000-0000-0000-000000000007', w.id, 'bob@x.io', 'aaaaaaaa-0000-0000-0000-000000000001'
   from public.wallets w where w.owner_id = 'aaaaaaaa-0000-0000-0000-000000000001' limit 1;
@@ -1221,6 +1226,11 @@ commit;
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"cccccccc-0000-0000-0000-000000000009","email":"carol@x.io"}';
+  do $$ begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
+    assert (select auth.uid()) = 'cccccccc-0000-0000-0000-000000000009'::uuid,
+      'impersonation failed: auth.uid() did not resolve to carol';
+  end $$;
   do $$ begin
     if (select count(*) from public.wallet_invites) <> 0 then
       raise exception 'an outsider can see an invite addressed to someone else';
@@ -1233,11 +1243,17 @@ begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"cccccccc-0000-0000-0000-000000000009","email":"carol@x.io"}';
   do $$ begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
+    assert (select auth.uid()) = 'cccccccc-0000-0000-0000-000000000009'::uuid,
+      'impersonation failed: auth.uid() did not resolve to carol';
+  end $$;
+  do $$ begin
     begin
       perform public.accept_wallet_invite('77777777-0000-0000-0000-000000000007');
       raise exception 'accept_wallet_invite let the wrong person in';
     exception when others then
-      null; -- correct
+      assert sqlerrm = 'invite is addressed to someone else',
+        format('wrong rejection reason: %s', sqlerrm);
     end;
   end $$;
 commit;
@@ -1246,6 +1262,11 @@ commit;
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
+  do $$ begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid,
+      'impersonation failed: auth.uid() did not resolve to bob';
+  end $$;
   do $$ begin
     if (select count(*) from public.wallet_invites) <> 1 then
       raise exception 'the invitee cannot see their own invite';
@@ -1269,6 +1290,11 @@ commit;
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"cccccccc-0000-0000-0000-000000000009","email":"carol@x.io"}';
+  do $$ begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
+    assert (select auth.uid()) = 'cccccccc-0000-0000-0000-000000000009'::uuid,
+      'impersonation failed: auth.uid() did not resolve to carol';
+  end $$;
   do $$ begin
     if (select count(*) from public.transactions) <> 0 then
       raise exception 'a non-member can read a shared wallet''s transactions';
