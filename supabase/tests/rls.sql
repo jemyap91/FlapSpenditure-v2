@@ -1202,3 +1202,254 @@ begin;
     assert n = 0, format('LEAK: cash flow mixed array returned %s rows', n);
   end $$;
 commit;
+
+-- =====================================================================
+-- Invitations (0009). Alice owns a wallet and invites Bob. Carol is the
+-- outsider who must see and do nothing.
+-- =====================================================================
+insert into auth.users (id, email) values ('cccccccc-0000-0000-0000-000000000009','carol@x.io');
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  insert into public.wallet_invites (id, wallet_id, invited_email, invited_by)
+  select '77777777-0000-0000-0000-000000000007', w.id, 'bob@x.io', 'aaaaaaaa-0000-0000-0000-000000000001'
+  from public.wallets w where w.owner_id = 'aaaaaaaa-0000-0000-0000-000000000001' limit 1;
+commit;
+
+-- Carol cannot see an invite addressed to Bob.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"cccccccc-0000-0000-0000-000000000009","email":"carol@x.io"}';
+  do $$ begin
+    if (select count(*) from public.wallet_invites) <> 0 then
+      raise exception 'an outsider can see an invite addressed to someone else';
+    end if;
+  end $$;
+commit;
+
+-- Carol cannot accept an invite addressed to Bob.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"cccccccc-0000-0000-0000-000000000009","email":"carol@x.io"}';
+  do $$ begin
+    begin
+      perform public.accept_wallet_invite('77777777-0000-0000-0000-000000000007');
+      raise exception 'accept_wallet_invite let the wrong person in';
+    exception when others then
+      null; -- correct
+    end;
+  end $$;
+commit;
+
+-- Bob sees his own invite, accepts it, and gains access to Alice's ledger.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
+  do $$ begin
+    if (select count(*) from public.wallet_invites) <> 1 then
+      raise exception 'the invitee cannot see their own invite';
+    end if;
+  end $$;
+  select public.accept_wallet_invite('77777777-0000-0000-0000-000000000007');
+  do $$ begin
+    if (select status from public.wallet_invites where id = '77777777-0000-0000-0000-000000000007') <> 'accepted' then
+      raise exception 'accepting did not mark the invite accepted';
+    end if;
+    if (select count(*) from public.transactions) = 0 then
+      raise exception 'an accepted member cannot read the wallet''s transactions';
+    end if;
+    if (select count(*) from public.categories) = 0 then
+      raise exception 'an accepted member cannot read the wallet''s categories -- the Uncategorised bug';
+    end if;
+  end $$;
+commit;
+
+-- Carol still sees nothing after Bob has joined.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"cccccccc-0000-0000-0000-000000000009","email":"carol@x.io"}';
+  do $$ begin
+    if (select count(*) from public.transactions) <> 0 then
+      raise exception 'a non-member can read a shared wallet''s transactions';
+    end if;
+  end $$;
+commit;
+
+-- =====================================================================
+-- Invitations, review finding #1 (CRITICAL, fixed in 0a19c10): a caller
+-- whose JWT carries `sub` but NO `email` claim must not be able to
+-- accept or decline ANYONE's invite. Before the fix, caller_email was
+-- NULL, `lower(btrim(inv.invited_email)) <> caller_email` evaluated to
+-- NULL, and PL/pgSQL treats a NULL IF-condition as FALSE -- so the
+-- exception did not raise and execution fell through into creating the
+-- membership row. 0009 now has an explicit `caller_email is null` OR
+-- branch in both functions; this proves it actually fails closed, not
+-- just that the guarding comment exists.
+-- =====================================================================
+insert into auth.users (id) values ('10101010-0000-0000-0000-000000000010'); -- deliberately no email claim, ever
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  insert into public.wallet_invites (id, wallet_id, invited_email, invited_by)
+    values ('20202020-0000-0000-0000-000000000020', 'cccccccc-0000-0000-0000-000000000003',
+            'dave@x.io', 'aaaaaaaa-0000-0000-0000-000000000001');
+commit;
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"10101010-0000-0000-0000-000000000010"}';
+  do $$ begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
+    assert (select auth.uid()) = '10101010-0000-0000-0000-000000000010'::uuid,
+      'impersonation failed: auth.uid() did not resolve to the no-email attacker';
+    -- Prove the premise: this session's JWT genuinely carries no email claim.
+    assert (select auth.jwt() ->> 'email') is null,
+      'test setup broken: the no-email attacker''s JWT unexpectedly has an email claim';
+  end $$;
+
+  do $$ begin
+    begin
+      perform public.accept_wallet_invite('20202020-0000-0000-0000-000000000020');
+      raise exception 'LEAK: a caller with no email claim accepted an invite addressed to someone else';
+    exception
+      when others then
+        assert sqlerrm = 'invite is addressed to someone else',
+          format('wrong rejection reason (accept): %s', sqlerrm);
+    end;
+  end $$;
+
+  do $$ begin
+    begin
+      perform public.decline_wallet_invite('20202020-0000-0000-0000-000000000020');
+      raise exception 'LEAK: a caller with no email claim declined an invite addressed to someone else';
+    exception
+      when others then
+        assert sqlerrm = 'invite is addressed to someone else',
+          format('wrong rejection reason (decline): %s', sqlerrm);
+    end;
+  end $$;
+commit;
+
+-- Neither attempt left a trace: the invite is still pending, and no
+-- membership row was created for the attacker.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select status from public.wallet_invites where id = '20202020-0000-0000-0000-000000000020') = 'pending',
+      'LEAK: the no-email attacker''s accept/decline attempts changed the invite status';
+    assert not exists (
+      select 1 from public.wallet_members
+      where wallet_id = 'cccccccc-0000-0000-0000-000000000003'
+        and user_id = '10101010-0000-0000-0000-000000000010'),
+      'LEAK: the no-email attacker was added as a wallet member despite the rejected accept';
+  end $$;
+commit;
+
+-- =====================================================================
+-- Invitations, review finding #2: 0009 deliberately grants the wallet
+-- owner INSERT/SELECT/DELETE on wallet_invites but no UPDATE -- status
+-- must only ever move via the two SECURITY DEFINER functions above,
+-- never by a direct write, not even by the invite's own wallet's owner.
+-- Paired with the positive control: the SAME owner CAN insert and
+-- delete (revoke) her own wallet's invites.
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+  end $$;
+
+  -- Positive control: the owner CAN insert an invite for her own wallet.
+  insert into public.wallet_invites (id, wallet_id, invited_email, invited_by)
+    values ('30303030-0000-0000-0000-000000000030', 'cccccccc-0000-0000-0000-000000000003',
+            'erin@x.io', 'aaaaaaaa-0000-0000-0000-000000000001');
+  do $$ begin
+    assert (select count(*) from public.wallet_invites where id = '30303030-0000-0000-0000-000000000030') = 1,
+      'PERMISSION BROKEN: the owner cannot insert an invite for her own wallet';
+  end $$;
+
+  -- Attack: the owner tries to UPDATE status directly, bypassing
+  -- accept_wallet_invite/decline_wallet_invite entirely. No UPDATE grant
+  -- exists on wallet_invites at all (see 0009's header comment), so this
+  -- must fail at the privilege check, before RLS is even consulted.
+  do $$ begin
+    begin
+      update public.wallet_invites set status = 'accepted'
+        where id = '30303030-0000-0000-0000-000000000030';
+      raise exception 'LEAK: the wallet owner updated wallet_invites.status directly';
+    exception
+      when insufficient_privilege then
+        null; -- expected: no UPDATE grant on wallet_invites, for anyone
+    end;
+  end $$;
+
+  do $$ begin
+    assert (select status from public.wallet_invites where id = '30303030-0000-0000-0000-000000000030') = 'pending',
+      'LEAK: the direct UPDATE attempt actually changed the invite status';
+  end $$;
+
+  -- Positive control, paired with the denial above: the owner CAN delete
+  -- (revoke) her own wallet's invite.
+  delete from public.wallet_invites where id = '30303030-0000-0000-0000-000000000030';
+  do $$ begin
+    assert not exists (select 1 from public.wallet_invites where id = '30303030-0000-0000-0000-000000000030'),
+      'PERMISSION BROKEN: the owner cannot delete (revoke) her own wallet''s invite';
+  end $$;
+commit;
+
+-- =====================================================================
+-- Invitations, review finding #3: the specific bug this feature exists
+-- to fix (0008's "Uncategorised" split) proven on a clean fixture. Carol
+-- has touched nothing else in this file, so her before/after visibility
+-- of THIS wallet's categories is not obscured by access she already
+-- holds elsewhere (unlike Bob, above, who was already a member of
+-- cccccccc-003 by the time he accepted his invite, which is why that
+-- block's own category/transaction assertions are a weaker signal than
+-- this one).
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+  end $$;
+
+  insert into public.wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+    values ('40404040-0000-0000-0000-000000000040',
+            'aaaaaaaa-0000-0000-0000-000000000001', 'Alice Invite Wallet', 'bank', 'USD', 2, 'landmark');
+  insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, occurred_on)
+    values ('40404040-0000-0000-0000-000000000040', 'aaaaaaaa-0000-0000-0000-000000000001',
+            'income', 1234, 'USD', current_date);
+  insert into public.wallet_invites (id, wallet_id, invited_email, invited_by)
+    values ('50505050-0000-0000-0000-000000000050', '40404040-0000-0000-0000-000000000040',
+            'carol@x.io', 'aaaaaaaa-0000-0000-0000-000000000001');
+commit;
+
+-- Before accepting: carol sees none of this wallet's categories or
+-- transactions.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"cccccccc-0000-0000-0000-000000000009","email":"carol@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'cccccccc-0000-0000-0000-000000000009'::uuid, 'impersonation failed';
+    assert (select count(*) from public.categories where wallet_id = '40404040-0000-0000-0000-000000000040') = 0,
+      'test setup broken: carol can already see the invite wallet''s categories before accepting';
+    assert (select count(*) from public.transactions where wallet_id = '40404040-0000-0000-0000-000000000040') = 0,
+      'test setup broken: carol can already see the invite wallet''s transactions before accepting';
+  end $$;
+
+  select public.accept_wallet_invite('50505050-0000-0000-0000-000000000050');
+
+  do $$ begin
+    -- 16, the seed_wallet_categories defaults (0008) -- no custom category
+    -- was created on this wallet, so this is a clean, unambiguous count.
+    assert (select count(*) from public.categories where wallet_id = '40404040-0000-0000-0000-000000000040') = 16,
+      'PERMISSION BROKEN: an accepted member cannot read the wallet''s categories -- the Uncategorised bug';
+    assert (select count(*) from public.transactions where wallet_id = '40404040-0000-0000-0000-000000000040') = 1,
+      'PERMISSION BROKEN: an accepted member cannot read the wallet''s transactions';
+  end $$;
+commit;
