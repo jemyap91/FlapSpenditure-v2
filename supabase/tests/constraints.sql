@@ -30,15 +30,16 @@ begin;
   insert into wallets (id,owner_id,name,kind,currency_code,color_slot,icon)
     values ('44444444-4444-4444-4444-444444444444',
             '22222222-2222-2222-2222-222222222222','Secondary','card','USD',2,'wallet');
-  -- Named 'Constraint Test Category', not 'Groceries': migration 0007's
-  -- new-user seed trigger fires on the auth.users insert above and gives
-  -- this user 16 default categories including one named 'Groceries'
-  -- ('expense' kind); reusing that name here would collide with
-  -- categories_unique_active_name instead of exercising this file's own
-  -- CHECK-constraint assertions.
-  insert into categories (id,owner_id,name,kind,color_slot,icon)
+  -- Named 'Constraint Test Category', not 'Groceries': migration 0008's
+  -- wallet-creation seed trigger fires on each wallet insert above and
+  -- gives wallet 33333333-...-333 16 default categories including one
+  -- named 'Groceries' ('expense' kind); reusing that name here would
+  -- collide with categories_unique_active_name instead of exercising this
+  -- file's own CHECK-constraint assertions. wallet_id, not owner_id (0008):
+  -- categories now belong to a wallet.
+  insert into categories (id,wallet_id,name,kind,color_slot,icon)
     values ('55555555-5555-5555-5555-555555555555',
-            '22222222-2222-2222-2222-222222222222','Constraint Test Category','expense',1,'shopping-cart');
+            '33333333-3333-3333-3333-333333333333','Constraint Test Category','expense',1,'shopping-cart');
 
   -- ACCEPT: a valid expense row must succeed.
   insert into transactions (wallet_id,created_by,kind,amount_minor,currency_code,occurred_on)
@@ -153,3 +154,25 @@ begin;
                v_sqlstate, v_constraint, sqlerrm);
   end $$;
 rollback;
+
+-- transactions_category_same_wallet (0008): a transaction may not point at a
+-- category belonging to a different wallet. Transfers, whose category_id is
+-- null, are exempt by MATCH SIMPLE and are asserted to still work.
+insert into auth.users (id, email) values ('eeeeeeee-0000-0000-0000-000000000005','erin@x.io');
+insert into public.wallets (id, owner_id, name, kind, currency_code, starting_balance_minor, color_slot, icon)
+values ('55555555-0000-0000-0000-000000000005','eeeeeeee-0000-0000-0000-000000000005','X','bank','USD',0,1,'landmark'),
+       ('66666666-0000-0000-0000-000000000006','eeeeeeee-0000-0000-0000-000000000005','Y','bank','USD',0,2,'landmark');
+
+do $$
+declare foreign_cat uuid;
+begin
+  select id into foreign_cat from public.categories
+  where wallet_id = '55555555-0000-0000-0000-000000000005' limit 1;
+  begin
+    insert into public.transactions (wallet_id, kind, amount_minor, currency_code, category_id, occurred_on)
+    values ('66666666-0000-0000-0000-000000000006','expense',-100,'USD', foreign_cat, current_date);
+    raise exception 'expected transactions_category_same_wallet to reject a cross-wallet category';
+  exception when foreign_key_violation then
+    null; -- correct
+  end;
+end $$;

@@ -36,14 +36,14 @@ begin;
   insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
     values ('cccccccc-0000-0000-0000-000000000003',
             'aaaaaaaa-0000-0000-0000-000000000001', 'Alice Bank', 'bank', 'USD', 1, 'landmark');
-  -- Named 'Custom Category', not 'Groceries': migration 0007's new-user
-  -- seed trigger already fired on the auth.users insert above and gave
-  -- alice 16 default categories including one named 'Groceries' ('expense'
-  -- kind); reusing that name here would collide with
-  -- categories_unique_active_name instead of proving RLS visibility.
-  insert into categories (id, owner_id, name, kind, color_slot, icon)
+  -- Named 'Custom Category', not 'Groceries': migration 0008's
+  -- wallet-creation seed trigger already fired on the wallet insert above
+  -- and gave cccccccc-003 16 default categories including one named
+  -- 'Groceries' ('expense' kind); reusing that name here would collide
+  -- with categories_unique_active_name instead of proving RLS visibility.
+  insert into categories (id, wallet_id, name, kind, color_slot, icon)
     values ('dddddddd-0000-0000-0000-000000000004',
-            'aaaaaaaa-0000-0000-0000-000000000001', 'Custom Category', 'expense', 2, 'basket');
+            'cccccccc-0000-0000-0000-000000000003', 'Custom Category', 'expense', 2, 'basket');
   insert into transactions (id, wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on)
     values ('eeeeeeee-0000-0000-0000-000000000005',
             'cccccccc-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001',
@@ -53,12 +53,12 @@ begin;
     assert (select count(*) from wallets)      = 1, 'PERMISSION BROKEN: alice cannot see her own wallet';
     -- Split into two assertions, not one count(*) = 17: a single combined
     -- number fires identically whether the CAUSE is a broken RLS policy or
-    -- migration 0007's seed trigger simply not having run, which would
-    -- misdirect debugging toward RLS. is_default = true isolates the 16
-    -- seeded rows (proven correct in detail by supabase/tests/seed.sql);
+    -- migration 0008's wallet-seeding trigger simply not having run, which
+    -- would misdirect debugging toward RLS. is_default = true isolates the
+    -- 16 seeded rows (proven correct in detail by supabase/tests/seed.sql);
     -- the id lookup isolates the row alice just created above.
-    assert (select count(*) from categories where owner_id = 'aaaaaaaa-0000-0000-0000-000000000001' and is_default) = 16,
-      'PERMISSION BROKEN or SEED BROKEN: alice does not have her 16 seeded default categories';
+    assert (select count(*) from categories where wallet_id = 'cccccccc-0000-0000-0000-000000000003' and is_default) = 16,
+      'PERMISSION BROKEN or SEED BROKEN: alice does not have her wallet''s 16 seeded default categories';
     assert (select count(*) from categories where id = 'dddddddd-0000-0000-0000-000000000004') = 1,
       'PERMISSION BROKEN: alice cannot see her own category';
     assert (select count(*) from transactions) = 1, 'PERMISSION BROKEN: alice cannot see her own transaction';
@@ -355,17 +355,19 @@ begin;
   do $$ begin
     assert (select count(*) from wallets)        = 0, 'LEAK: bob can see alice''s wallet';
     assert (select count(*) from wallet_members) = 0, 'LEAK: bob can see alice''s wallet_members row';
-    -- 16, not 0: migration 0007's new-user seed trigger already gave bob
-    -- his own 16 default categories on the auth.users insert at the top of
-    -- this file, so an unscoped total of 0 is no longer the right
-    -- expectation. This alone still isn't unfailable -- any of alice's rows
-    -- becoming visible would push the total above 16 -- but it proves "bob
-    -- sees 16 rows", not "bob sees none of alice's specifically". The
-    -- owner-scoped assertion below is the one that directly proves that:
-    -- it is 0 only because RLS restricts bob's view to his own owner_id,
-    -- not because alice happens to own zero categories.
-    assert (select count(*) from categories)     = 16, 'LEAK: bob can see alice''s category';
-    assert (select count(*) from categories where owner_id = 'aaaaaaaa-0000-0000-0000-000000000001') = 0,
+    -- 0, not 16: migration 0008 moved seeding from the user trigger to a
+    -- wallet trigger (seed_wallet_categories, fired AFTER INSERT ON
+    -- wallets), so bob -- who has not created or been added to any wallet
+    -- yet at this point in the file (his first wallet is created in
+    -- section 5, below) -- has zero categories of his own. An unscoped
+    -- total of 0 is therefore the right expectation, and on its own it
+    -- already proves alice's wallet's 16 seeded categories are invisible
+    -- to him (any of them becoming visible would push the total above 0).
+    -- The wallet-scoped assertion below proves the same thing more
+    -- directly, targeting alice's specific wallet rather than leaning on
+    -- bob's own count happening to be zero.
+    assert (select count(*) from categories)     = 0, 'LEAK: bob can see alice''s category';
+    assert (select count(*) from categories where wallet_id = 'cccccccc-0000-0000-0000-000000000003') = 0,
       'LEAK: bob can see alice''s categories';
     assert (select count(*) from transactions)   = 0, 'LEAK: bob can see alice''s transaction';
   end $$;
@@ -646,9 +648,14 @@ commit;
 -- =====================================================================
 -- 9. Post-membership asymmetry (spec 4): members can SEE the wallet and
 --    its shared transaction ledger; only the OWNER can CHANGE the
---    wallet or its membership list. Also: wallet membership does not
---    leak the owner's private categories -- categories are owner-scoped,
---    not wallet-scoped.
+--    wallet or its membership list. Also (0008): wallet membership now
+--    LEGITIMATELY exposes the wallet's shared categories -- categories
+--    became wallet-scoped specifically to close the split where a
+--    co-member could read a shared transaction but not the category it
+--    pointed at (see migration 0008's header comment). That is asserted
+--    below as a PERMISSION check, not a LEAK. What must still be denied
+--    is a DIFFERENT wallet's categories -- membership in cccccccc-003
+--    must not leak 77777777-007's, which bob is not a member of.
 -- =====================================================================
 begin;
   set local role authenticated;
@@ -668,18 +675,23 @@ begin;
     -- out-leg, both landed in this wallet before this section runs.
     assert (select count(*) from transactions where wallet_id = 'cccccccc-0000-0000-0000-000000000003') = 2,
       'PERMISSION BROKEN: member bob cannot see the shared transaction ledger';
-    -- Negative (extra attack, not named in the brief): membership does
-    -- NOT leak alice's categories -- categories are owner-scoped. 16, not
-    -- 0: migration 0007's seed trigger already gave bob his own 16 default
-    -- categories, so this unscoped total alone proves only "bob sees 16
-    -- rows" (it would still catch a full leak -- any of alice's becoming
-    -- visible pushes the total above 16 -- but not a partial one). The
-    -- owner-scoped assertion below is the one that directly proves none of
-    -- alice's specific categories are visible to bob, regardless of counts.
-    assert (select count(*) from categories) = 16,
-      'LEAK: wallet membership exposed alice''s private categories';
-    assert (select count(*) from categories where owner_id = 'aaaaaaaa-0000-0000-0000-000000000001') = 0,
-      'LEAK: wallet membership exposed alice''s private categories';
+    -- Positive (0008): membership in the shared wallet legitimately exposes
+    -- that wallet's categories -- the 16 seeded defaults plus the "Custom
+    -- Category" alice created by hand in section 1, all wallet_id =
+    -- cccccccc-003. This is the behaviour 0008 shipped to produce (see its
+    -- header comment), not a leak.
+    assert (select count(*) from categories where wallet_id = 'cccccccc-0000-0000-0000-000000000003') = 17,
+      'PERMISSION BROKEN: member bob cannot see the shared wallet''s categories';
+    assert (select count(*) from categories
+              where wallet_id = 'cccccccc-0000-0000-0000-000000000003'
+                and id = 'dddddddd-0000-0000-0000-000000000004') = 1,
+      'PERMISSION BROKEN: member bob cannot see alice''s custom category on the shared wallet';
+    -- Negative: membership in cccccccc-003 does not extend to alice's OTHER
+    -- wallet, 77777777-007 (established not-a-member of it in the Task 9
+    -- (cont'd) block above) -- category visibility still tracks wallet
+    -- membership per-wallet, not "any wallet this user happens to own".
+    assert (select count(*) from categories where wallet_id = '77777777-0000-0000-0000-000000000007') = 0,
+      'LEAK: bob (member of a different wallet only) can see 77777777-007''s categories';
   end $$;
 
   -- Negative: bob (member, not owner) cannot change the wallet.
@@ -876,9 +888,13 @@ begin;
   insert into wallets (id, owner_id, name, kind, currency_code, starting_balance_minor, color_slot, icon)
     values ('a3a3a3a3-0000-0000-0000-000000000001',
             'aaaaaaaa-0000-0000-0000-000000000001', 'Agg Wallet B', 'bank', 'USD', 0, 6, 'piggy-bank');
-  insert into categories (id, owner_id, name, kind, color_slot, icon)
+  -- wallet_id = a2a2a2a2-001, not owner_id (0008): the composite FK
+  -- transactions_category_same_wallet requires a transaction's category to
+  -- belong to the SAME wallet as the transaction, and this category is used
+  -- below by transactions in wallet a2a2a2a2-001.
+  insert into categories (id, wallet_id, name, kind, color_slot, icon)
     values ('a4a4a4a4-0000-0000-0000-000000000001',
-            'aaaaaaaa-0000-0000-0000-000000000001', 'Dining', 'expense', 7, 'utensils');
+            'a2a2a2a2-0000-0000-0000-000000000001', 'Dining', 'expense', 7, 'utensils');
 
   -- Wallet C: EXISTS SOLELY to prove the LEFT JOIN ... ON (t.wallet_id = w.id
   -- AND t.deleted_at is null) shape still preserves a wallet whose ONLY
@@ -1103,9 +1119,12 @@ begin;
     assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
   end $$;
 
-  insert into categories (id, owner_id, name, kind, color_slot, icon)
+  -- wallet_id = ffffffff-006, not owner_id (0008): same composite-FK
+  -- reasoning as the a4a4a4a4-001 fixture above -- this category is used
+  -- by the transaction below in bob's own wallet ffffffff-006.
+  insert into categories (id, wallet_id, name, kind, color_slot, icon)
     values ('a4a4a4a4-0000-0000-0000-000000000002',
-            'bbbbbbbb-0000-0000-0000-000000000002', 'Bob Category', 'expense', 1, 'shopping-cart');
+            'ffffffff-0000-0000-0000-000000000006', 'Bob Category', 'expense', 1, 'shopping-cart');
   insert into transactions (wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on)
     values ('ffffffff-0000-0000-0000-000000000006', 'bbbbbbbb-0000-0000-0000-000000000002',
             'expense', -500, 'USD', 'a4a4a4a4-0000-0000-0000-000000000002', current_date);
