@@ -1,7 +1,10 @@
 import { createClient } from "@/lib/supabase/server";
+import { getCurrentUserProfile } from "@/lib/supabase/current-user";
 import { addWallet } from "@/server/actions/wallets";
 import { WalletForm } from "@/components/WalletForm";
 import { WalletList } from "./WalletList";
+import { MembersSection, type Member } from "./MembersSection";
+import { PendingInvites, type PendingInvite } from "./PendingInvites";
 import { mergeWalletBalances, type BalanceRow, type WalletRow } from "./wallet-rows";
 
 /**
@@ -24,30 +27,77 @@ import { mergeWalletBalances, type BalanceRow, type WalletRow } from "./wallet-r
  * The two reads are issued together but are not one transaction, which is
  * exactly why `mergeWalletBalances` treats a missing balance row as
  * "unknown" rather than zero — see its own doc comment.
+ *
+ * Two more reads back Task 8's members/invites UI, both via SECURITY
+ * DEFINER RPCs added in 0010 rather than plain selects — plain RLS-scoped
+ * selects cannot supply this data at all:
+ *
+ * - `get_wallet_members()` — `wallet_members` is visible to co-members
+ *   (`members_select`), but `profiles` is not (`profiles_own` is
+ *   `id = auth.uid()`, full stop), so a plain `wallet_members -> profiles`
+ *   embed would return every co-member's `display_name` as null.
+ * - `get_pending_invites()` — `invites_invitee_select` lets the invitee
+ *   read their own `wallet_invites` row, but they are by definition not
+ *   yet a member of that wallet, so `wallets_select` (`is_wallet_member`)
+ *   would hide the join target and the invite's wallet NAME along with it.
+ *
+ * Both RPCs self-scope to the caller (membership / invited-email match) —
+ * see 0010's own doc comment — so, like the two reads above, no explicit
+ * `.eq(...)` filter is added here either.
  */
 export default async function WalletsPage() {
   const supabase = await createClient();
-  const [{ data: wallets, error: walletsError }, { data: balances, error: balancesError }] =
-    await Promise.all([
-      supabase
-        .from("wallets")
-        .select("id, name, kind, currency_code, color_slot, icon")
-        .is("archived_at", null)
-        .order("created_at"),
-      supabase.rpc("get_wallet_balances"),
-    ]);
+  const profile = await getCurrentUserProfile();
+  // (app)/layout.tsx already redirects to /login when there is no session,
+  // before this page ever renders — this is defence in depth, not a real
+  // path: `ownerId` below would be meaningless (every wallet would read as
+  // "not mine") for a request that somehow reached here unauthenticated.
+  if (!profile) throw new Error("Not signed in");
 
-  // A query error is not an empty result — `data` comes back null for both,
-  // so skipping this check would render "No accounts yet" (and, worse, the
-  // last-wallet guard's own disabled state) on a transient DB blip. Thrown,
-  // not redirected, matching (app)/layout.tsx and (app)/categories/page.tsx.
+  const [
+    { data: wallets, error: walletsError },
+    { data: balances, error: balancesError },
+    { data: members, error: membersError },
+    { data: invites, error: invitesError },
+  ] = await Promise.all([
+    supabase
+      .from("wallets")
+      .select("id, name, kind, currency_code, color_slot, icon, owner_id")
+      .is("archived_at", null)
+      .order("created_at"),
+    supabase.rpc("get_wallet_balances"),
+    supabase.rpc("get_wallet_members"),
+    supabase.rpc("get_pending_invites"),
+  ]);
+
+  // A query error is not an empty result — `data` comes back null for all
+  // four, so skipping this check would render "No accounts yet" (and,
+  // worse, the last-wallet guard's own disabled state) on a transient DB
+  // blip. Thrown, not redirected, matching (app)/layout.tsx and
+  // (app)/categories/page.tsx.
   if (walletsError) throw new Error("Failed to load wallets");
   if (balancesError) throw new Error("Failed to load balances");
+  if (membersError) throw new Error("Failed to load members");
+  if (invitesError) throw new Error("Failed to load invitations");
 
   const rows = mergeWalletBalances(
     (wallets ?? []) as WalletRow[],
     (balances ?? []) as BalanceRow[],
   );
+
+  const ownerByWalletId = new Map((wallets ?? []).map((w) => [w.id, w.owner_id]));
+
+  const membersByWalletId = new Map<string, Member[]>();
+  for (const m of members ?? []) {
+    const list = membersByWalletId.get(m.wallet_id) ?? [];
+    list.push({ user_id: m.user_id, display_name: m.display_name, role: m.role });
+    membersByWalletId.set(m.wallet_id, list);
+  }
+
+  const pendingInvites: PendingInvite[] = (invites ?? []).map((i) => ({
+    id: i.id,
+    wallet_name: i.wallet_name,
+  }));
 
   return (
     <div className="mx-auto max-w-2xl p-6">
@@ -55,7 +105,39 @@ export default async function WalletsPage() {
         Accounts
       </h1>
 
+      <PendingInvites invites={pendingInvites} />
+
       <WalletList wallets={rows} />
+
+      <div className="mt-6 flex flex-col gap-6">
+        {rows.map((w) => (
+          <section key={w.id} aria-labelledby={`members-heading-${w.id}`}>
+            {/* Visible text is just "Members" — WalletList above already
+                renders `w.name` as plain text, and a Playwright
+                `getByText(walletName)` lookup elsewhere in this app's e2e
+                suite (e2e/ledger.spec.ts) uses substring matching, so
+                repeating the name here as visible text would make that
+                locator ambiguous. `aria-label` (not read by that substring
+                text match, only by assistive tech and accessible-name
+                lookups) is what actually disambiguates this heading from
+                another wallet's identical "Members" heading for a screen
+                reader user navigating by headings. */}
+            <h2
+              id={`members-heading-${w.id}`}
+              aria-label={`${w.name} members`}
+              className="mb-3 text-sm font-medium uppercase tracking-wide"
+              style={{ color: "var(--ink-2)" }}
+            >
+              Members
+            </h2>
+            <MembersSection
+              walletId={w.id}
+              members={membersByWalletId.get(w.id) ?? []}
+              isOwner={ownerByWalletId.get(w.id) === profile.id}
+            />
+          </section>
+        ))}
+      </div>
 
       {/* `addWallet`, not `createWallet`: the latter redirects to / on
           success, which is right for onboarding and wrong here — adding a

@@ -369,11 +369,29 @@ export type Database = {
           total_minor: number
         }[]
       }
+      get_pending_invites: {
+        Args: never
+        Returns: {
+          created_at: string
+          id: string
+          wallet_id: string
+          wallet_name: string
+        }[]
+      }
       get_wallet_balances: {
         Args: never
         Returns: {
           balance_minor: number
           currency_code: string
+          wallet_id: string
+        }[]
+      }
+      get_wallet_members: {
+        Args: never
+        Returns: {
+          display_name: string
+          role: Database["public"]["Enums"]["member_role"]
+          user_id: string
           wallet_id: string
         }[]
       }

@@ -1489,3 +1489,112 @@ begin;
       'PERMISSION BROKEN: an accepted member cannot read the wallet''s transactions';
   end $$;
 commit;
+
+-- =====================================================================
+-- Task 8 (0010): get_wallet_members() and get_pending_invites(). Both are
+-- SECURITY DEFINER, added because plain RLS-scoped selects cannot supply
+-- what /wallets needs -- profiles_own (0001) hides a co-member's
+-- display_name from a plain wallet_members->profiles embed, and
+-- wallets_select (0004, is_wallet_member) hides an invite's own wallet's
+-- name from the invitee, who by definition isn't a member yet. Reuses the
+-- wallet from block 11 above ('40404040-...-040', owned by Alice, Carol
+-- already a member from accepting invite '50505050-...-050').
+-- =====================================================================
+
+-- get_wallet_members(): both of this wallet's real members see BOTH
+-- display names -- the whole point of the function -- but a member of a
+-- DIFFERENT wallet (Bob, still only on 'cccccccc-...-003') sees no row for
+-- this wallet at all, not an empty display_name.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+    assert (
+      select array_agg(display_name order by display_name)
+      from public.get_wallet_members() where wallet_id = '40404040-0000-0000-0000-000000000040'
+    ) = array['alice','carol'],
+      'PERMISSION BROKEN: the owner cannot see both members'' display names via get_wallet_members()';
+  end $$;
+commit;
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"cccccccc-0000-0000-0000-000000000009","email":"carol@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'cccccccc-0000-0000-0000-000000000009'::uuid, 'impersonation failed';
+    assert (
+      select array_agg(display_name order by display_name)
+      from public.get_wallet_members() where wallet_id = '40404040-0000-0000-0000-000000000040'
+    ) = array['alice','carol'],
+      'PERMISSION BROKEN: a member cannot see her co-member''s display name via get_wallet_members()';
+  end $$;
+commit;
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+    assert not exists (
+      select 1 from public.get_wallet_members() where wallet_id = '40404040-0000-0000-0000-000000000040'
+    ), 'LEAK: a member of a different wallet can see this wallet''s members via get_wallet_members()';
+  end $$;
+commit;
+
+-- get_pending_invites(): Alice invites Frank to the same wallet. Before
+-- Frank accepts, he must be able to name the wallet the invite is for
+-- (Task 8's UI requirement) but must NOT appear as a member yet.
+insert into auth.users (id, email) values ('66666666-0000-0000-0000-000000000066', 'frank@x.io');
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+  end $$;
+  insert into public.wallet_invites (id, wallet_id, invited_email, invited_by)
+    values ('60606060-0000-0000-0000-000000000060', '40404040-0000-0000-0000-000000000040',
+            'frank@x.io', 'aaaaaaaa-0000-0000-0000-000000000001');
+commit;
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"66666666-0000-0000-0000-000000000066","email":"frank@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = '66666666-0000-0000-0000-000000000066'::uuid, 'impersonation failed';
+    assert (
+      select wallet_name from public.get_pending_invites()
+      where id = '60606060-0000-0000-0000-000000000060'
+    ) = 'Alice Invite Wallet',
+      'PERMISSION BROKEN: the invitee cannot see the wallet name of their own pending invite';
+    assert not exists (
+      select 1 from public.get_wallet_members() where wallet_id = '40404040-0000-0000-0000-000000000040'
+    ), 'LEAK: an invitee who has not accepted yet already appears as (or can see) a member';
+  end $$;
+commit;
+
+-- Carol (a real member, but not this invite's addressee) sees no row for
+-- Frank's invite via get_pending_invites().
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"cccccccc-0000-0000-0000-000000000009","email":"carol@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'cccccccc-0000-0000-0000-000000000009'::uuid, 'impersonation failed';
+    assert not exists (
+      select 1 from public.get_pending_invites() where id = '60606060-0000-0000-0000-000000000060'
+    ), 'LEAK: a wallet member who isn''t the invitee can see someone else''s pending invite';
+  end $$;
+commit;
+
+-- Regression guard: neither function widened profiles_own itself -- a
+-- direct SELECT on profiles is still restricted to the caller's own row.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"cccccccc-0000-0000-0000-000000000009","email":"carol@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'cccccccc-0000-0000-0000-000000000009'::uuid, 'impersonation failed';
+    assert (select array_agg(id) from public.profiles) = array['cccccccc-0000-0000-0000-000000000009'::uuid],
+      'LEAK: 0010 widened direct SELECT access to profiles, not just the new RPCs';
+  end $$;
+commit;
