@@ -28,12 +28,21 @@
 -- profiles_own or wallets_select themselves, so direct table access is
 -- unchanged; only these two shaped, minimal reads are added.
 --
--- No explicit revoke/grant execute, matching get_wallet_balances/
--- get_category_breakdown/get_cash_flow in 0006: both functions self-filter
--- to the caller's own membership/email, so leaving EXECUTE at its default
--- (PUBLIC) grant is safe -- an anon caller has no auth.uid()/jwt email to
--- match against and gets zero rows back.
-
+-- Explicit revoke/grant below, matching 0009's accept_wallet_invite/
+-- decline_wallet_invite rather than 0006's get_wallet_balances/
+-- get_category_breakdown/get_cash_flow. 0006's functions return balances
+-- and category aggregates; these two return DISPLAY NAMES and the NAMES of
+-- wallets someone hasn't joined yet -- identity-adjacent data, the same
+-- category 0009 draws its stricter line around, and 0009 revokes EXECUTE
+-- explicitly even though it too has a NULL-email guard in its body. Postgres
+-- grants EXECUTE to PUBLIC by default on CREATE FUNCTION, so without this,
+-- `anon` could call both; today anon's JWT carries no `sub`/`email`, so
+-- auth.uid() and auth.jwt()->>'email' are NULL and every WHERE comparison
+-- below evaluates to NULL -- a real barrier, but one living inside a query
+-- predicate, not at the privilege boundary. A future edit to either WHERE
+-- clause (a fallback, a loosened comparison, different null handling) could
+-- silently reopen these to anon with nothing at the grant level to stop it.
+-- Revoking here removes that dependency entirely.
 create function get_wallet_members()
   returns table(wallet_id uuid, user_id uuid, display_name text, role member_role)
   language sql stable security definer set search_path = '' as $$
@@ -52,3 +61,8 @@ create function get_pending_invites()
   where wi.status = 'pending'
     and lower(btrim(wi.invited_email)) = lower(btrim(auth.jwt() ->> 'email'))
 $$;
+
+revoke all on function get_wallet_members()  from public, anon;
+revoke all on function get_pending_invites() from public, anon;
+grant execute on function get_wallet_members()  to authenticated;
+grant execute on function get_pending_invites() to authenticated;
