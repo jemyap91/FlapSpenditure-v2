@@ -211,6 +211,44 @@ export type Database = {
           },
         ]
       }
+      wallet_invites: {
+        Row: {
+          created_at: string
+          id: string
+          invited_by: string
+          invited_email: string
+          responded_at: string | null
+          status: Database["public"]["Enums"]["invite_status"]
+          wallet_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          invited_by: string
+          invited_email: string
+          responded_at?: string | null
+          status?: Database["public"]["Enums"]["invite_status"]
+          wallet_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          invited_by?: string
+          invited_email?: string
+          responded_at?: string | null
+          status?: Database["public"]["Enums"]["invite_status"]
+          wallet_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "wallet_invites_wallet_id_fkey"
+            columns: ["wallet_id"]
+            isOneToOne: false
+            referencedRelation: "wallets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       wallet_members: {
         Row: {
           joined_at: string
@@ -295,6 +333,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      accept_wallet_invite: { Args: { invite: string }; Returns: undefined }
       create_transfer: {
         Args: {
           amount_in: number
@@ -306,6 +345,7 @@ export type Database = {
         }
         Returns: string
       }
+      decline_wallet_invite: { Args: { invite: string }; Returns: undefined }
       get_cash_flow: {
         Args: {
           bucket?: string
@@ -341,6 +381,7 @@ export type Database = {
     }
     Enums: {
       category_kind: "expense" | "income"
+      invite_status: "pending" | "accepted" | "declined"
       member_role: "owner" | "member"
       theme_pref: "system" | "light" | "dark"
       txn_kind: "expense" | "income" | "transfer"
@@ -476,6 +517,7 @@ export const Constants = {
   public: {
     Enums: {
       category_kind: ["expense", "income"],
+      invite_status: ["pending", "accepted", "declined"],
       member_role: ["owner", "member"],
       theme_pref: ["system", "light", "dark"],
       txn_kind: ["expense", "income", "transfer"],
