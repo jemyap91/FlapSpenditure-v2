@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { TransactionList, type Row } from "@/components/TransactionList";
+import { resolveCreatedByNames, anyRowShared } from "./attribution";
 
 /**
  * /transactions — Task 20's full ledger review screen, and the route
@@ -88,21 +89,35 @@ import { TransactionList, type Row } from "@/components/TransactionList";
  * transaction's wallet, this one RPC result covers every author this page
  * could possibly need to name, with no per-row query.
  *
- * The same RPC result also gives the per-wallet member COUNT needed to
- * decide `showAttribution` (`TransactionList`'s prop): attribution renders
- * only in wallets with more than one member — in a solo wallet, "added by
- * you" on every single row is pure noise, not information (see
- * `TransactionList.tsx`'s own doc comment on the prop). `showAttribution`
- * here is a single page-level boolean (true if ANY wallet among the loaded
- * rows is shared), not computed per-row/per-wallet, matching the interface
- * the brief and `TransactionList`'s tests fix.
+ * Resolving `created_by_name` and deciding `showAttribution` both happen in
+ * `./attribution.ts`, not inline here — extracted the same way
+ * `(app)/wallets/wallet-rows.ts` extracts `mergeWalletBalances`, so the
+ * logic is unit-testable without a Supabase stack (`attribution.test.ts`).
+ *
+ * PITFALL (round-1 review Critical, now fixed and regression-tested):
+ * `get_wallet_members()` filters only on `is_wallet_member(wallet_id)` —
+ * NO member-count threshold — so it returns a row for the caller's SOLO
+ * wallets too, naming the caller as their own sole member. A page-level
+ * "is ANY wallet on this page shared" boolean is fine for
+ * `showAttribution` itself (it only asks whether attribution is even
+ * worth considering at all), but `created_by_name` must be resolved PER
+ * ROW against THAT row's own wallet — `resolveCreatedByNames` gates on
+ * `sharedWalletIds.has(row.wallet_id)` before ever doing the name lookup,
+ * so a solo-wallet row's `created_by_name` stays `null` even when the same
+ * page also renders a genuinely shared wallet's transactions. Getting this
+ * gate wrong (checking only "is created_by non-null", or checking
+ * `showAttribution` page-wide instead of per row) is exactly how "added by
+ * <you>" leaked onto private-wallet rows in round 1 — see
+ * `attribution.ts`'s and `attribution.test.ts`'s own doc comments for the
+ * full trace.
  *
  * `created_by` is `on delete set null` (0003) — a departed account leaves
  * its past rows with a NULL author rather than deleting ledger history.
- * The map below guards on `r.created_by` before ever looking it up, so
- * those rows resolve straight to `created_by_name: null` (same result as a
- * lookup miss would give), which `TransactionList` renders as no
- * attribution segment at all — never "added by" with nothing after it.
+ * `resolveCreatedByNames` guards on `r.created_by` before ever looking it
+ * up, so those rows resolve straight to `created_by_name: null` (same
+ * result the per-row shared-wallet gate above already gives), which
+ * `TransactionList` renders as no attribution segment at all — never
+ * "added by" with nothing after it.
  */
 export default async function TransactionsPage() {
   const supabase = await createClient();
@@ -150,28 +165,14 @@ export default async function TransactionsPage() {
   };
 
   const memberRows = members ?? [];
-
-  // Keyed `wallet_id:user_id` -> display_name, so the same person's name
-  // resolves independently per wallet (a display name is per-profile, not
-  // per-membership, but keying this way costs nothing and avoids ever
-  // conflating two different wallets' membership sets).
-  const nameByWalletAndUser = new Map(
-    memberRows.map((m) => [`${m.wallet_id}:${m.user_id}`, m.display_name]),
-  );
-
-  // A wallet is "shared" (attribution-eligible) once a SECOND distinct
-  // user_id shows up for it — mirrors the brief's counting approach.
-  const memberCountByWalletId = new Map<string, number>();
-  for (const m of memberRows) {
-    memberCountByWalletId.set(m.wallet_id, (memberCountByWalletId.get(m.wallet_id) ?? 0) + 1);
-  }
-  const sharedWalletIds = new Set(
-    [...memberCountByWalletId.entries()].filter(([, count]) => count > 1).map(([id]) => id),
-  );
-
   const joined = (data ?? []) as unknown as JoinedTxn[];
 
-  const rows: Row[] = joined.map((r) => ({
+  // Per-row author names, gated on EACH row's own wallet being shared — see
+  // this file's own doc comment and attribution.ts's for why that gate has
+  // to be per-row rather than page-wide.
+  const withNames = resolveCreatedByNames(joined, memberRows);
+
+  const rows: Row[] = withNames.map((r) => ({
     id: r.id,
     kind: r.kind,
     amount_minor: r.amount_minor,
@@ -182,15 +183,16 @@ export default async function TransactionsPage() {
     category_name: r.categories?.name ?? null,
     category_icon: r.categories?.icon ?? null,
     color_slot: r.categories?.color_slot ?? null,
-    created_by_name: r.created_by
-      ? (nameByWalletAndUser.get(`${r.wallet_id}:${r.created_by}`) ?? null)
-      : null,
+    created_by_name: r.created_by_name,
   }));
 
-  // Page-level, not per-row: true as soon as ANY wallet among the loaded
-  // rows has more than one member. `TransactionList` takes a single boolean
-  // (see its own doc comment / this task's tests), not a per-row flag.
-  const showAttribution = joined.some((r) => sharedWalletIds.has(r.wallet_id));
+  // Page-level: whether attribution is worth considering AT ALL for this
+  // render. `TransactionList` takes a single boolean (see its own doc
+  // comment / this task's tests) and combines it with each row's own
+  // (already per-row-gated) `created_by_name`, so a `true` here does not by
+  // itself put "added by" on every row — only on rows whose own
+  // `created_by_name` survived `resolveCreatedByNames`' gate above.
+  const showAttribution = anyRowShared(joined, memberRows);
 
   return (
     <div className="mx-auto max-w-2xl">

@@ -232,4 +232,38 @@ describe("TransactionList — attribution", () => {
     );
     expect(screen.queryByText(/added by/i)).not.toBeInTheDocument();
   });
+
+  /**
+   * Regression guard for round-1 review's Critical: on a page mixing one
+   * solo-wallet transaction with one shared-wallet transaction,
+   * `showAttribution` is a single page-level boolean (true because the
+   * page has a shared-wallet row at all) — so this component's render
+   * check must depend on EACH ROW's own `created_by_name` being non-null,
+   * never render attribution just because `showAttribution` is true
+   * globally. The actual bug lived in how `page.tsx` computed
+   * `created_by_name` for the solo row (see
+   * `src/app/(app)/transactions/attribution.test.ts`, which reproduces and
+   * fixes that computation directly) — this test instead pins down this
+   * component's half of the contract: given a correctly-computed mixed
+   * `rows` array (solo row's name genuinely null, shared row's resolved),
+   * one page-level `showAttribution` must still render per-row, not
+   * uniformly.
+   */
+  it("on a mixed page, shows attribution only on the shared-wallet row, not the solo one", () => {
+    render(
+      <TransactionList
+        rows={[
+          { ...baseRow, id: "solo-row", note: "Coffee run", category_name: "Coffee", wallet_name: "Personal", created_by_name: null },
+          { ...baseRow, id: "shared-row", note: "Groceries", category_name: "Food", wallet_name: "Household", created_by_name: "Alex" },
+        ]}
+        showAttribution
+      />,
+    );
+    expect(screen.getByText(/added by Alex/i)).toBeInTheDocument();
+    // Exactly one row's secondary line mentions attribution — the solo
+    // row's own line ("Coffee · Personal") must not gain an "added by"
+    // segment just because showAttribution is true page-wide.
+    expect(screen.getAllByText(/added by/i)).toHaveLength(1);
+    expect(screen.getByText("Coffee · Personal")).toBeInTheDocument();
+  });
 });
