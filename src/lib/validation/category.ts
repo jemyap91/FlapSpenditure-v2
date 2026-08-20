@@ -54,6 +54,10 @@ export type CategoryIcon = (typeof CATEGORY_ICONS)[number];
  * migration rather than guessed, per this task's brief.
  */
 export const categoryInput = z.object({
+  /** A category belongs to a wallet (0008), not to a user — so both members
+   *  of a shared wallet see one list. Validated here rather than trusted,
+   *  since a Server Action is reachable by direct POST. */
+  wallet_id: z.uuid(),
   name: z.string().trim().min(1, "Name is required").max(40, "Name is too long"),
   kind: z.enum(Constants.public.Enums.category_kind),
   color_slot: z.coerce.number().int().min(1).max(8).optional(),

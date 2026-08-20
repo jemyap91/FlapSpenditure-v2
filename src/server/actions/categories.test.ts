@@ -10,7 +10,7 @@
 // stack to run — verified below by running `npm test` with `.env.local`
 // physically absent from the repo.
 import { describe, it, expect } from "vitest";
-import { nextColorSlot } from "@/lib/validation/category";
+import { categoryInput, nextColorSlot } from "@/lib/validation/category";
 
 describe("nextColorSlot", () => {
   it("picks the first unused slot", () => {
@@ -40,5 +40,41 @@ describe("nextColorSlot", () => {
 
   it("still returns a value in range when `used` is entirely out-of-range", () => {
     expect(nextColorSlot([0, 9, 100, -5])).toBe(1);
+  });
+});
+
+describe("categoryInput — wallet scoping", () => {
+  it("requires a wallet_id, since a category now belongs to a wallet", () => {
+    const result = categoryInput.safeParse({ name: "Vet", kind: "expense", icon: "circle" });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts a uuid wallet_id", () => {
+    const result = categoryInput.safeParse({
+      name: "Vet",
+      kind: "expense",
+      icon: "circle",
+      // A real RFC-4122 v4 uuid, not the brief's literal
+      // "11111111-1111-1111-1111-111111111111" — this zod version's
+      // `z.uuid()` (v4.4.3) validates the version/variant nibbles, and that
+      // literal fails them (its 4th group starts with "1", not one of
+      // 8/9/a/b), so it would fail this "accepts a uuid" case for the wrong
+      // reason. Every real wallet_id here comes from Postgres's
+      // gen_random_uuid(), which always produces a valid v4 uuid, so this
+      // stricter check is correct for production; only the test fixture
+      // needed to change.
+      wallet_id: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a wallet_id that is not a uuid, rather than passing it to Postgres", () => {
+    const result = categoryInput.safeParse({
+      name: "Vet",
+      kind: "expense",
+      icon: "circle",
+      wallet_id: "not-a-uuid",
+    });
+    expect(result.success).toBe(false);
   });
 });

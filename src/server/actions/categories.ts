@@ -45,14 +45,17 @@ export type CategoryResult = { category: CategoryRow } | { error: string };
 export type MutationResult = { ok: true } | { error: string };
 
 /**
- * Creates a category for the caller, auto-assigning `color_slot` (via
+ * Creates a category for a wallet, auto-assigning `color_slot` (via
  * `nextColorSlot`) and `sort_order` (appended to the end) when the input
  * doesn't specify a slot — matching spec §5.3's defaults table exactly:
  * `kind` fixed at creation, `color_slot` auto-assigned but user-overridable,
- * `icon` a curated default, `sort_order` appended, `is_default: false`.
+ * `icon` a curated default, `sort_order` appended.
  *
- * `owner_id` is never accepted from the client (`categoryInput` has no such
- * field) — it always comes from `supabase.auth.getUser()`.
+ * `wallet_id` comes from `categoryInput` (client-supplied, since a category
+ * is not tied to a single user — 0008) but the caller's *membership* in that
+ * wallet is never taken on trust: it is re-derived from `getUser()` and
+ * checked against `wallet_members` below, so a raw POST naming someone
+ * else's wallet_id is rejected before any query touches `categories`.
  */
 export async function createCategory(raw: unknown): Promise<CategoryResult> {
   const parsed = categoryInput.safeParse(raw);
@@ -64,50 +67,55 @@ export async function createCategory(raw: unknown): Promise<CategoryResult> {
   } = await supabase.auth.getUser();
   if (!user) return { error: "Not signed in" };
 
-  const { name, kind, icon } = parsed.data;
+  const { wallet_id } = parsed.data;
 
-  // categories_owner (supabase/migrations/0002_wallets_categories.sql) is a
-  // partial index on (owner_id, kind) where archived_at is null — exactly
-  // this query's shape, so both the colour-slot spread and the
-  // sort_order append look only at the caller's own ACTIVE categories of
-  // this kind, matching the unique-name index's own active-rows scope.
-  const { data: existing, error: existingError } = await supabase
+  // Membership, not ownership: an invited member may create categories in a
+  // shared wallet (spec §Decisions — equal on money). RLS enforces this too;
+  // this check is so the action can return a readable message rather than a
+  // policy violation.
+  const { data: membership } = await supabase
+    .from("wallet_members")
+    .select("wallet_id")
+    .eq("wallet_id", wallet_id)
+    .eq("user_id", user.id)
+    .maybeSingle();
+  if (!membership) return { error: "You do not have access to that account." };
+
+  // Colour slots spread within the WALLET now, so two members of one wallet
+  // never collide, and two wallets never constrain each other.
+  const { data: existing } = await supabase
     .from("categories")
     .select("color_slot, sort_order")
-    .eq("owner_id", user.id)
-    .eq("kind", kind)
+    .eq("wallet_id", wallet_id)
     .is("archived_at", null);
-  if (existingError) return { error: "Could not create category. Please try again." };
 
   const colorSlot = parsed.data.color_slot ?? nextColorSlot((existing ?? []).map((c) => c.color_slot));
-  const sortOrder = Math.max(0, ...(existing ?? []).map((c) => c.sort_order)) + 1;
 
   const { data, error } = await supabase
     .from("categories")
     .insert({
-      owner_id: user.id,
-      name,
-      kind,
+      wallet_id,
+      name: parsed.data.name,
+      kind: parsed.data.kind,
       color_slot: colorSlot,
-      icon,
-      sort_order: sortOrder,
-      is_default: false,
+      icon: parsed.data.icon,
+      sort_order: (existing?.length ?? 0) + 1,
     })
     .select("id, name, color_slot, icon, kind")
     .single();
 
   if (error) {
     // categories_unique_active_name is a partial unique index on
-    // (owner_id, kind, lower(btrim(name))) where archived_at is null
-    // (supabase/migrations/0002_wallets_categories.sql) — case- and
-    // whitespace-insensitive, scoped per owner AND per kind, active rows
+    // (wallet_id, kind, lower(btrim(name))) where archived_at is null
+    // (supabase/migrations/0008_wallet_scoped_categories.sql) — case- and
+    // whitespace-insensitive, scoped per wallet AND per kind, active rows
     // only. 23505 is Postgres's unique_violation SQLSTATE. The message
     // below is app-authored, not the raw provider string (this branch's
     // "never forward raw provider messages" convention, established in
     // wallets.ts/profile.ts to stop an account-enumeration-oracle class of
     // leak — a duplicate-name error carries no such risk itself, but
     // forwarding arbitrary Postgres text is still avoided on principle).
-    if (error.code === "23505") return { error: `"${name}" already exists` };
+    if (error.code === "23505") return { error: `"${parsed.data.name}" already exists` };
     return { error: "Could not create category. Please try again." };
   }
 
@@ -122,10 +130,15 @@ export async function createCategory(raw: unknown): Promise<CategoryResult> {
 /**
  * Archives (never hard-deletes) a category — spec §5.3: "Deleting a
  * category would orphan every transaction referencing it. Archiving hides
- * it from pickers while leaving history intact." Scoped to the caller's
- * own rows in the query itself (`.eq("owner_id", user.id)`), in front of
- * (not instead of) `categories_own` RLS, matching src/server/actions/
- * wallets.ts's `archiveWallet`.
+ * it from pickers while leaving history intact." Scoped to `id` alone in
+ * the query itself, unlike `createCategory`'s explicit membership check:
+ * categories no longer carry an owner column to filter on (0008), and
+ * `categories_member` RLS (`is_wallet_member(wallet_id)`) is what actually
+ * stops a non-member's UPDATE from matching any row, matching
+ * src/server/actions/wallets.ts's `archiveWallet`'s "RLS is the real gate,
+ * the app-level filter is defense in depth" shape — here RLS is the ONLY
+ * gate, since there is nothing left in this table for the query itself to
+ * filter on.
  *
  * Returns a discriminated result rather than throwing — the brief's
  * `Promise<void>` signature was tried on this branch already for the
@@ -138,8 +151,8 @@ export async function createCategory(raw: unknown): Promise<CategoryResult> {
  *
  * The `UPDATE` is filtered to `.is("archived_at", null)` and its own
  * affected-row count is checked (`.select("id")`, then `data.length`) —
- * without this, a nonexistent id, another owner's id (an UPDATE with a
- * `WHERE` clause matching zero rows is not an error in Postgres), or an
+ * without this, a nonexistent id, a non-member's id (RLS makes that UPDATE
+ * match zero rows, which is not an error in Postgres), or an
  * already-archived row would all silently return `{ ok: true }` with the
  * database left exactly as it was, and the caller (this task's
  * CategorySection, or a future one) would remove the row from its local
@@ -165,7 +178,6 @@ export async function archiveCategory(id: string): Promise<MutationResult> {
     .from("categories")
     .update({ archived_at: new Date().toISOString() })
     .eq("id", parsedId.data)
-    .eq("owner_id", user.id)
     .is("archived_at", null)
     .select("id");
   if (error) return { error: "Could not archive category. Please try again." };

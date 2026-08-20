@@ -44,8 +44,8 @@ export type Database = {
           is_default: boolean
           kind: Database["public"]["Enums"]["category_kind"]
           name: string
-          owner_id: string
           sort_order: number
+          wallet_id: string
         }
         Insert: {
           archived_at?: string | null
@@ -56,8 +56,8 @@ export type Database = {
           is_default?: boolean
           kind: Database["public"]["Enums"]["category_kind"]
           name: string
-          owner_id: string
           sort_order?: number
+          wallet_id: string
         }
         Update: {
           archived_at?: string | null
@@ -68,10 +68,18 @@ export type Database = {
           is_default?: boolean
           kind?: Database["public"]["Enums"]["category_kind"]
           name?: string
-          owner_id?: string
           sort_order?: number
+          wallet_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "categories_wallet_id_fkey"
+            columns: ["wallet_id"]
+            isOneToOne: false
+            referencedRelation: "wallets"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       currencies: {
         Row: {
@@ -179,6 +187,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "categories"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "transactions_category_same_wallet"
+            columns: ["category_id", "wallet_id"]
+            isOneToOne: false
+            referencedRelation: "categories"
+            referencedColumns: ["id", "wallet_id"]
           },
           {
             foreignKeyName: "transactions_currency_code_fkey"
