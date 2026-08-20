@@ -27,13 +27,31 @@ create index wallet_invites_invitee
   on wallet_invites (lower(btrim(invited_email))) where status = 'pending';
 
 alter table wallet_invites enable row level security;
-grant select, insert, update, delete on wallet_invites to authenticated;
+-- No UPDATE grant: status must never be client-writable, by anyone,
+-- including the owner. If UPDATE were granted, invites_owner below (or any
+-- future owner-scoped policy) could let an owner UPDATE status='accepted'
+-- directly, producing an invite marked accepted with no matching
+-- wallet_members row -- exactly the inconsistent state this migration
+-- exists to prevent. The two SECURITY DEFINER functions bypass RLS/grants
+-- entirely (they run as their owner, not as the caller), so this grant
+-- change does not affect them.
+grant select, insert, delete on wallet_invites to authenticated;
 
--- The wallet's OWNER manages its invites -- same shape as members_write.
-create policy invites_owner on wallet_invites
-  for all to authenticated
-  using (exists (select 1 from wallets w where w.id = wallet_id and w.owner_id = auth.uid()))
+-- The wallet's OWNER manages its invites -- same shape as members_write,
+-- but split by command (not `for all`) since no legitimate owner operation
+-- needs UPDATE: sending is INSERT, listing is SELECT, revoking is DELETE
+-- (there is no `revoked` value in invite_status for an UPDATE-based revoke
+-- to target). Splitting the policy is defence in depth on top of the grant
+-- above -- either one alone already blocks a direct owner UPDATE of status.
+create policy invites_owner_select on wallet_invites
+  for select to authenticated
+  using (exists (select 1 from wallets w where w.id = wallet_id and w.owner_id = auth.uid()));
+create policy invites_owner_insert on wallet_invites
+  for insert to authenticated
   with check (exists (select 1 from wallets w where w.id = wallet_id and w.owner_id = auth.uid()));
+create policy invites_owner_delete on wallet_invites
+  for delete to authenticated
+  using (exists (select 1 from wallets w where w.id = wallet_id and w.owner_id = auth.uid()));
 
 -- The invitee may READ invites addressed to them, and nothing else. Status is
 -- never client-writable: the functions below are the only way it changes, so
@@ -57,7 +75,14 @@ begin
   if inv is null or inv.status <> 'pending' then
     raise exception 'invite is not open';
   end if;
-  if lower(btrim(inv.invited_email)) <> caller_email then
+  -- caller_email is NULL for a caller with no email claim (reachable for
+  -- phone/anonymous auth, and this codebase already tolerates a null
+  -- auth.users.email -- see 0007's handle_new_user). Without the explicit
+  -- NULL check, `lower(btrim(inv.invited_email)) <> caller_email` evaluates
+  -- to NULL, and PL/pgSQL treats a NULL IF condition as FALSE -- the
+  -- exception would NOT raise and control would fall through, letting any
+  -- emailless caller accept an invite addressed to someone else.
+  if caller_email is null or lower(btrim(inv.invited_email)) <> caller_email then
     raise exception 'invite is addressed to someone else';
   end if;
 
@@ -81,7 +106,11 @@ begin
   if inv is null or inv.status <> 'pending' then
     raise exception 'invite is not open';
   end if;
-  if lower(btrim(inv.invited_email)) <> caller_email then
+  -- See accept_wallet_invite for why the explicit NULL check is required:
+  -- a caller with no email claim would otherwise fall through the
+  -- comparison (NULL IF-condition is FALSE in PL/pgSQL) and decline an
+  -- invite addressed to someone else.
+  if caller_email is null or lower(btrim(inv.invited_email)) <> caller_email then
     raise exception 'invite is addressed to someone else';
   end if;
 
