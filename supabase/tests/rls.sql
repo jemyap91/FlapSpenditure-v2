@@ -1542,6 +1542,28 @@ begin;
   end $$;
 commit;
 
+-- Round 2 review finding: get_wallet_members() must fail at the PRIVILEGE
+-- boundary for an unauthenticated caller, not merely return zero rows
+-- because auth.uid() happens to be NULL for anon. Paired with the positive
+-- controls immediately above (Alice and Carol, both real members, both
+-- successfully calling this same function) -- this proves the denial is
+-- the grant, not a broken function.
+begin;
+  set local role anon;
+  do $$ begin
+    assert (select current_user) = 'anon', 'impersonation failed: current_user is not anon';
+  end $$;
+  do $$ begin
+    begin
+      perform public.get_wallet_members();
+      raise exception 'LEAK: anon executed get_wallet_members() -- no EXECUTE revoke in effect';
+    exception
+      when insufficient_privilege then
+        null; -- expected: 0010 revokes EXECUTE from public/anon, grants only to authenticated
+    end;
+  end $$;
+commit;
+
 -- get_pending_invites(): Alice invites Frank to the same wallet. Before
 -- Frank accepts, he must be able to name the wallet the invite is for
 -- (Task 8's UI requirement) but must NOT appear as a member yet.
@@ -1571,6 +1593,26 @@ begin;
     assert not exists (
       select 1 from public.get_wallet_members() where wallet_id = '40404040-0000-0000-0000-000000000040'
     ), 'LEAK: an invitee who has not accepted yet already appears as (or can see) a member';
+  end $$;
+commit;
+
+-- Round 2 review finding, same shape as get_wallet_members() above:
+-- get_pending_invites() must also fail at the PRIVILEGE boundary for
+-- anon, not merely return zero rows because auth.jwt()->>'email' is NULL.
+-- Paired with Frank's positive control immediately above.
+begin;
+  set local role anon;
+  do $$ begin
+    assert (select current_user) = 'anon', 'impersonation failed: current_user is not anon';
+  end $$;
+  do $$ begin
+    begin
+      perform public.get_pending_invites();
+      raise exception 'LEAK: anon executed get_pending_invites() -- no EXECUTE revoke in effect';
+    exception
+      when insufficient_privilege then
+        null; -- expected: 0010 revokes EXECUTE from public/anon, grants only to authenticated
+    end;
   end $$;
 commit;
 
