@@ -71,12 +71,36 @@ export async function removeMember(walletId: string, userId: string): Promise<In
   const { data: wallet } = await supabase
     .from("wallets").select("owner_id").eq("id", walletId).maybeSingle();
   if (!wallet || wallet.owner_id !== user.id) return { error: "Only the account owner can do that." };
-  if (userId === wallet.owner_id) return { error: "The owner cannot be removed." };
+  // Postgres returns owner_id already lower-cased, but userId arrives from
+  // the client and is never normalised on the way in — a bare `===` here
+  // would let an uppercased copy of the owner's own id slip past this
+  // check (`AAAA... !== aaaa...` in JS) while Postgres's `uuid` type
+  // equality is case-INSENSITIVE, so the DELETE below would still match
+  // and remove the owner's row anyway. Normalise both sides before
+  // comparing, the same way every other id comparison in this codebase
+  // pushes case handling to a place that can't get it wrong (see
+  // src/server/actions/wallets.ts's .eq("owner_id", ...) filters, which
+  // let Postgres — not JS — decide equality).
+  if (userId.trim().toLowerCase() === wallet.owner_id.toLowerCase()) {
+    return { error: "The owner cannot be removed." };
+  }
 
   const { error } = await supabase
-    .from("wallet_members").delete().eq("wallet_id", walletId).eq("user_id", userId);
+    .from("wallet_members")
+    .delete()
+    .eq("wallet_id", walletId)
+    .eq("user_id", userId)
+    // Defence in depth: even if the JS guard above were ever wrong, this
+    // is type-correct by construction — Postgres compares as `uuid`, not
+    // as a string, so it cannot be bypassed by case the way `===` above
+    // could.
+    .neq("user_id", wallet.owner_id);
   if (error) return { error: "Could not remove that person. Please try again." };
 
+  // Access is changing for the removed person, and the (app) layout's
+  // wallet-count/membership gate reads the same membership data —
+  // the same reasoning respondToInvite's revalidation follows above.
+  revalidatePath("/", "layout");
   revalidatePath("/wallets");
   return {};
 }
