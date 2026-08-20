@@ -1318,6 +1318,11 @@ insert into auth.users (id) values ('10101010-0000-0000-0000-000000000010'); -- 
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid,
+      'impersonation failed: auth.uid() did not resolve to alice';
+  end $$;
   insert into public.wallet_invites (id, wallet_id, invited_email, invited_by)
     values ('20202020-0000-0000-0000-000000000020', 'cccccccc-0000-0000-0000-000000000003',
             'dave@x.io', 'aaaaaaaa-0000-0000-0000-000000000001');
@@ -1363,6 +1368,11 @@ commit;
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid,
+      'impersonation failed: auth.uid() did not resolve to alice';
+  end $$;
   do $$ begin
     assert (select status from public.wallet_invites where id = '20202020-0000-0000-0000-000000000020') = 'pending',
       'LEAK: the no-email attacker''s accept/decline attempts changed the invite status';
