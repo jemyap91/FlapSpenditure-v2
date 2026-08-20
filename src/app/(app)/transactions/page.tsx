@@ -23,13 +23,25 @@ import { TransactionList, type Row } from "@/components/TransactionList";
  * by `deleted_at`, so a soft-deleted row is still visible to the same
  * policy that lets you see the live ones.
  *
- * `wallets(name)` / `categories(name, color_slot, icon)` each resolve to a
- * single embedded object, not an array — `transactions` has exactly one
- * FK to `wallets` (`wallet_id`) and one to `categories` (`category_id`),
- * confirmed against `src/lib/database.types.ts`'s generated
- * `Relationships` (`isOneToOne: false` from the `transactions` side, i.e.
- * many transactions to one wallet/category — PostgREST embeds the "one"
- * side of a many-to-one as a single object).
+ * `wallets(name)` / `categories!transactions_category_id_fkey(name,
+ * color_slot, icon)` each resolve to a single embedded object, not an
+ * array — `transactions` has exactly one FK to `wallets` (`wallet_id`) and
+ * one *simple* FK to `categories` (`category_id` -> `categories.id`,
+ * `transactions_category_id_fkey`), confirmed against `src/lib/
+ * database.types.ts`'s generated `Relationships` (`isOneToOne: false` from
+ * the `transactions` side, i.e. many transactions to one wallet/category —
+ * PostgREST embeds the "one" side of a many-to-one as a single object).
+ *
+ * The `categories` embed needs the explicit `!transactions_category_id_fkey`
+ * hint, unlike `wallets`: 0008's composite FK
+ * `transactions_category_same_wallet` (`(category_id, wallet_id)` ->
+ * `categories(id, wallet_id)`, added so a transaction can never reference a
+ * category from a different wallet) gives `transactions` a SECOND
+ * relationship to `categories`. An unqualified `categories(...)` is
+ * ambiguous between the two and PostgREST rejects the whole query with
+ * `PGRST201` ("more than one relationship was found") — confirmed live
+ * against this branch's local Postgres — so every column here must resolve
+ * through the plain `category_id` FK explicitly, not the composite one.
  *
  * `note` IS selected, and is rendered — `TransactionList` shows it as each
  * row's primary line, demoting the category to the secondary line beside
@@ -50,7 +62,7 @@ export default async function TransactionsPage() {
   const { data, error } = await supabase
     .from("transactions")
     .select(
-      "id, kind, amount_minor, currency_code, occurred_on, note, wallets(name), categories(name, color_slot, icon)",
+      "id, kind, amount_minor, currency_code, occurred_on, note, wallets(name), categories!transactions_category_id_fkey(name, color_slot, icon)",
     )
     .is("deleted_at", null)
     .order("occurred_on", { ascending: false })

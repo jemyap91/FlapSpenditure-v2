@@ -36,10 +36,12 @@ export function CategorySection({
   kind,
   label,
   initial,
+  walletId,
 }: {
   kind: "expense" | "income";
   label: string;
   initial: Category[];
+  walletId: string;
 }) {
   const [items, setItems] = useState(initial);
   const [name, setName] = useState("");
@@ -69,7 +71,7 @@ export function CategorySection({
     if (!trimmed) return;
     setError(null);
     startCreate(async () => {
-      const res = await createCategory({ name: trimmed, kind, color_slot: colorSlot, icon });
+      const res = await createCategory({ name: trimmed, kind, color_slot: colorSlot, icon, wallet_id: walletId });
       if ("error" in res) {
         setError(res.error);
         return;

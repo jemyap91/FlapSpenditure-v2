@@ -1,3 +1,5 @@
+import Link from "next/link";
+import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { CategorySection } from "./CategorySection";
 import type { Category } from "@/components/CategoryPicker";
@@ -11,24 +13,50 @@ import type { Category } from "@/components/CategoryPicker";
  * change. Creation and archiving, the two operations this task's
  * verification bar exercises, are both real here (see ./CategorySection.tsx).
  *
- * `categories_own` RLS (`for all ... owner_id = auth.uid()`) already scopes
- * this SELECT to the caller's own rows — no explicit `.eq("owner_id", ...)`
- * is needed for a read, unlike the mutations in server/actions/categories.ts,
- * which scope defensively anyway per this branch's established convention.
+ * Categories belong to a WALLET now, not a user (0008) — a caller with two
+ * or more wallets no longer has one flat list, so this page needs a wallet
+ * selector. `?wallet=<uuid>` is a plain query param, not client state: this
+ * stays a Server Component, and the selection is shareable/bookmarkable as
+ * a URL. `categories_member` RLS (`is_wallet_member(wallet_id)`) already
+ * scopes the categories SELECT to wallets the caller belongs to — no
+ * explicit membership filter is needed for the read, unlike the mutations
+ * in server/actions/categories.ts, which scope defensively anyway per this
+ * branch's established convention.
  *
- * A query error is not "no categories" — every user has 16 seeded rows
- * (supabase/migrations/0007_seed_user.sql) by the time they can reach this
- * route at all (the (app) layout only renders past onboarding), so an empty
- * result here would always mean the query itself failed, not a legitimate
- * empty state. Throwing lets the nearest error boundary handle it instead
- * of silently rendering two empty sections, matching (app)/layout.tsx's own
- * "never conflate failure with emptiness" reasoning for its wallet count.
+ * A query error is not "no categories" — every wallet has 16 seeded rows
+ * (supabase/migrations/0008_wallet_scoped_categories.sql's
+ * `seed_wallet_categories` trigger) by the time it can be selected here at
+ * all, so an empty result would always mean the query itself failed, not a
+ * legitimate empty state. Throwing lets the nearest error boundary handle
+ * it instead of silently rendering two empty sections, matching (app)/
+ * layout.tsx's own "never conflate failure with emptiness" reasoning for
+ * its wallet count.
  */
-export default async function CategoriesPage() {
+export default async function CategoriesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ wallet?: string }>;
+}) {
   const supabase = await createClient();
+  const { wallet } = await searchParams;
+
+  const { data: wallets, error: walletsError } = await supabase
+    .from("wallets")
+    .select("id, name")
+    .is("archived_at", null)
+    .order("created_at");
+  if (walletsError) throw new Error("Failed to load wallets");
+  if (!wallets?.length) redirect("/onboarding");
+
+  // An unknown or absent ?wallet falls back to the first rather than
+  // erroring: the id comes from a URL a user can edit, and RLS would return
+  // an empty list for someone else's wallet anyway.
+  const selected = wallets.find((w) => w.id === wallet) ?? wallets[0]!;
+
   const { data, error } = await supabase
     .from("categories")
-    .select("id, name, kind, color_slot, icon")
+    .select("id, name, kind, color_slot, icon, wallet_id")
+    .eq("wallet_id", selected.id)
     .is("archived_at", null)
     .order("kind")
     .order("sort_order");
@@ -43,8 +71,27 @@ export default async function CategoriesPage() {
       <h1 className="mb-6 text-2xl font-semibold" style={{ color: "var(--ink)" }}>
         Categories
       </h1>
-      <CategorySection kind="expense" label="Expense" initial={expense} />
-      <CategorySection kind="income" label="Income" initial={income} />
+      {/* Plain links, not a <select>: this is a Server Component and the
+          selection is a URL, so it needs no client JS and is shareable. */}
+      <nav aria-label="Choose account" className="mb-6 flex flex-wrap gap-2">
+        {wallets.map((w) => (
+          <Link
+            key={w.id}
+            href={`/categories?wallet=${w.id}`}
+            aria-current={w.id === selected.id ? "page" : undefined}
+            className="rounded-full border px-3 py-1 text-sm"
+            style={{
+              borderColor: w.id === selected.id ? "var(--cat-1)" : "var(--ink-2)",
+              fontWeight: w.id === selected.id ? 600 : 400,
+              color: "var(--ink)",
+            }}
+          >
+            {w.name}
+          </Link>
+        ))}
+      </nav>
+      <CategorySection kind="expense" label="Expense" initial={expense} walletId={selected.id} />
+      <CategorySection kind="income" label="Income" initial={income} walletId={selected.id} />
     </div>
   );
 }

@@ -22,6 +22,11 @@ export type Category = {
   kind: "expense" | "income";
   color_slot: number;
   icon: string;
+  /** Categories belong to a wallet, not a user (0008). TransactionForm
+   *  filters the full categories list down to the selected wallet's own
+   *  before this component ever sees it — see that component's
+   *  `walletCategories`. */
+  wallet_id: string;
 };
 
 /**
@@ -43,11 +48,13 @@ export function CategoryPicker({
   kind,
   value,
   onChange,
+  walletId,
 }: {
   categories: Category[];
   kind: "expense" | "income";
   value: string | null;
   onChange: (c: Category) => void;
+  walletId: string;
 }) {
   const [query, setQuery] = useState("");
   // Categories created inline during this mount, kept separately from the
@@ -92,7 +99,7 @@ export function CategoryPicker({
   function create() {
     setError(null);
     start(async () => {
-      const res = await createCategory({ name: trimmedQuery, kind, icon: "circle" });
+      const res = await createCategory({ name: trimmedQuery, kind, icon: "circle", wallet_id: walletId });
       if ("error" in res) {
         setError(res.error);
         return;

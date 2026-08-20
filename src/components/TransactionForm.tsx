@@ -149,6 +149,9 @@ export function TransactionForm({
   // type-safety net, not a reachable branch.
   const wallet = wallets.find((w) => w.id === walletId) ?? wallets[0]!;
   const toWallet = wallets.find((w) => w.id === toWalletId);
+  // Categories belong to a wallet (0008), and the wallet chip can change
+  // after mount — so filter on every render rather than snapshotting.
+  const walletCategories = categories.filter((c) => c.wallet_id === walletId);
   const canTransfer = wallets.length >= 2;
   const crossCurrency =
     kind === "transfer" && !!toWallet && toWallet.currency_code !== wallet.currency_code;
@@ -207,6 +210,13 @@ export function TransactionForm({
     const nextWallet = wallets.find((w) => w.id === next);
     setWalletId(next);
     setError(null);
+    // A category belongs to the wallet it was created in (0008), and the
+    // composite FK `transactions_category_same_wallet` means a transaction
+    // can never reference a category from a different wallet — the
+    // database would reject it. Clearing here is what stops the user from
+    // ever getting that far: a category chosen under the OLD wallet must
+    // not silently carry over to the new one.
+    setCategory(null);
     // The account just changed currency (possibly to a different
     // `minorUnit`) — an amount already typed under the OLD currency's
     // precision can be over-precise for the new one (e.g. "1.505" typed
@@ -490,10 +500,11 @@ export function TransactionForm({
 
       {kind !== "transfer" && (
         <CategoryPicker
-          categories={categories}
+          categories={walletCategories}
           kind={kind}
           value={category?.id ?? null}
           onChange={handleCategoryChange}
+          walletId={walletId}
         />
       )}
 

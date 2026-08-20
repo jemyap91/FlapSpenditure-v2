@@ -25,6 +25,14 @@ import type { Category } from "@/components/CategoryPicker";
  * both already follow: an archived wallet/category must not be offered as
  * a destination for a *new* transaction, even though the server actions
  * independently re-check this (defense in depth, not the only gate).
+ *
+ * The categories query is deliberately UNFILTERED by wallet: categories
+ * belong to a wallet, not a user (0008), and `categories_member` RLS
+ * already scopes this SELECT to every wallet the caller belongs to — so
+ * this single query returns every wallet's categories at once, tagged with
+ * `wallet_id`. TransactionForm filters that combined list down to the
+ * currently-selected wallet client-side (its `walletCategories`), so
+ * switching the wallet chip needs no refetch.
  */
 export default async function NewTransactionPage() {
   const supabase = await createClient();
@@ -39,7 +47,7 @@ export default async function NewTransactionPage() {
       .order("created_at"),
     supabase
       .from("categories")
-      .select("id, name, kind, color_slot, icon")
+      .select("id, name, kind, color_slot, icon, wallet_id")
       .is("archived_at", null)
       .order("kind")
       .order("sort_order"),
