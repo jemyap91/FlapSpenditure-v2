@@ -80,7 +80,7 @@ begin
         ('income', 'Salary',       3,'wallet'),
         ('income', 'Bonus',        5,'gift'),
         ('income', 'Interest',     6,'piggy-bank'),
-        ('income', 'Refunds',      7,'rotate-ccw')
+        ('income', 'Other income', 8,'circle-plus')
       ) as expected(kind, name, color_slot, icon)
       where expected.kind::category_kind = c.kind
         and expected.name = c.name
@@ -108,7 +108,7 @@ begin
     ('income', 'Salary',       3,'wallet'),
     ('income', 'Bonus',        5,'gift'),
     ('income', 'Interest',     6,'piggy-bank'),
-    ('income', 'Refunds',      7,'rotate-ccw')
+    ('income', 'Other income', 8,'circle-plus')
   ) as expected(kind, name, color_slot, icon)
   where not exists (
     select 1 from categories c
@@ -174,7 +174,7 @@ begin
     (wid,'Salary',       'income', 3,'wallet',          1,true),
     (wid,'Bonus',        'income', 5,'gift',            2,true),
     (wid,'Interest',     'income', 6,'piggy-bank',      3,true),
-    (wid,'Refunds',      'income', 7,'rotate-ccw',      4,true)
+    (wid,'Other income', 'income', 8,'circle-plus',     4,true)
   on conflict (wallet_id, kind, (lower(btrim(name)))) where archived_at is null do nothing;
 
   select count(*) into n from categories where wallet_id = wid;

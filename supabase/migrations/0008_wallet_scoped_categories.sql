@@ -127,7 +127,7 @@ begin
     (new.id,'Salary',       'income', 3,'wallet',          1,true),
     (new.id,'Bonus',        'income', 5,'gift',            2,true),
     (new.id,'Interest',     'income', 6,'piggy-bank',      3,true),
-    (new.id,'Refunds',      'income', 7,'rotate-ccw',      4,true)
+    (new.id,'Other income', 'income', 8,'circle-plus',     4,true)
   on conflict do nothing;
   return new;
 end $$;
