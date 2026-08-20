@@ -42,6 +42,15 @@ export type Row = {
   category_name: string | null;
   category_icon: string | null;
   color_slot: number | null;
+  /** Who created this row (`transactions.created_by`, resolved to a display
+   *  name — see this component's doc comment and page.tsx's for why that
+   *  resolution goes through `get_wallet_members()`, not a `profiles`
+   *  embed/join). Null both when the column itself is null (`on delete set
+   *  null`, so a departed account's past rows have no author) and, more
+   *  routinely, whenever `showAttribution` is false and the page never
+   *  bothered to resolve it. Either way, rendering is driven by
+   *  `showAttribution`, not by whether this happens to be non-null. */
+  created_by_name: string | null;
 };
 
 const FOCUS_RING =
@@ -208,7 +217,17 @@ function RowIcon({ row }: { row: Row }) {
  * four error strings can and cannot leave partial state) makes the list
  * reconcile against the server every time, success or failure alike.
  */
-export function TransactionList({ rows }: { rows: Row[] }) {
+export function TransactionList({
+  rows,
+  // Off by default: every existing caller/test that doesn't pass this prop
+  // must keep rendering exactly as before (no attribution), matching the
+  // "solo wallet" default this page.tsx computes for a wallet with no
+  // co-members.
+  showAttribution = false,
+}: {
+  rows: Row[];
+  showAttribution?: boolean;
+}) {
   const router = useRouter();
   const [toast, setToast] = useState<ToastState | null>(null);
   const [pendingIds, setPendingIds] = useState<ReadonlySet<string>>(new Set());
@@ -362,11 +381,22 @@ export function TransactionList({ rows }: { rows: Row[] }) {
                       {/* When the note has taken over the primary line, the
                           category joins the wallet here rather than being
                           dropped — the row still carries everything it did
-                          before, just reordered by specificity. */}
+                          before, just reordered by specificity. Attribution
+                          (when `showAttribution` — a wallet with more than
+                          one member, see page.tsx) is appended last, and
+                          only when this row actually has an author: a
+                          departed account's rows (`created_by` is `on
+                          delete set null`) carry `created_by_name: null`
+                          and must render with no "added by" segment at
+                          all, not a blank/"undefined" one. */}
                       <span className="block truncate text-xs" style={{ color: "var(--ink-2)" }}>
-                        {noteOf(r) && r.category_name
-                          ? `${r.category_name} · ${r.wallet_name}`
-                          : r.wallet_name}
+                        {[
+                          noteOf(r) && r.category_name ? r.category_name : null,
+                          r.wallet_name,
+                          showAttribution && r.created_by_name ? `added by ${r.created_by_name}` : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
                       </span>
                     </span>
                     {/* Sign is always rendered (`−12.50`/`+3,200.00`);

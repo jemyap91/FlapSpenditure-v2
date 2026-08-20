@@ -41,6 +41,7 @@ const baseRow: Row = {
   category_name: "Groceries",
   category_icon: "shopping-basket",
   color_slot: 1,
+  created_by_name: null,
 };
 
 // Matches whichever row's Delete button is rendered — the accessible name
@@ -193,5 +194,42 @@ describe("TransactionList — note", () => {
     // row that reaches the client as "" must not render an empty heading.
     render(<TransactionList rows={[{ ...baseRow, note: "", category_name: "Coffee" }]} />);
     expect(screen.getByText("Coffee")).toBeInTheDocument();
+  });
+});
+
+/**
+ * Attribution renders ONLY when the caller tells us the wallet has more
+ * than one member (`showAttribution`) — a solo wallet would otherwise show
+ * "added by you" on every row, which is noise, not information. The page
+ * computes that boolean from membership counts, not this component.
+ */
+describe("TransactionList — attribution", () => {
+  it("says who added a row when the wallet has more than one member", () => {
+    render(
+      <TransactionList
+        rows={[{ ...baseRow, created_by_name: "Sam", note: "Starbucks", category_name: "Coffee" }]}
+        showAttribution
+      />,
+    );
+    expect(screen.getByText(/added by Sam/i)).toBeInTheDocument();
+  });
+
+  it("stays silent in a single-member wallet, where every row would say 'you'", () => {
+    render(
+      <TransactionList
+        rows={[{ ...baseRow, created_by_name: "Sam", note: "Starbucks", category_name: "Coffee" }]}
+        showAttribution={false}
+      />,
+    );
+    expect(screen.queryByText(/added by/i)).not.toBeInTheDocument();
+  });
+
+  it("omits attribution for a row whose author is unknown", () => {
+    // created_by is ON DELETE SET NULL, so a removed account leaves rows with
+    // no author rather than deleting the ledger history.
+    render(
+      <TransactionList rows={[{ ...baseRow, created_by_name: null }]} showAttribution />,
+    );
+    expect(screen.queryByText(/added by/i)).not.toBeInTheDocument();
   });
 });
