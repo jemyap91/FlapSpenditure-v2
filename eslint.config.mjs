@@ -16,6 +16,11 @@ const eslintConfig = defineConfig([
     // not project source, so it shouldn't be linted.
     "supabase/.temp/**",
     "supabase/.branches/**",
+    // Agent worktrees created inside the repo by the harness — a second
+    // checkout of this same project, not source to lint. Without this, its
+    // files are linted twice and reported against paths that do not exist
+    // from a consumer's point of view.
+    ".claude/worktrees/**",
   ]),
 ]);
 

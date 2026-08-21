@@ -21,6 +21,12 @@ next-env.d.ts
 .env
 .env*.local
 
+# agent worktrees — created inside the repo by the harness's worktree tool.
+# Not ignored by default, so `git add -A` would otherwise stage an entire
+# second checkout. Scoped to worktrees/ rather than all of .claude/ so a
+# project-level .claude/settings.json stays committable.
+.claude/worktrees/
+
 # test / coverage
 coverage/
 playwright-report/
