@@ -83,9 +83,21 @@ export function CategoryPicker({
     // just-created category never renders twice once the prop does catch
     // up, and filtered by `kind` so a category created while a different
     // kind was selected doesn't leak into this kind's list.
-    const extra = created.filter((c) => c.kind === kind && !byKind.some((x) => x.id === c.id));
+    // `walletId` is checked as well as `kind`: TransactionForm's Account
+    // chip changes `walletId` on this SAME mounted picker, and `created`
+    // survives that change (there is no `key` remounting it). Without this
+    // filter a category inline-created under wallet A stayed listed after
+    // switching to wallet B, where selecting it produced a transaction
+    // 0008's composite FK `transactions_category_same_wallet` refuses —
+    // reaching the user only as "Could not save transaction. Please try
+    // again.", with no way out. Filtered rather than cleared, so switching
+    // back to the original wallet still shows it before the parent's
+    // `categories` prop has revalidated.
+    const extra = created.filter(
+      (c) => c.kind === kind && c.wallet_id === walletId && !byKind.some((x) => x.id === c.id),
+    );
     return [...byKind, ...extra];
-  }, [categories, kind, created]);
+  }, [categories, kind, created, walletId]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -104,7 +116,7 @@ export function CategoryPicker({
         setError(res.error);
         return;
       }
-      const c = res.category as Category;
+      const c = res.category;
       setCreated((prev) => [...prev, c]);
       setQuery("");
       onChange(c); // select it and return control to the caller (e.g. the keypad)

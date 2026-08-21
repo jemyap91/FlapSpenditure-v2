@@ -76,7 +76,7 @@ export function CategorySection({
         setError(res.error);
         return;
       }
-      const created = res.category as Category;
+      const created = res.category;
       const nextItems = [...items, created];
       setItems(nextItems);
       setName("");

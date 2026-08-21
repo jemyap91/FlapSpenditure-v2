@@ -38,7 +38,14 @@ const idSchema = z.uuid();
 
 type CategoryRow = Pick<
   Database["public"]["Tables"]["categories"]["Row"],
-  "id" | "name" | "kind" | "color_slot" | "icon"
+  // `wallet_id` is part of the row on purpose, not incidentally: a
+  // category belongs to a wallet (0008), and both callers of
+  // `createCategory` merge the returned row into a client-side list that
+  // is filtered by the CURRENTLY selected wallet. Without this column the
+  // returned row could not be told apart from another wallet's, which is
+  // exactly how a wallet-A category ended up selectable under wallet B —
+  // and how `as Category` casts (now removed) papered over the gap.
+  "id" | "name" | "kind" | "color_slot" | "icon" | "wallet_id"
 >;
 
 export type CategoryResult = { category: CategoryRow } | { error: string };
@@ -101,7 +108,7 @@ export async function createCategory(raw: unknown): Promise<CategoryResult> {
       icon: parsed.data.icon,
       sort_order: (existing?.length ?? 0) + 1,
     })
-    .select("id, name, color_slot, icon, kind")
+    .select("id, name, color_slot, icon, kind, wallet_id")
     .single();
 
   if (error) {
