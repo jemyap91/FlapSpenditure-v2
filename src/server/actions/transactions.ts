@@ -103,9 +103,20 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
     .single();
   if (!wallet || wallet.archived_at) return { error: "Account not found" };
 
-  // categories_own RLS scopes this to the caller's own categories, so a
-  // category_id belonging to someone else (or that doesn't exist) comes
-  // back null here rather than as a foreign-key error from the INSERT.
+  // `categories_member` RLS (0008: `is_wallet_member(wallet_id)`, which
+  // REPLACED `categories_own`) scopes this to every wallet the caller
+  // belongs to — which, since categories became wallet-scoped and wallets
+  // became shareable, is no longer the same set as "this transaction's
+  // wallet". So RLS alone stops a stranger's category but NOT a
+  // cross-wallet one of the caller's own: without the explicit
+  // `.eq("wallet_id", wallet_id)` below, a category from wallet A reached
+  // the INSERT and died there on 0008's composite FK
+  // `transactions_category_same_wallet`, surfacing as the generic "Could
+  // not save transaction. Please try again." with nothing the user could
+  // act on. Filtering on wallet_id here turns that dead end back into the
+  // ordinary "Choose a category" validation error, and is defence in depth
+  // against a direct POST naming another wallet's category id.
+  //
   // The kind check catches a mismatch nothing in the schema's CHECK
   // constraints forbids — e.g. filing an expense against an income
   // category — which would otherwise silently corrupt Task 21's category
@@ -130,6 +141,7 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
     .from("categories")
     .select("kind, archived_at")
     .eq("id", category_id)
+    .eq("wallet_id", wallet_id)
     .single();
   if (!category || category.archived_at) return { error: "Choose a category" };
   if (category.kind !== kind) return { error: "That category doesn't match this transaction type" };
