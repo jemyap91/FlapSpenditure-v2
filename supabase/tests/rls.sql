@@ -1277,12 +1277,17 @@ begin;
     if (select status from public.wallet_invites where id = '77777777-0000-0000-0000-000000000007') <> 'accepted' then
       raise exception 'accepting did not mark the invite accepted';
     end if;
-    if (select count(*) from public.transactions) = 0 then
-      raise exception 'an accepted member cannot read the wallet''s transactions';
-    end if;
-    if (select count(*) from public.categories) = 0 then
-      raise exception 'an accepted member cannot read the wallet''s categories -- the Uncategorised bug';
-    end if;
+    -- The two visibility assertions that used to sit here (`count(*) from
+    -- public.transactions = 0` and the same for categories, both UNSCOPED)
+    -- were removed rather than repaired. Bob is already a member of
+    -- cccccccc-...-003 by this point in the file, so both counts were
+    -- nonzero before he accepted anything -- they could not fail, and read
+    -- as load-bearing while proving nothing.
+    --
+    -- The Carol block further down covers this properly: a fixture she has
+    -- touched nowhere else, an explicit before-state proving she cannot see
+    -- that wallet's rows, and after-state assertions scoped to that
+    -- wallet_id with exact expected counts.
   end $$;
 commit;
 
@@ -1443,9 +1448,10 @@ commit;
 -- has touched nothing else in this file, so her before/after visibility
 -- of THIS wallet's categories is not obscured by access she already
 -- holds elsewhere (unlike Bob, above, who was already a member of
--- cccccccc-003 by the time he accepted his invite, which is why that
--- block's own category/transaction assertions are a weaker signal than
--- this one).
+-- cccccccc-003 by the time he accepted his invite -- which is why his
+-- block's equivalent unscoped assertions were deleted rather than kept:
+-- they could not fail. This block is where the claim is actually
+-- proven).
 -- =====================================================================
 begin;
   set local role authenticated;

@@ -156,8 +156,12 @@ begin;
 rollback;
 
 -- transactions_category_same_wallet (0008): a transaction may not point at a
--- category belonging to a different wallet. Transfers, whose category_id is
--- null, are exempt by MATCH SIMPLE and are asserted to still work.
+-- category belonging to a different wallet. The REJECT below is paired with
+-- two positives, so this proves a constraint and not a broken insert path:
+-- a SAME-wallet category is accepted, and a transfer (category_id null,
+-- exempt by MATCH SIMPLE) is accepted. Both positives were described by this
+-- comment before they existed -- review-caught, and the reason a claim in a
+-- comment is not evidence.
 insert into auth.users (id, email) values ('eeeeeeee-0000-0000-0000-000000000005','erin@x.io');
 insert into public.wallets (id, owner_id, name, kind, currency_code, starting_balance_minor, color_slot, icon)
 values ('55555555-0000-0000-0000-000000000005','eeeeeeee-0000-0000-0000-000000000005','X','bank','USD',0,1,'landmark'),
@@ -175,4 +179,41 @@ begin
   exception when foreign_key_violation then
     null; -- correct
   end;
+end $$;
+
+-- POSITIVE 1: the SAME wallet's own category is accepted. Without this, a
+-- constraint (or an insert path) that rejected EVERY category_id would sail
+-- through the REJECT above -- the denial only means something paired with a
+-- permission.
+do $$
+declare own_cat uuid; n int;
+begin
+  select id into own_cat from public.categories
+  where wallet_id = '66666666-0000-0000-0000-000000000006' and kind = 'expense' limit 1;
+  assert own_cat is not null, 'test setup broken: wallet Y has no seeded expense category';
+
+  insert into public.transactions (wallet_id, kind, amount_minor, currency_code, category_id, occurred_on)
+  values ('66666666-0000-0000-0000-000000000006','expense',-100,'USD', own_cat, current_date);
+
+  select count(*) into n from public.transactions
+  where wallet_id = '66666666-0000-0000-0000-000000000006' and category_id = own_cat;
+  assert n = 1,
+    format('CONSTRAINT BROKEN: transactions_category_same_wallet rejected a category from the transaction''s OWN wallet (%s row(s) landed)', n);
+end $$;
+
+-- POSITIVE 2: a transfer leg carries category_id null and must be accepted.
+-- MATCH SIMPLE (the default) skips a composite FK check whenever any column
+-- of the key is null, which is what makes transfers exempt -- 0008's own
+-- comment says so, and this is the assertion behind that claim.
+do $$
+declare n int;
+begin
+  insert into public.transactions (wallet_id, kind, amount_minor, currency_code, category_id, transfer_id, occurred_on)
+  values ('66666666-0000-0000-0000-000000000006','transfer',-250,'USD', null,
+          '77777777-0000-0000-0000-000000000077', current_date);
+
+  select count(*) into n from public.transactions
+  where transfer_id = '77777777-0000-0000-0000-000000000077';
+  assert n = 1,
+    format('CONSTRAINT BROKEN: a transfer leg with category_id null was not accepted (%s row(s) landed)', n);
 end $$;

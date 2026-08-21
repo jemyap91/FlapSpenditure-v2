@@ -33,7 +33,7 @@ end $$;
 -- kind, name, color_slot and icon -- a comparison in BOTH directions
 -- (nothing extra beyond the brief, nothing missing from it), not a bare
 -- count. A wrong icon, a swapped color_slot, or a typo'd name on any single
--- row fails this (proven below by deliberately corrupting one row).
+-- row fails this.
 insert into auth.users (id, email) values ('dddddddd-0000-0000-0000-000000000004','dave@x.io');
 
 do $$ begin

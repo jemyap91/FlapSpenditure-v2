@@ -28,6 +28,26 @@ user across their own wallets. Someone with three wallets maintains three
 lists, and a custom category added to one does not appear in the others. Each
 new wallet is seeded with the 16 defaults so no list ever starts empty.
 
+*Amended after the whole-branch final review.* This paragraph understated the
+cost: fragmentation is not confined to the `/categories` screen. The dashboard
+passes **every** same-currency active wallet id to `get_category_breakdown` in
+one call, and that function grouped by `c.id` — so the moment a user has two
+wallets, the same category appears as two rows with the same name, the same
+colour and the month's total split between them. Nothing on screen indicates
+they are the same thing. This reaches ordinary multi-wallet users, not only
+people who share, and it is guaranteed for the flow this design creates: B
+onboards into their own wallet (16 seeded categories) and then joins a shared
+one (16 more, identical names).
+
+The reporting half of that cost is **not** accepted, and is fixed in
+`0011_final_review_fixes.sql`: `get_category_breakdown` now groups by
+`(kind, lower(btrim(name)))` — the same key `categories_unique_active_name`
+uses per wallet and the same key `0008`'s backfill matched on — so one
+category name is one row, carrying the summed total, with a deterministic
+representative id/colour/icon. The **editing** half stands as accepted:
+`/categories` still shows one list per wallet, and adding "Vet" to one wallet
+still does not add it to another.
+
 ---
 
 ## 1. Categories become wallet-scoped — migration `0008`
@@ -168,9 +188,38 @@ convention documented at the top of `src/server/actions/wallets.ts`. All return
 `WalletState`-shaped results rather than throwing, because Next replaces thrown
 server errors with an opaque digest in production.
 
-- `inviteToWallet(walletId, email)` — owner only. Rejects inviting an existing
-  member, and inviting oneself. Returns the same shape whether or not the
-  address has an account, so the form cannot be used to test who is registered.
+- `inviteToWallet(walletId, email)` — owner only. Rejects inviting oneself.
+  Returns the same shape whether or not the address has an account, so the
+  form cannot be used to test who is registered.
+
+  > **Deviation, recorded in the whole-branch final review.** This bullet
+  > originally also said "rejects inviting an existing member". The
+  > implementation does not do that, and after review the *spec* is what
+  > changed rather than the code.
+  >
+  > The two requirements in this bullet are in direct tension. An invite is
+  > keyed on an email address; a membership is keyed on a `user_id`. To
+  > reject an already-member you must first resolve address → user id, and
+  > `auth.users` is not readable under RLS — so it needs another `SECURITY
+  > DEFINER` function taking an email and reporting something about it.
+  > That function is precisely the enumeration oracle the second half of
+  > this bullet, §3's "Enumeration" note, and `src/lib/validation/auth.ts`
+  > all exist to prevent: any observable difference between "already a
+  > member" and "not a member" also distinguishes "has an account" from
+  > "does not", because only a registered address can be a member.
+  >
+  > Enumeration safety wins because the cost of not implementing the check
+  > is close to zero. Inviting someone who is already a member produces a
+  > pending invite they can accept; `accept_wallet_invite` inserts into
+  > `wallet_members` with `on conflict do nothing`, so accepting a second
+  > time is a no-op that leaves exactly one membership row, unchanged role
+  > included. `wallet_invites_one_pending` already stops the same address
+  > accumulating duplicate pending invites for one wallet. The worst
+  > outcome is a redundant row in the invitee's Pending invitations list.
+  >
+  > Not implemented, therefore, and deliberately so — see
+  > `src/server/actions/invites.test.ts` for the test that fails if a branch
+  > is ever added which answers differently for a registered address.
 - `respondToInvite(inviteId, accept)` — calls the RPC above.
 - `removeMember(walletId, userId)` — owner only; refuses to remove the owner.
   A removed member immediately loses read access via `is_wallet_member`.
