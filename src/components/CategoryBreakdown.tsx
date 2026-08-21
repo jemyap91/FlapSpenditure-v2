@@ -13,6 +13,14 @@ import type { CategoryIcon } from "@/lib/validation/category";
  * colour dot: spec §6.1 says colour alone stops being unique past 8
  * categories ("category nine onward reuses slots and relies on its icon
  * and name for identity"), so colour is never the only cue here either.
+ *
+ * One row is one CATEGORY NAME, not necessarily one `categories` row.
+ * Since 0008 each wallet holds its own copy of every category, and the
+ * dashboard asks for several wallets at once — so 0011 groups the RPC by
+ * (kind, casefolded name) and `category_id` is a deterministic
+ * representative of the merged group (the lowest member id), used here as
+ * a stable React key. It is not a handle to fetch a category by, and
+ * nothing in this component dereferences it.
  */
 export type BreakdownRow = {
   category_id: string;

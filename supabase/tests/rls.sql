@@ -1640,3 +1640,114 @@ begin;
       'LEAK: 0010 widened direct SELECT access to profiles, not just the new RPCs';
   end $$;
 commit;
+
+-- =====================================================================
+-- 0011: get_category_breakdown merges same-named categories ACROSS the
+-- wallets it is called with.
+--
+-- 0006 grouped by c.id, which was fine while a user had exactly one
+-- "Groceries". 0008 gives every wallet its own copy of the 16 seeded
+-- names, and the dashboard passes every same-currency active wallet id in
+-- one call -- so a two-wallet user saw "Groceries" twice, in the same
+-- colour, with the total split between the rows. That is guaranteed for
+-- the scenario shared wallets create: onboard into your own wallet, then
+-- join somebody else's.
+--
+-- Gina is a fresh fixture (she appears nowhere else in this file), so the
+-- two transactions below are the ONLY things that can contribute to her
+-- breakdown.
+-- =====================================================================
+insert into auth.users (id, email) values ('77770000-0000-0000-0000-000000000077', 'gina@x.io');
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"77770000-0000-0000-0000-000000000077","email":"gina@x.io"}';
+  do $$ begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
+    assert (select auth.uid()) = '77770000-0000-0000-0000-000000000077'::uuid,
+      'impersonation failed: auth.uid() did not resolve to gina';
+  end $$;
+
+  insert into public.wallets (id, owner_id, name, kind, currency_code, starting_balance_minor, color_slot, icon)
+  values ('88880000-0000-0000-0000-000000000088','77770000-0000-0000-0000-000000000077','Gina One','bank','USD',0,1,'landmark'),
+         ('99990000-0000-0000-0000-000000000099','77770000-0000-0000-0000-000000000077','Gina Two','bank','USD',0,2,'landmark');
+
+  -- -10.00 against wallet one's own 'Groceries', -25.00 against wallet
+  -- two's own 'Groceries'. Both rows come from seed_wallet_categories
+  -- (0008), which is precisely why they share a name and a color_slot.
+  insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on)
+  select '88880000-0000-0000-0000-000000000088','77770000-0000-0000-0000-000000000077','expense',-1000,'USD', c.id, current_date
+  from public.categories c
+  where c.wallet_id = '88880000-0000-0000-0000-000000000088'
+    and c.kind = 'expense' and lower(btrim(c.name)) = 'groceries';
+
+  insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on)
+  select '99990000-0000-0000-0000-000000000099','77770000-0000-0000-0000-000000000077','expense',-2500,'USD', c.id, current_date
+  from public.categories c
+  where c.wallet_id = '99990000-0000-0000-0000-000000000099'
+    and c.kind = 'expense' and lower(btrim(c.name)) = 'groceries';
+
+  do $$
+  declare
+    n_distinct_cats int;
+    n_rows          int;
+    n_total         bigint;
+    n_names         int;
+  begin
+    -- Setup control. Without it, "one row came back" would also be
+    -- satisfied by there only ever having been one category row in the
+    -- first place, and the merge assertion below would be vacuous.
+    select count(distinct c.id) into n_distinct_cats
+    from public.categories c
+    where c.wallet_id in ('88880000-0000-0000-0000-000000000088','99990000-0000-0000-0000-000000000099')
+      and c.kind = 'expense' and lower(btrim(c.name)) = 'groceries';
+    assert n_distinct_cats = 2,
+      format('test setup broken: expected two DISTINCT same-named category rows, one per wallet, got %s', n_distinct_cats);
+
+    select count(*), coalesce(sum(total_minor), 0), count(distinct name)
+      into n_rows, n_total, n_names
+    from public.get_category_breakdown(
+      array['88880000-0000-0000-0000-000000000088','99990000-0000-0000-0000-000000000099']::uuid[],
+      current_date - 1, current_date + 1);
+
+    assert n_rows = 1,
+      format('BREAKDOWN BROKEN: two wallets'' same-named "Groceries" must collapse to ONE row, got %s', n_rows);
+    assert n_names = 1,
+      format('BREAKDOWN BROKEN: expected a single category name across the merged result, got %s distinct names', n_names);
+    assert n_total = 3500,
+      format('BREAKDOWN BROKEN: the merged row must carry the SUMMED total 1000 + 2500 = 3500, got %s', n_total);
+  end $$;
+
+  -- Paired control for the merge: called for ONE wallet alone, only that
+  -- wallet's own spend is reported. So the collapse above is a merge
+  -- across the ids passed in, not a function that has stopped
+  -- distinguishing wallets at all.
+  do $$
+  declare n_rows int; n_total bigint;
+  begin
+    select count(*), coalesce(sum(total_minor), 0) into n_rows, n_total
+    from public.get_category_breakdown(
+      array['88880000-0000-0000-0000-000000000088']::uuid[], current_date - 1, current_date + 1);
+    assert n_rows = 1 and n_total = 1000,
+      format('BREAKDOWN BROKEN: a single-wallet call must report only that wallet''s spend, got %s row(s) totalling %s', n_rows, n_total);
+  end $$;
+commit;
+
+-- The membership guard survives the 0011 rewrite: Carol belongs to neither
+-- of Gina's wallets, and passing even one unauthorised id must return
+-- EMPTY rather than filtering it out. Paired with Gina's own successful
+-- calls immediately above, so this proves the guard, not a broken function.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"cccccccc-0000-0000-0000-000000000009","email":"carol@x.io"}';
+  do $$
+  declare n int;
+  begin
+    assert (select auth.uid()) = 'cccccccc-0000-0000-0000-000000000009'::uuid, 'impersonation failed';
+    select count(*) into n from public.get_category_breakdown(
+      array['88880000-0000-0000-0000-000000000088','99990000-0000-0000-0000-000000000099']::uuid[],
+      current_date - 1, current_date + 1);
+    assert n = 0,
+      format('LEAK: a non-member read a merged category breakdown for wallets she does not belong to (%s row(s))', n);
+  end $$;
+commit;
