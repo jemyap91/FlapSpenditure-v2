@@ -3,6 +3,10 @@ import { mergeWalletBalances, type BalanceRow, type WalletRow } from "./wallet-r
 
 const wallet = (id: string, over: Partial<WalletRow> = {}): WalletRow => ({
   id,
+  // `mergeWalletBalances` never reads `owner_id` — it is carried through by
+  // the spread so /wallets can decide whose Archive control to render — but
+  // the type requires it, so the fixture supplies a constant one.
+  owner_id: "11111111-1111-4111-8111-111111111111",
   name: `Wallet ${id}`,
   kind: "bank",
   currency_code: "USD",

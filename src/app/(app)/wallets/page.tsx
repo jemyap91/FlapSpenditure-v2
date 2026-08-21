@@ -107,7 +107,11 @@ export default async function WalletsPage() {
 
       <PendingInvites invites={pendingInvites} />
 
-      <WalletList wallets={rows} />
+      {/* `currentUserId`, so the list can tell an owned wallet from a
+          shared one: Archive is owner-only (spec §5) and `archiveWallet`
+          scopes its UPDATE to `owner_id`, so offering it on a shared row
+          could only ever produce a zero-row UPDATE reported as success. */}
+      <WalletList wallets={rows} currentUserId={profile.id} />
 
       <div className="mt-6 flex flex-col gap-6">
         {rows.map((w) => (

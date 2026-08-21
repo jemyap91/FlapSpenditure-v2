@@ -28,13 +28,29 @@ const WALLET_ICON_COMPONENTS = {
  * itself is fetched in page.tsx (a Server Component) and passed down, the
  * same split src/app/(app)/categories/page.tsx + CategorySection.tsx use.
  *
+ * `currentUserId` is a display decision only, not the enforcement
+ * boundary — the same split MembersSection.tsx documents for its own
+ * `isOwner` prop. `wallets_write` RLS and `archiveWallet`'s own
+ * `.eq("owner_id", user.id)` are what actually stop a non-owner; this
+ * component's job is not to OFFER a control that can never succeed. Before
+ * this prop existed, /wallets (which lists shared wallets since Task 8)
+ * rendered Archive on every row, and archiving somebody else's wallet ran
+ * an UPDATE that matched zero rows — not an error in Postgres, not an
+ * error from PostgREST — so the UI reported success and nothing happened.
+ *
  * There is no Undo here, deliberately, unlike TransactionList's delete.
  * Archiving is already reversible in principle (`archived_at` is a soft
  * flag) but nothing in this app un-archives yet, so offering "Undo" would
  * promise a path that doesn't exist. Blocking the one irreversible-feeling
  * case instead — archiving your last wallet — is what the guard below does.
  */
-export function WalletList({ wallets }: { wallets: WalletWithBalance[] }) {
+export function WalletList({
+  wallets,
+  currentUserId,
+}: {
+  wallets: WalletWithBalance[];
+  currentUserId: string;
+}) {
   const [error, setError] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [, start] = useTransition();
@@ -46,7 +62,14 @@ export function WalletList({ wallets }: { wallets: WalletWithBalance[] }) {
   // `archiveWallet` re-checks this server-side (a Server Function is
   // reachable by direct POST, per that module's own doc comment); this is
   // the UI half, not the enforcement.
-  const isLastWallet = wallets.length === 1;
+  //
+  // Counted over OWNED wallets, matching what `archiveWallet` itself counts
+  // (`.eq("owner_id", user.id)`). Counting readable wallets instead — which
+  // now includes shared ones — made the two disagree: a user with one wallet
+  // of their own plus one shared wallet got an ENABLED Archive on their last
+  // owned wallet, and only learned it was refused after clicking.
+  const ownedCount = wallets.filter((w) => w.owner_id === currentUserId).length;
+  const isLastWallet = ownedCount === 1;
 
   function archive(id: string) {
     setError(null);
@@ -86,6 +109,7 @@ export function WalletList({ wallets }: { wallets: WalletWithBalance[] }) {
           const Icon = WALLET_ICON_COMPONENTS[w.icon as keyof typeof WALLET_ICON_COMPONENTS] ??
             (w.kind === "card" ? CreditCard : Landmark);
           const archiving = pendingId === w.id;
+          const isOwner = w.owner_id === currentUserId;
           return (
             <li
               key={w.id}
@@ -124,16 +148,26 @@ export function WalletList({ wallets }: { wallets: WalletWithBalance[] }) {
               >
                 {w.balanceMinor === null ? "—" : formatMoney(w.balanceMinor, w.currency_code)}
               </span>
-              <button
-                type="button"
-                aria-label={`Archive ${w.name}`}
-                disabled={isLastWallet || archiving}
-                onClick={() => archive(w.id)}
-                className={`shrink-0 text-xs underline disabled:opacity-60 ${FOCUS_RING}`}
-                style={{ color: "var(--ink-2)" }}
-              >
-                {archiving ? "Archiving…" : "Archive"}
-              </button>
+              {/* Absent for a non-owner, not disabled — the convention this
+                  codebase already applies to a control that can never
+                  succeed (TransactionForm removes the category chip on a
+                  transfer rather than greying it out; MembersSection
+                  renders no Remove for a non-owner at all). A disabled
+                  Archive would also read as "you could archive this if
+                  something changed", which is false: only the owner ever
+                  can. */}
+              {isOwner && (
+                <button
+                  type="button"
+                  aria-label={`Archive ${w.name}`}
+                  disabled={isLastWallet || archiving}
+                  onClick={() => archive(w.id)}
+                  className={`shrink-0 text-xs underline disabled:opacity-60 ${FOCUS_RING}`}
+                  style={{ color: "var(--ink-2)" }}
+                >
+                  {archiving ? "Archiving…" : "Archive"}
+                </button>
+              )}
             </li>
           );
         })}

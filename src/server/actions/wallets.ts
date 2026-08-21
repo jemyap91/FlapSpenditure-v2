@@ -256,12 +256,33 @@ export async function archiveWallet(id: string): Promise<WalletState> {
     return { error: "You need at least one account. Add another before archiving this one." };
   }
 
-  const { error } = await supabase
+  // The affected-row count is checked, not assumed — `.select("id")` makes
+  // the UPDATE return what it actually changed. Without this, an UPDATE
+  // that matched ZERO rows returned `{}` and the UI reported success while
+  // the database was untouched. That is reachable, not theoretical: since
+  // Task 8, /wallets lists wallets the caller is only a MEMBER of, and this
+  // UPDATE is deliberately scoped `.eq("owner_id", user.id)` (spec §5 — a
+  // member may not archive a wallet they were invited to), so a member
+  // pressing Archive on a shared wallet matched nothing. Zero affected rows
+  // is not an error in Postgres and PostgREST reports none, so nothing else
+  // would ever have caught it. A nonexistent id and an already-archived
+  // wallet land here the same way, and get the same message.
+  //
+  // src/server/actions/categories.ts:182-184 (`archiveCategory`) is the
+  // in-repo precedent for exactly this shape, and its doc comment carries
+  // the same reasoning.
+  const { data, error } = await supabase
     .from("wallets")
     .update({ archived_at: new Date().toISOString() })
     .eq("id", id)
-    .eq("owner_id", user.id);
+    .eq("owner_id", user.id)
+    .select("id");
   if (error) return { error: "Could not archive wallet. Please try again." };
+  // Deliberately the same message a genuinely nonexistent id gets: nothing
+  // distinguishes "this wallet is not yours" from "this wallet does not
+  // exist" that a caller has any business being told apart, and
+  // `archiveCategory` already answers the identical question this way.
+  if (!data || data.length === 0) return { error: "Account not found" };
 
   revalidatePath("/", "layout");
   revalidatePath("/wallets");

@@ -2,6 +2,11 @@ import type { WalletInput } from "@/lib/validation/wallet";
 
 export type WalletRow = {
   id: string;
+  /** Carried through to the UI, not just used for reads: /wallets lists
+   *  SHARED wallets (spec §4) while `archiveWallet` is scoped to
+   *  `owner_id = auth.uid()` by design (spec §5), so the list has to know
+   *  which rows the viewer actually owns before it offers Archive. */
+  owner_id: string;
   name: string;
   kind: WalletInput["kind"];
   currency_code: string;
