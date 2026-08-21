@@ -85,12 +85,22 @@ async function addWallet(page: Page, name: string) {
  * avoids fighting that reset. Omitted, the form's own default (the
  * earliest-created wallet the caller belongs to) is used, matching
  * e2e/ledger.spec.ts's `addExpense`.
+ *
+ * `note` is OPTIONAL here, unlike e2e/ledger.spec.ts's `addExpense` (which
+ * always has one) — the Note field itself is optional in TransactionForm
+ * (src/lib/validation/transaction.ts coerces "" to null), and this test
+ * needs at least one row with NO note. `rowLabel` in TransactionList.tsx
+ * is `noteOf(row) ?? row.category_name ?? "Uncategorised"`: only a NOTELESS
+ * row can ever fall through to the "Uncategorised" branch, so a row that
+ * always carries a note (every row in fix-round-1 of this spec) can never
+ * exercise that fallback at all — see the round-1 review fix note further
+ * down for why that made the "Uncategorised" zero-count assertion inert.
  */
 async function addExpense(
   page: Page,
   amount: string,
   category: string,
-  note: string,
+  note?: string,
   walletName?: string,
 ) {
   await page.goto("/transactions/new");
@@ -99,7 +109,9 @@ async function addExpense(
   }
   await pressAmount(page, amount);
   await page.getByRole("button", { name: category, exact: true }).click();
-  await page.getByLabel("Note").fill(note);
+  if (note) {
+    await page.getByLabel("Note").fill(note);
+  }
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page).toHaveURL("/transactions");
 }
@@ -128,6 +140,19 @@ test("a household shares one ledger between two real people", async ({ browser }
   // a category AND a note.
   await signUpAndOnboard(a, "Household");
   await addExpense(a, "30", "Groceries", "Market");
+
+  // A SECOND Household expense, deliberately with NO note. "Housing" is
+  // distinct from every other category this test touches (Groceries,
+  // Transport) so it can't be confused with them. This is the ONLY row in
+  // the whole test whose primary label falls through to the category name
+  // (`rowLabel`'s `noteOf(row) ?? row.category_name ?? "Uncategorised"`
+  // chain) — every other addExpense call below carries a note, which means
+  // this is also the only row capable of ever rendering the literal
+  // "Uncategorised" if `categories_member` regressed to owner-only
+  // (categories_own's old bug). Without this row, the "Uncategorised"
+  // zero-count assertion further down cannot fail under any regression —
+  // see this file's own report for the round-1 review fix and the proof.
+  await addExpense(a, "8", "Housing");
 
   // A's OWN second wallet — never invited, never shared. Exists purely to
   // make the later attribution assertions meaningful: the page-level
@@ -168,17 +193,21 @@ test("a household shares one ledger between two real people", async ({ browser }
   // this test asks /transactions for rows only a member can see.
   await expect(b.getByRole("button", { name: "Accept" })).toHaveCount(0);
 
-  // --- 5. B now sees A's transaction on /transactions with its CATEGORY
-  // NAME resolved — the single reason this whole milestone exists.
-  // Before the fix, `categories_own` RLS let a co-member read a shared
-  // transaction row but not the category row it pointed at, so a
-  // partner's rows rendered "Uncategorised" even though
-  // get_category_breakdown (SECURITY DEFINER, bypassing RLS) happily named
-  // the same category on the dashboard chart. Both directions are
-  // asserted: the name IS visible, and "Uncategorised" appears nowhere.
+  // --- 5. B now sees A's transactions on /transactions with their CATEGORY
+  // NAMES resolved — the single reason this whole milestone exists. Before
+  // the fix, `categories_own` RLS let a co-member read a shared transaction
+  // row but not the category row it pointed at, so a partner's rows
+  // rendered "Uncategorised" even though get_category_breakdown (SECURITY
+  // DEFINER, bypassing RLS) happily named the same category on the
+  // dashboard chart.
   await b.goto("/transactions");
   await expect(b.getByText("Market", { exact: true })).toBeVisible();
   await expect(b.getByText(/Groceries/)).toBeVisible();
+  // "Housing" is the noteless row's PRIMARY label (rowLabel falls through
+  // to category_name with no note to prefer) — this is the assertion that
+  // actually exercises the categories_own regression path, and the one the
+  // zero-count check below depends on to be meaningful at all.
+  await expect(b.getByText("Housing", { exact: true })).toBeVisible();
   await expect(b.getByText("Uncategorised")).toHaveCount(0);
 
   // --- 6. B adds their OWN transaction to the SHARED wallet. A then sees
