@@ -190,6 +190,38 @@ describe("inviteToWallet", () => {
     expect(JSON.stringify(result)).not.toContain("row-level security");
   });
 
+  it("tells the owner an invitation is already pending, rather than 'try again'", async () => {
+    // Postgres 23505 on wallet_invites_one_pending. Observed in production:
+    // the generic message told the user to retry, which is the one action
+    // guaranteed to fail again for as long as the pending invite exists.
+    getUser.mockResolvedValue({ data: { user: { id: OWNER_ID, email: "owner@x.io" } } });
+    invitesInsert.error = {
+      code: "23505",
+      message: 'duplicate key value violates unique constraint "wallet_invites_one_pending"',
+    };
+
+    const result = await inviteToWallet(WALLET_ID, {}, inviteForm("someone@x.io"));
+
+    expect(result).toEqual({
+      error: "There is already a pending invitation to that address for this account.",
+    });
+    // Still no raw provider text — the constraint name would leak schema.
+    expect(JSON.stringify(result)).not.toContain("wallet_invites_one_pending");
+  });
+
+  it("does not leak registration status through the duplicate message", async () => {
+    // The duplicate branch is safe to describe BECAUSE it reports only what
+    // the owner already knows: that THEY invited this address to THEIR OWN
+    // wallet. It says nothing about whether that address has an account, so
+    // it does not reopen the enumeration oracle the generic message closes.
+    getUser.mockResolvedValue({ data: { user: { id: OWNER_ID, email: "owner@x.io" } } });
+    invitesInsert.error = { code: "23505", message: "duplicate key value" };
+
+    const result = await inviteToWallet(WALLET_ID, {}, inviteForm("someone@x.io"));
+
+    expect(JSON.stringify(result)).not.toMatch(/registered|account exists|no such user|unknown/i);
+  });
+
   /**
    * ENUMERATION SAFETY (spec §3: "Returns the same shape whether or not the
    * address has an account, so the form cannot be used to test who is

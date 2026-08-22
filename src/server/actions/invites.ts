@@ -34,9 +34,22 @@ export async function inviteToWallet(
     invited_email: parsed.data.email,
     invited_by: user.id,
   });
-  // invites_owner rejects a non-owner, and wallet_invites_one_pending rejects
-  // a duplicate. Neither raw message is forwarded — see the module comment.
-  if (error) return { error: "Could not send that invitation. Please try again." };
+  if (error) {
+    // A duplicate gets its own message. "Please try again" was actively
+    // misleading here — retrying is the one action guaranteed to fail for as
+    // long as the pending invite exists, and this was hit in production.
+    //
+    // Naming this case does NOT reopen the enumeration oracle the generic
+    // message exists to close: 23505 on `wallet_invites_one_pending` reports
+    // only that THIS owner already invited THIS address to THEIR OWN wallet
+    // — something they are already entitled to know, and which says nothing
+    // about whether that address has an account. Compare `invites_owner_insert`
+    // refusing a non-owner, which must stay generic.
+    if (error.code === "23505") {
+      return { error: "There is already a pending invitation to that address for this account." };
+    }
+    return { error: "Could not send that invitation. Please try again." };
+  }
 
   revalidatePath("/wallets");
   // Deliberately identical whether or not that address has an account: this
