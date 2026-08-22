@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useState, useTransition } from "react";
-import { inviteToWallet, removeMember, type InviteState } from "@/server/actions/invites";
+import { inviteToWallet, removeMember, revokeInvite, type InviteState } from "@/server/actions/invites";
 
 const FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
@@ -22,18 +22,35 @@ export type Member = { user_id: string; display_name: string; role: "owner" | "m
  * cannot succeed for anyone who isn't the owner, including a non-owner who
  * opens devtools and finds nothing to click in the first place.
  */
+export type PendingInvite = { id: string; invited_email: string };
+
 export function MembersSection({
   walletId,
   members,
+  pendingInvites,
   isOwner,
 }: {
   walletId: string;
   members: Member[];
+  /** Invitations this wallet's owner has sent that nobody has answered yet.
+   *  Shown so a sent invite is visible rather than only discoverable by
+   *  hitting the duplicate-invite error. */
+  pendingInvites: PendingInvite[];
   isOwner: boolean;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [, start] = useTransition();
+
+  function revoke(inviteId: string) {
+    setError(null);
+    setPendingId(inviteId);
+    start(async () => {
+      const res = await revokeInvite(walletId, inviteId);
+      if (res.error) setError(res.error);
+      setPendingId(null);
+    });
+  }
 
   const [inviteState, inviteAction] = useActionState<InviteState, FormData>(
     inviteToWallet.bind(null, walletId),
@@ -89,6 +106,40 @@ export function MembersSection({
                   style={{ color: "var(--ink-2)" }}
                 >
                   {removing ? "Removing…" : "Remove"}
+                </button>
+              )}
+            </li>
+          );
+        })}
+
+        {/* Pending invitees sit in the SAME list as members, after them.
+            They are prospective members of this wallet, and a separate
+            heading would imply a separate concern. "Pending" as text, not
+            styling alone — the state has to survive being read aloud. */}
+        {pendingInvites.map((inv) => {
+          const revoking = pendingId === inv.id;
+          return (
+            <li
+              key={inv.id}
+              className="flex items-center gap-3 border-b py-2"
+              style={{ borderColor: "var(--grid)" }}
+            >
+              <span className="min-w-0 flex-1 truncate" style={{ color: "var(--ink-2)" }}>
+                {inv.invited_email}
+              </span>
+              <span className="shrink-0 text-xs" style={{ color: "var(--ink-2)" }}>
+                Pending
+              </span>
+              {isOwner && (
+                <button
+                  type="button"
+                  aria-label={`Revoke invitation to ${inv.invited_email}`}
+                  disabled={revoking}
+                  onClick={() => revoke(inv.id)}
+                  className={`shrink-0 text-xs underline disabled:opacity-60 ${FOCUS_RING}`}
+                  style={{ color: "var(--ink-2)" }}
+                >
+                  {revoking ? "Withdrawing…" : "Revoke"}
                 </button>
               )}
             </li>

@@ -17,7 +17,9 @@ import { WalletForm } from "@/components/WalletForm";
  * user who has just finished onboarding must not be left on the onboarding
  * form; /wallets binds `addWallet` instead, which stays put).
  */
-export function OnboardingForm() {
+export function OnboardingForm({ baseCurrency }: { baseCurrency: string }) {
+  // The first wallet has no sibling accounts to learn a currency from, so
+  // the profile's base_currency is all there is to go on.
   return (
     <main className="mx-auto flex min-h-dvh max-w-sm flex-col justify-center gap-6 p-6">
       <div>
@@ -26,7 +28,12 @@ export function OnboardingForm() {
           A card or bank account to track. You can add more later.
         </p>
       </div>
-      <WalletForm action={createWallet} submitLabel="Create account" pendingLabel="Creating…" />
+      <WalletForm
+        action={createWallet}
+        submitLabel="Create account"
+        pendingLabel="Creating…"
+        defaultCurrency={baseCurrency}
+      />
     </main>
   );
 }

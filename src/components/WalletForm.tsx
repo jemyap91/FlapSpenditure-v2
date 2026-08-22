@@ -42,15 +42,24 @@ export function WalletForm({
   action: submitAction,
   submitLabel,
   pendingLabel,
+  defaultCurrency,
 }: {
   action: (prev: WalletState, formData: FormData) => Promise<WalletState>;
   submitLabel: string;
   pendingLabel: string;
+  /** Which currency the select starts on. See the state below. */
+  defaultCurrency: string;
 }) {
 
   const [state, action, pending] = useActionState<WalletState, FormData>(submitAction, {});
   const [kind, setKind] = useState<WalletInput["kind"]>("bank");
-  const [currencyCode, setCurrencyCode] = useState<WalletInput["currency_code"]>("USD");
+  // Supplied by the caller, not hardcoded: /wallets derives it from the
+  // accounts this person already has, and /onboarding falls back to their
+  // profile's base_currency. A constant "USD" made someone whose accounts
+  // are all SGD re-pick SGD on every new account.
+  const [currencyCode, setCurrencyCode] = useState<WalletInput["currency_code"]>(
+    defaultCurrency as WalletInput["currency_code"],
+  );
   const errorId = useId();
   const hintId = useId();
   const errorRef = useRef<HTMLParagraphElement>(null);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeWalletBalances, type BalanceRow, type WalletRow } from "./wallet-rows";
+import { mergeWalletBalances, defaultCurrencyFor, type BalanceRow, type WalletRow } from "./wallet-rows";
 
 const wallet = (id: string, over: Partial<WalletRow> = {}): WalletRow => ({
   id,
@@ -68,5 +68,38 @@ describe("mergeWalletBalances", () => {
       color_slot: 4,
       icon: "credit-card",
     });
+  });
+});
+
+describe("defaultCurrencyFor", () => {
+  it("uses the currency the person's existing accounts already use", () => {
+    expect(defaultCurrencyFor([wallet("a", { currency_code: "SGD" })], "USD")).toBe("SGD");
+  });
+
+  it("picks the most common when they are mixed, not merely the first", () => {
+    const rows = [
+      wallet("a", { currency_code: "USD" }),
+      wallet("b", { currency_code: "SGD" }),
+      wallet("c", { currency_code: "SGD" }),
+    ];
+    expect(defaultCurrencyFor(rows, "USD")).toBe("SGD");
+  });
+
+  it("falls back to the profile's base currency when there are no accounts yet", () => {
+    // The onboarding case: the first wallet has nothing to match.
+    expect(defaultCurrencyFor([], "SGD")).toBe("SGD");
+  });
+
+  it("breaks a tie deterministically rather than by object iteration order", () => {
+    // Two of each: the answer must not depend on how the rows arrived.
+    const a = [wallet("a", { currency_code: "USD" }), wallet("b", { currency_code: "SGD" })];
+    const b = [wallet("b", { currency_code: "SGD" }), wallet("a", { currency_code: "USD" })];
+    expect(defaultCurrencyFor(a, "EUR")).toBe(defaultCurrencyFor(b, "EUR"));
+  });
+
+  it("ignores a currency the form cannot offer, rather than selecting nothing", () => {
+    // A wallet could hold a code that is no longer in CURRENCY_CODES; a
+    // <select> given a value with no matching <option> renders blank.
+    expect(defaultCurrencyFor([wallet("a", { currency_code: "ZZZ" })], "SGD")).toBe("SGD");
   });
 });

@@ -41,5 +41,5 @@ export default async function OnboardingPage() {
   if (error) throw new Error("Failed to load wallets");
   if (count) redirect("/");
 
-  return <OnboardingForm />;
+  return <OnboardingForm baseCurrency={profile.base_currency} />;
 }

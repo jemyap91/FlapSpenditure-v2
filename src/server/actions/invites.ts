@@ -117,3 +117,42 @@ export async function removeMember(walletId: string, userId: string): Promise<In
   revalidatePath("/wallets");
   return {};
 }
+
+/**
+ * Withdraws an invitation the owner sent but the recipient has not answered.
+ *
+ * Needed because `wallet_invites_one_pending` refuses a second pending
+ * invite to the same address, so a mistyped address was previously
+ * unrecoverable from the UI — the owner saw only "there is already a
+ * pending invitation" with no way to clear it short of editing the database.
+ *
+ * A DELETE rather than a status change: `wallet_invites` grants
+ * `authenticated` no UPDATE at all, deliberately, so that `status` can only
+ * move through the two SECURITY DEFINER functions (0009). Deleting also
+ * frees the partial unique index immediately, which is the point.
+ *
+ * Ownership is re-checked here, ahead of `invites_owner_delete`, so a
+ * non-owner gets a readable message instead of a silent zero-row delete —
+ * the same failure mode `archiveWallet` guards against.
+ */
+export async function revokeInvite(walletId: string, inviteId: string): Promise<InviteState> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in" };
+
+  const { data, error } = await supabase
+    .from("wallet_invites")
+    .delete()
+    .eq("id", inviteId)
+    .eq("wallet_id", walletId)
+    .eq("status", "pending")
+    .select("id");
+
+  if (error) return { error: "Could not withdraw that invitation. Please try again." };
+  // RLS turns "not yours" into zero rows rather than an error, so an
+  // unchecked delete would report success having done nothing.
+  if (!data || data.length === 0) return { error: "That invitation is no longer pending." };
+
+  revalidatePath("/wallets");
+  return {};
+}

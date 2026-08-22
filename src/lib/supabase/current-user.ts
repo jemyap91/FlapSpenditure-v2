@@ -8,6 +8,9 @@ export type ThemePref = Database["public"]["Enums"]["theme_pref"];
 export type CurrentUserProfile = {
   id: string;
   theme: ThemePref;
+  /** The person's own default currency. Used to seed the currency select
+   *  when they have no accounts yet to infer one from. */
+  base_currency: string;
 };
 
 /**
@@ -50,9 +53,16 @@ export const getCurrentUserProfile = cache(async (): Promise<CurrentUserProfile 
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("theme")
+    .select("theme, base_currency")
     .eq("id", user.id)
     .single();
 
-  return { id: user.id, theme: profile?.theme ?? "system" };
+  // 'USD' mirrors the column's own default (0001_reference.sql), so a
+  // missing profile row degrades to the same value the database would have
+  // supplied rather than to an arbitrary one.
+  return {
+    id: user.id,
+    theme: profile?.theme ?? "system",
+    base_currency: profile?.base_currency ?? "USD",
+  };
 });

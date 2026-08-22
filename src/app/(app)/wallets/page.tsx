@@ -3,9 +3,9 @@ import { getCurrentUserProfile } from "@/lib/supabase/current-user";
 import { addWallet } from "@/server/actions/wallets";
 import { WalletForm } from "@/components/WalletForm";
 import { WalletList } from "./WalletList";
-import { MembersSection, type Member } from "./MembersSection";
+import { MembersSection, type Member, type PendingInvite as SectionInvite } from "./MembersSection";
 import { PendingInvites, type PendingInvite } from "./PendingInvites";
-import { mergeWalletBalances, type BalanceRow, type WalletRow } from "./wallet-rows";
+import { mergeWalletBalances, defaultCurrencyFor, type BalanceRow, type WalletRow } from "./wallet-rows";
 
 /**
  * /wallets — the accounts screen. Both the Sidebar and the TabBar have
@@ -59,6 +59,7 @@ export default async function WalletsPage() {
     { data: balances, error: balancesError },
     { data: members, error: membersError },
     { data: invites, error: invitesError },
+    { data: sentInvites, error: sentInvitesError },
   ] = await Promise.all([
     supabase
       .from("wallets")
@@ -68,6 +69,15 @@ export default async function WalletsPage() {
     supabase.rpc("get_wallet_balances"),
     supabase.rpc("get_wallet_members"),
     supabase.rpc("get_pending_invites"),
+    // Invitations this person has SENT. Distinct from get_pending_invites(),
+    // which returns invites addressed TO them. `invites_owner_select` scopes
+    // this to wallets they own, so no extra filter is needed — but note
+    // `invites_invitee_select` also grants read on invites addressed to
+    // them, hence the explicit ownership narrowing below.
+    supabase
+      .from("wallet_invites")
+      .select("id, wallet_id, invited_email")
+      .eq("status", "pending"),
   ]);
 
   // A query error is not an empty result — `data` comes back null for all
@@ -85,7 +95,21 @@ export default async function WalletsPage() {
     (balances ?? []) as BalanceRow[],
   );
 
+  if (sentInvitesError) throw new Error("Failed to load sent invitations");
+
   const ownerByWalletId = new Map((wallets ?? []).map((w) => [w.id, w.owner_id]));
+
+  // Grouped per wallet, and narrowed to wallets this person OWNS:
+  // `invites_invitee_select` also lets them read invites addressed to
+  // themselves, which belong in the PendingInvites banner above, not in
+  // someone else's members list.
+  const sentByWalletId = new Map<string, SectionInvite[]>();
+  for (const i of sentInvites ?? []) {
+    if (ownerByWalletId.get(i.wallet_id) !== profile.id) continue;
+    const list = sentByWalletId.get(i.wallet_id) ?? [];
+    list.push({ id: i.id, invited_email: i.invited_email });
+    sentByWalletId.set(i.wallet_id, list);
+  }
 
   const membersByWalletId = new Map<string, Member[]>();
   for (const m of members ?? []) {
@@ -145,6 +169,7 @@ export default async function WalletsPage() {
               <MembersSection
                 walletId={w.id}
                 members={membersByWalletId.get(w.id) ?? []}
+                pendingInvites={sentByWalletId.get(w.id) ?? []}
                 isOwner={ownerByWalletId.get(w.id) === profile.id}
               />
             </section>,
@@ -159,7 +184,12 @@ export default async function WalletsPage() {
         <h2 id="add-wallet-heading" className="mb-3 text-sm font-medium uppercase tracking-wide" style={{ color: "var(--ink-2)" }}>
           Add an account
         </h2>
-        <WalletForm action={addWallet} submitLabel="Add account" pendingLabel="Adding…" />
+        <WalletForm
+          action={addWallet}
+          submitLabel="Add account"
+          pendingLabel="Adding…"
+          defaultCurrency={defaultCurrencyFor(rows, profile.base_currency)}
+        />
       </section>
     </div>
   );
