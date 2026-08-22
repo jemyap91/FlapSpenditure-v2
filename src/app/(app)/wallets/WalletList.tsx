@@ -47,9 +47,26 @@ const WALLET_ICON_COMPONENTS = {
 export function WalletList({
   wallets,
   currentUserId,
+  memberSections,
 }: {
   wallets: WalletWithBalance[];
   currentUserId: string;
+  /**
+   * Per-wallet content rendered INSIDE that wallet's row — the members list
+   * and invite form. Keyed by wallet id.
+   *
+   * These previously lived in a separate block BELOW the whole list, which
+   * detached them from their wallets: two wallets produced two identical
+   * "MEMBERS" headings in a row with nothing visible tying either to an
+   * account. Containment is what fixes that — a members list inside its
+   * wallet's card cannot be misread as belonging to another.
+   *
+   * Passed as ReactNode rather than data because the page (a Server
+   * Component) owns the queries and MembersSection is its own Client
+   * Component; handing over rendered elements keeps this component from
+   * needing to know anything about membership.
+   */
+  memberSections?: Record<string, React.ReactNode>;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -113,9 +130,10 @@ export function WalletList({
           return (
             <li
               key={w.id}
-              className="flex items-center gap-3 border-b px-1 py-3"
+              className="mb-4 flex flex-col rounded-lg border px-4 py-3"
               style={{ borderColor: "var(--grid)" }}
             >
+              <div className="flex items-center gap-3">
               {/* Colour is never the only cue (spec §6.1/§6.3): the slot
                   colour tints the glyph, but the glyph shape and the name
                   beside it are what actually identify the wallet. */}
@@ -168,6 +186,16 @@ export function WalletList({
                   {archiving ? "Archiving…" : "Archive"}
                 </button>
               )}
+              </div>
+
+              {memberSections?.[w.id] ? (
+                <div
+                  className="mt-3 border-t pt-3"
+                  style={{ borderColor: "var(--grid)" }}
+                >
+                  {memberSections[w.id]}
+                </div>
+              ) : null}
             </li>
           );
         })}

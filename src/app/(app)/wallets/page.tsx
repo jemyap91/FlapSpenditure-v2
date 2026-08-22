@@ -111,11 +111,19 @@ export default async function WalletsPage() {
           shared one: Archive is owner-only (spec §5) and `archiveWallet`
           scopes its UPDATE to `owner_id`, so offering it on a shared row
           could only ever produce a zero-row UPDATE reported as success. */}
-      <WalletList wallets={rows} currentUserId={profile.id} />
-
-      <div className="mt-6 flex flex-col gap-6">
-        {rows.map((w) => (
-          <section key={w.id} aria-labelledby={`members-heading-${w.id}`}>
+      {/* Members and the invite form are handed to WalletList as per-wallet
+          slots so each renders INSIDE its own wallet's card. Rendering them
+          in a separate block below the list detached them from their
+          wallets: with two accounts you saw two identical "MEMBERS"
+          headings stacked underneath, with nothing visible saying which
+          belonged to which. Containment fixes that structurally. */}
+      <WalletList
+        wallets={rows}
+        currentUserId={profile.id}
+        memberSections={Object.fromEntries(
+          rows.map((w) => [
+            w.id,
+            <section key={w.id} aria-labelledby={`members-heading-${w.id}`}>
             {/* Visible text is just "Members" — WalletList above already
                 renders `w.name` as plain text, and a Playwright
                 `getByText(walletName)` lookup elsewhere in this app's e2e
@@ -134,14 +142,15 @@ export default async function WalletsPage() {
             >
               Members
             </h2>
-            <MembersSection
-              walletId={w.id}
-              members={membersByWalletId.get(w.id) ?? []}
-              isOwner={ownerByWalletId.get(w.id) === profile.id}
-            />
-          </section>
-        ))}
-      </div>
+              <MembersSection
+                walletId={w.id}
+                members={membersByWalletId.get(w.id) ?? []}
+                isOwner={ownerByWalletId.get(w.id) === profile.id}
+              />
+            </section>,
+          ]),
+        )}
+      />
 
       {/* `addWallet`, not `createWallet`: the latter redirects to / on
           success, which is right for onboarding and wrong here — adding a
