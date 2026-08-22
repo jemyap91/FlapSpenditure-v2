@@ -130,6 +130,24 @@ async function addExpense(
 const membersRegion = (page: Page, walletName: string) =>
   page.getByRole("region", { name: `${walletName} members` });
 
+/**
+ * Members and the invite form sit behind a per-wallet disclosure that is
+ * CLOSED by default — the balance is what /wallets is opened for, so
+ * membership does not occupy the page until asked for. The panel is
+ * unmounted while collapsed, not merely hidden, so nothing inside it is
+ * reachable until this runs.
+ *
+ * Idempotent: checks aria-expanded first, so calling it twice on the same
+ * card does not toggle the panel shut again.
+ */
+async function openMembers(page: Page, walletName: string) {
+  const toggle = page.getByRole("button", { name: `Members of ${walletName}` });
+  if ((await toggle.getAttribute("aria-expanded")) !== "true") {
+    await toggle.click();
+  }
+  await expect(membersRegion(page, walletName)).toBeVisible();
+}
+
 test("a household shares one ledger between two real people", async ({ browser }) => {
   const ctxA: BrowserContext = await browser.newContext();
   const ctxB: BrowserContext = await browser.newContext();
@@ -173,6 +191,7 @@ test("a household shares one ledger between two real people", async ({ browser }
 
   // --- 3. A invites B by email from /wallets.
   await a.goto("/wallets");
+  await openMembers(a, "Household");
   const householdSection = membersRegion(a, "Household");
   await householdSection.getByLabel("Invite by email").fill(bEmail);
   await householdSection.getByRole("button", { name: "Send invitation" }).click();
@@ -250,6 +269,7 @@ test("a household shares one ledger between two real people", async ({ browser }
   // not just A's original transaction, but B's own contribution too, since
   // both live in a wallet B is no longer a member of.
   await a.goto("/wallets");
+  await openMembers(a, "Household");
   await householdSection.getByRole("button", { name: `Remove ${bName}` }).click();
   await expect(householdSection.getByText(bName)).toHaveCount(0);
 

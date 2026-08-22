@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Landmark, CreditCard } from "lucide-react";
+import { Landmark, CreditCard, ChevronRight } from "lucide-react";
 import { archiveWallet } from "@/server/actions/wallets";
 import { formatMoney } from "@/lib/money";
 import { slotVar } from "@/lib/palette";
@@ -71,6 +71,10 @@ export function WalletList({
   const [error, setError] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [, start] = useTransition();
+  /** Which wallets have their members revealed. Per wallet, not one shared
+   *  flag — opening one card must not open every card. */
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [query, setQuery] = useState("");
 
   // The app requires at least one active wallet to function: (app)/layout.tsx
   // redirects a user with zero active wallets to /onboarding. Archiving the
@@ -85,8 +89,17 @@ export function WalletList({
   // now includes shared ones — made the two disagree: a user with one wallet
   // of their own plus one shared wallet got an ENABLED Archive on their last
   // owned wallet, and only learned it was refused after clicking.
+  // Counted over EVERY wallet, never the filtered view: search is a view
+  // concern, and hiding rows must not make the remaining one look like the
+  // only account someone owns.
   const ownedCount = wallets.filter((w) => w.owner_id === currentUserId).length;
   const isLastWallet = ownedCount === 1;
+
+  // The search box earns its space only once scanning gets hard. With two
+  // or three accounts the list IS the search result.
+  const showSearch = wallets.length > 3;
+  const q = query.trim().toLowerCase();
+  const visible = q ? wallets.filter((w) => w.name.toLowerCase().includes(q)) : wallets;
 
   function archive(id: string) {
     setError(null);
@@ -121,8 +134,30 @@ export function WalletList({
         {error}
       </p>
 
+      {showSearch && (
+        <label className="mb-3 flex flex-col gap-1">
+          <span className="text-sm" style={{ color: "var(--ink-2)" }}>
+            Search accounts
+          </span>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Account name"
+            autoComplete="off"
+            className={`rounded-md border px-3 py-2 ${FOCUS_RING}`}
+            style={{ borderColor: "var(--ink-2)", background: "var(--surface)", color: "var(--ink)" }}
+          />
+        </label>
+      )}
+
+      {showSearch && visible.length === 0 && (
+        <p className="py-6 text-sm" style={{ color: "var(--ink-2)" }}>
+          No accounts match “{query.trim()}”.
+        </p>
+      )}
+
       <ul className="flex flex-col">
-        {wallets.map((w) => {
+        {visible.map((w) => {
           const Icon = WALLET_ICON_COMPONENTS[w.icon as keyof typeof WALLET_ICON_COMPONENTS] ??
             (w.kind === "card" ? CreditCard : Landmark);
           const archiving = pendingId === w.id;
@@ -189,11 +224,47 @@ export function WalletList({
               </div>
 
               {memberSections?.[w.id] ? (
-                <div
-                  className="mt-3 border-t pt-3"
-                  style={{ borderColor: "var(--grid)" }}
-                >
-                  {memberSections[w.id]}
+                <div className="mt-3 border-t pt-3" style={{ borderColor: "var(--grid)" }}>
+                  {/* A real <button> with aria-expanded/aria-controls, not a
+                      styled div: this is a disclosure, and assistive tech
+                      needs to know both that it toggles and what it toggles.
+                      Collapsed by default — the balance is what this page is
+                      opened for; membership is occasional. */}
+                  <button
+                    type="button"
+                    aria-expanded={!!expanded[w.id]}
+                    aria-controls={`members-panel-${w.id}`}
+                    /* Named after the wallet: several cards each render a
+                       "Members" toggle, and by accessible name alone they
+                       would be indistinguishable. Unlike the earlier
+                       sr-only-heading mistake this hides nothing — the
+                       wallet's name is visible immediately above, inside
+                       the same card; this only gives assistive tech the
+                       containment a sighted user already has. */
+                    aria-label={`Members of ${w.name}`}
+                    onClick={() => setExpanded((prev) => ({ ...prev, [w.id]: !prev[w.id] }))}
+                    className={`flex w-full items-center gap-2 text-sm ${FOCUS_RING}`}
+                    style={{ color: "var(--ink-2)" }}
+                  >
+                    <ChevronRight
+                      aria-hidden
+                      size={14}
+                      style={{
+                        transform: expanded[w.id] ? "rotate(90deg)" : "none",
+                        transition: "transform 120ms",
+                      }}
+                    />
+                    Members
+                  </button>
+                  {/* Unmounted rather than hidden when collapsed: a
+                      display:none subtree still exposes its form controls to
+                      some tooling, and an invite form nobody can see should
+                      not be submittable. */}
+                  {expanded[w.id] && (
+                    <div id={`members-panel-${w.id}`} className="mt-3">
+                      {memberSections[w.id]}
+                    </div>
+                  )}
                 </div>
               ) : null}
             </li>

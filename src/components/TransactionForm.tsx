@@ -439,7 +439,16 @@ export function TransactionForm({
           </span>
         )}
         <label className="flex items-center gap-1 text-sm" style={{ color: "var(--ink-2)" }}>
-          <span className="sr-only">{kind === "transfer" ? "From account" : "Account"}</span>
+          {/* VISIBLE for a transfer. These were sr-only, so a screen reader
+              announced "From account"/"To account" while a sighted user saw
+              two identical dropdowns side by side with nothing to tell them
+              apart — and on a transfer, choosing them the wrong way round
+              sends money in the wrong direction. Left sr-only for a
+              non-transfer, where there is only one select and no ambiguity
+              to resolve. */}
+          <span className={kind === "transfer" ? "text-sm" : "sr-only"} style={{ color: "var(--ink-2)" }}>
+            {kind === "transfer" ? "From" : "Account"}
+          </span>
           <select
             value={walletId}
             onChange={(e) => handleWalletChange(e.target.value)}
@@ -456,7 +465,9 @@ export function TransactionForm({
         </label>
         {kind === "transfer" && (
           <label className="flex items-center gap-1 text-sm" style={{ color: "var(--ink-2)" }}>
-            <span className="sr-only">To account</span>
+            <span className="text-sm" style={{ color: "var(--ink-2)" }}>
+              To
+            </span>
             <select
               value={toWalletId}
               onChange={(e) => handleToWalletChange(e.target.value)}

@@ -169,3 +169,84 @@ describe("WalletList", () => {
     expect(screen.queryByText(/need at least one account/i)).not.toBeInTheDocument();
   });
 });
+
+describe("WalletList — collapsible members", () => {
+  it("hides each wallet's members behind a closed disclosure by default", () => {
+    render(
+      <WalletList
+        wallets={[wallet("a", { name: "Test" })]}
+        currentUserId={ME}
+        memberSections={{ a: <p>members for Test</p> }}
+      />,
+    );
+    const toggle = screen.getByRole("button", { name: "Members of Test" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("members for Test")).not.toBeInTheDocument();
+  });
+
+  it("reveals that wallet's members when its own disclosure is opened", async () => {
+    const user = userEvent.setup();
+    render(
+      <WalletList
+        wallets={[wallet("a", { name: "Test" }), wallet("b", { name: "Citi" })]}
+        currentUserId={ME}
+        memberSections={{ a: <p>members for Test</p>, b: <p>members for Citi</p> }}
+      />,
+    );
+    // Opening one card must not open the other — state is per wallet, not
+    // a single shared boolean.
+    await user.click(screen.getByRole("button", { name: "Members of Test" }));
+    expect(screen.getByText("members for Test")).toBeInTheDocument();
+    expect(screen.queryByText("members for Citi")).not.toBeInTheDocument();
+  });
+
+  it("keeps the balance visible while collapsed — it is why the page is opened", () => {
+    render(
+      <WalletList
+        wallets={[wallet("a", { name: "Test", balanceMinor: 1491200, currency_code: "SGD" })]}
+        currentUserId={ME}
+        memberSections={{ a: <p>hidden</p> }}
+      />,
+    );
+    expect(screen.getByText("SGD 14,912.00")).toBeInTheDocument();
+  });
+});
+
+describe("WalletList — search", () => {
+  const many = [
+    wallet("a", { name: "Everyday" }),
+    wallet("b", { name: "Citi Rewards" }),
+    wallet("c", { name: "Travel" }),
+    wallet("d", { name: "Savings" }),
+  ];
+
+  it("stays out of the way until there are enough wallets to need it", () => {
+    render(<WalletList wallets={many.slice(0, 2)} currentUserId={ME} />);
+    expect(screen.queryByLabelText(/Search accounts/i)).not.toBeInTheDocument();
+  });
+
+  it("filters by wallet name, case-insensitively", async () => {
+    const user = userEvent.setup();
+    render(<WalletList wallets={many} currentUserId={ME} />);
+    await user.type(screen.getByLabelText(/Search accounts/i), "cItI");
+    expect(screen.getByText("Citi Rewards")).toBeInTheDocument();
+    expect(screen.queryByText("Everyday")).not.toBeInTheDocument();
+  });
+
+  it("says so when nothing matches, rather than rendering an empty list", async () => {
+    const user = userEvent.setup();
+    render(<WalletList wallets={many} currentUserId={ME} />);
+    await user.type(screen.getByLabelText(/Search accounts/i), "zzzz");
+    expect(screen.getByText(/No accounts match/i)).toBeInTheDocument();
+  });
+
+  it("does not let a filtered-down view re-enable Archive on the last owned wallet", async () => {
+    // The guard counts OWNED wallets, not visible ones. Filtering is a view
+    // concern; hiding three wallets must not make the fourth look like the
+    // only one.
+    const user = userEvent.setup();
+    render(<WalletList wallets={many} currentUserId={ME} />);
+    await user.type(screen.getByLabelText(/Search accounts/i), "Travel");
+    expect(screen.getByRole("button", { name: "Archive Travel" })).toBeEnabled();
+  });
+});
