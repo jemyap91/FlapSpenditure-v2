@@ -23,9 +23,24 @@ const FOCUS_RING =
 const MONTH_ABBREV = [
   "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
-function monthAbbrev(periodStart: string): string {
+/**
+ * `Aug` for a budget set in the current calendar year, `Aug 2025` for one
+ * set in an earlier year — `currentPeriodStart` (this month's own
+ * "YYYY-MM-01") is what "current year" means here, not the viewer's clock,
+ * for the same one-source-of-truth reason `BudgetList`'s own doc comment
+ * gives for threading it down at all. Month-only was wrong on its own
+ * (fix round 2, item 2): a budget set August 2025 and still in force in
+ * November 2026 rendered `Remove (set Aug)`, which reads as August THIS
+ * year — a disclosure that states a falsehood is worse than the silence it
+ * replaced. Still pure string slicing, never `new Date(...)`, for the
+ * identical timezone reason as the month-only version this replaces.
+ */
+function monthAbbrev(periodStart: string, currentPeriodStart: string): string {
   const month = Number(periodStart.slice(5, 7));
-  return MONTH_ABBREV[month - 1] ?? periodStart;
+  const abbrev = MONTH_ABBREV[month - 1] ?? periodStart;
+  const year = periodStart.slice(0, 4);
+  const currentYear = currentPeriodStart.slice(0, 4);
+  return year === currentYear ? abbrev : `${abbrev} ${year}`;
 }
 
 /**
@@ -159,7 +174,7 @@ function BudgetRow({
   const removeButtonText = removing
     ? "Removing…"
     : isPastBudget
-      ? `Remove (set ${monthAbbrev(row.budget_period_start!)})`
+      ? `Remove (set ${monthAbbrev(row.budget_period_start!, currentPeriodStart!)})`
       : "Remove";
 
   return (
@@ -273,15 +288,28 @@ function BudgetRow({
           on success (`formState.notice`, e.g. "Budget saved.") so a save
           is announced rather than silent — coloured var(--neg) only when
           it is actually an error, matching MembersSection's identical
-          error-vs-notice split for its own invite-result paragraph. */}
+          error-vs-notice split for its own invite-result paragraph.
+
+          The MESSAGE TEXT lives in a child <span id={amountStatusId}>,
+          not on this <p> itself (fix round 2, item 1). An accessible
+          DESCRIPTION is computed by running the text-alternative algorithm
+          on the referenced node, and `aria-label` wins over name-from-
+          content there — so the amount input's `aria-describedby` pointing
+          at THIS <p> (which fix round 1 gave `aria-label="Status for
+          ...\"`) resolved to "Status for Groceries", never the actual
+          error text. CategorySection.tsx's identical-looking
+          `aria-describedby` pattern works only because its own error
+          paragraph carries no `aria-label` at all. Splitting the two jobs
+          onto two nodes — the label for per-row disambiguation on the
+          outer <p>, the describable text on an unlabelled inner <span> —
+          means neither can spoil the other. */}
       <p
-        id={amountStatusId}
         role="status"
         aria-label={`Status for ${label}`}
         className="text-sm"
         style={{ color: formState.error ? "var(--neg)" : "var(--ink-2)" }}
       >
-        {formState.error ?? formState.notice}
+        <span id={amountStatusId}>{formState.error ?? formState.notice}</span>
       </p>
     </li>
   );

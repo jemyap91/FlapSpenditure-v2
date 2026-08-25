@@ -312,7 +312,11 @@ test.describe("google sign-in", () => {
 test.describe("accessibility", () => {
   for (const path of ["/login", "/signup"]) {
     test(`${path} has no accessibility violations`, async ({ page }) => {
-      await page.goto(path);
+      // Same route-health check as the signed-in loop below (fix round 1,
+      // item 3): page.goto does not throw on a 500, so a broken
+      // signed-out route would otherwise pass this loop silently too.
+      const res = await page.goto(path);
+      expect(res?.status(), `${path} did not render`).toBeLessThan(400);
       await expectNoViolations(page, path);
     });
   }
