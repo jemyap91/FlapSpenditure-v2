@@ -173,6 +173,19 @@ test("a budget counts expenses, and ignores income and transfers", async ({ page
   await recordTransaction(page, "expense", "30", "Groceries");
 
   await page.goto("/budgets");
+
+  // The heading names the month actually queried. Asserted by shape rather
+  // than by a literal, so it holds on any date — and specifically so it
+  // catches `undefined 2026`, which is what rendered when the month table
+  // was imported across the "use client" boundary: Next replaces a client
+  // module's exports with a throwing reference in the RSC layer, and
+  // INDEXING that reference yields undefined silently instead of raising.
+  await expect(
+    page.getByText(
+      /^(January|February|March|April|May|June|July|August|September|October|November|December) \d{4} · expenses only$/,
+    ),
+  ).toBeVisible();
+
   const groceries = budgetRow(page, "Groceries");
   const overall = budgetRow(page, "All spending");
   await expect(groceries.getByText("$30.00 spent · No budget set")).toBeVisible();

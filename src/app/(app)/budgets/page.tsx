@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { monthRange } from "@/lib/month-range";
-import { BudgetList, MONTH_NAME } from "./BudgetList";
+import { BudgetList } from "./BudgetList";
+import { MONTH_NAME } from "@/lib/month-names";
 import type { BudgetStatusRow } from "@/lib/budget-status";
 
 /**
@@ -39,7 +40,9 @@ export default async function BudgetsPage() {
   // own doc comment: a request straddling local midnight could otherwise
   // label a window it did not query). `from` is always "YYYY-MM-01"
   // (monthRange()), so index 5-6 is the month and 0-3 is the year; reuses
-  // BudgetList's own MONTH_NAME table rather than a second copy of it.
+  // the shared month-names module -- a PLAIN module, not BudgetList, because
+  // indexing a const imported across the "use client" boundary silently
+  // yields undefined in the RSC layer (see src/lib/month-names.ts).
   const monthLabel = `${MONTH_NAME[Number(from.slice(5, 7)) - 1]} ${from.slice(0, 4)}`;
 
   return (

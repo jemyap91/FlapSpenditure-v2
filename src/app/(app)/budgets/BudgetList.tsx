@@ -4,36 +4,11 @@ import { useId, useState, useTransition, useActionState } from "react";
 import { setBudget, removeBudget, type BudgetState } from "@/server/actions/budgets";
 import { formatMoney } from "@/lib/money";
 import { budgetProgress, type BudgetStatusRow } from "@/lib/budget-status";
+import { MONTH_ABBREV } from "@/lib/month-names";
 
 const FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
 
-/**
- * Whole-month abbreviations for `budget_period_start` ("YYYY-MM-01" —
- * `budgets.period_start`, always the first of a month). Read by INDEX from
- * the string, never via `new Date(dateStr)`: a plain `date` column has no
- * time zone, and `new Date("2026-09-01")` parses as UTC midnight — in any
- * timezone BEHIND UTC, formatting that back out can read back one day
- * EARLIER (still within the same month here, since every value is always
- * the 1st, but the wrong month entirely is exactly the class of bug
- * `month-range.ts`'s own doc comment exists to warn about, and there is no
- * reason to risk it for a two-character slice). Pure string indexing has
- * no such round-trip at all.
- */
-export const MONTH_ABBREV = [
-  "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-/**
- * Full names, for the page heading. Deliberately a second table rather than a
- * reuse of MONTH_ABBREV: the abbreviations exist for the cramped inline Remove
- * label (`Remove (set Aug)`), where brevity is the whole point, and a heading
- * reading "Aug 2026" would be shortening prose for no reason. Both are indexed
- * the same way, from a "YYYY-MM-DD" string's month digits — never from a Date.
- */
-export const MONTH_NAME = [
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
-];
 /**
  * `Aug` for a budget set in the current calendar year, `Aug 2025` for one
  * set in an earlier year — `currentPeriodStart` (this month's own
