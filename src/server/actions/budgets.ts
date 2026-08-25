@@ -1,12 +1,26 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { budgetInput } from "@/lib/validation/budget";
 import { parseAmountInput, minorUnitFor } from "@/lib/money";
 import { monthRange } from "@/lib/month-range";
+import type { Database } from "@/lib/database.types";
 
 export type BudgetState = { error?: string; notice?: string };
+
+// Not exported — same reasoning as src/server/actions/categories.ts's own
+// `idSchema` (~:9-18): a Server Function is reachable via direct POST with
+// any string, not just a real uuid a `<button onClick>` would ever
+// produce, and this file's own doc comment already commits to
+// "re-validate rather than trust the caller's static type" — untyped-but-
+// assumed-uuid `walletId`/`categoryId`/`id` parameters were the one place
+// that promise wasn't kept here. `categoryId` is additionally nullable:
+// null is the legitimate "overall cap" value (see setBudget below), not a
+// missing/invalid one.
+const idSchema = z.uuid();
+const nullableIdSchema = z.uuid().nullable();
 
 /**
  * Server Functions are reachable by direct POST, not only through this app's
@@ -24,6 +38,22 @@ export async function setBudget(
 ): Promise<BudgetState> {
   const parsed = budgetInput.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { error: parsed.error.issues[0]!.message };
+
+  // Same "not distinguishable from a real id you don't have access to"
+  // reasoning as categories.ts's archiveCategory: a malformed walletId
+  // gets the exact message a real-but-inaccessible one gets below, not a
+  // separate "invalid id" — there's no reason to give an adversarial
+  // caller a way to tell those apart, and it means this check can run
+  // before any query touches the database.
+  if (!idSchema.safeParse(walletId).success) {
+    return { error: "You do not have access to that account." };
+  }
+  // A malformed (non-uuid, non-null) categoryId can never resolve to a
+  // real category, so it can never produce anything but a failed write —
+  // reusing that write-failure message rather than inventing a new one.
+  if (!nullableIdSchema.safeParse(categoryId).success) {
+    return { error: "Could not save that budget. Please try again." };
+  }
 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -58,22 +88,37 @@ export async function setBudget(
   // rests on PARTIAL indexes, which ON CONFLICT can only infer when the
   // statement repeats the index predicate — something `onConflict` cannot
   // express. See the function's own comment in 0012.
-  const { error } = await supabase.rpc("set_budget", {
+  //
+  // set_budget's `p_category_id` is a plain (non-defaulted) `uuid` param,
+  // which accepts NULL at the SQL level -- the overall-cap branch of the
+  // function depends on that. Supabase's codegen has no way to see that
+  // from information_schema (a parameter's own nullability isn't exposed
+  // the way a column's is), so the generated Args type is the bare
+  // `string`, not `string | null`. Unlike `create_transfer`'s `note`
+  // (src/server/actions/transactions.ts) -- an OPTIONAL, defaulted param
+  // where omitting the key is equivalent to null -- this one is required
+  // with no default, so it cannot be left out; the value itself must be
+  // null.
+  //
+  // The relaxation is confined to that one field via `satisfies`, rather
+  // than casting the whole args object (or just `categoryId`) to `string`:
+  // a bare `p_category_id: categoryId as string` would equally silence a
+  // future type error if that expression became a number or undefined.
+  // Building the object against `SetBudgetArgsRelaxed` means every OTHER
+  // field is still checked against the real generated `Args` type, so a
+  // typo or a signature change elsewhere in `set_budget` still fails
+  // typecheck here.
+  type SetBudgetArgs = Database["public"]["Functions"]["set_budget"]["Args"];
+  type SetBudgetArgsRelaxed = Omit<SetBudgetArgs, "p_category_id"> & { p_category_id: string | null };
+
+  const args = {
     p_wallet_id: walletId,
-    // set_budget's `p_category_id` is a plain (non-defaulted) `uuid` param,
-    // which accepts NULL at the SQL level -- the overall-cap branch of the
-    // function depends on that. Supabase's codegen has no way to see that
-    // from information_schema (a parameter's own nullability isn't
-    // exposed the way a column's is), so the generated Args type is the
-    // bare `string`, not `string | null`. Unlike `create_transfer`'s
-    // `note` (src/server/actions/transactions.ts) -- an OPTIONAL,
-    // defaulted param where omitting the key is equivalent to null -- this
-    // one is required with no default, so it cannot be left out; the value
-    // itself must be null, hence the cast rather than `?? undefined`.
-    p_category_id: categoryId as string,
+    p_category_id: categoryId,
     p_period_start: monthRange().from,
     p_amount_minor: amountMinor,
-  });
+  } satisfies SetBudgetArgsRelaxed;
+
+  const { error } = await supabase.rpc("set_budget", args as SetBudgetArgs);
   if (error) return { error: "Could not save that budget. Please try again." };
 
   revalidatePath("/budgets");
@@ -81,12 +126,19 @@ export async function setBudget(
 }
 
 export async function removeBudget(id: string): Promise<BudgetState> {
+  // Deliberately the same "no longer exists" message a real-but-nonexistent
+  // id gets below (categories.ts's archiveCategory, same reasoning): a
+  // malformed id and one that simply doesn't belong to this caller are
+  // indistinguishable from the outside, so both get the same answer.
+  const parsedId = idSchema.safeParse(id);
+  if (!parsedId.success) return { error: "That budget no longer exists." };
+
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { error: "Not signed in" };
 
   const { data, error } = await supabase
-    .from("budgets").delete().eq("id", id).select("id");
+    .from("budgets").delete().eq("id", parsedId.data).select("id");
 
   if (error) return { error: "Could not remove that budget. Please try again." };
   // RLS turns "not yours" into zero rows rather than an error, so an

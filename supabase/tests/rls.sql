@@ -1767,7 +1767,7 @@ begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
   do $$
-  declare v_wallet uuid;
+  declare v_wallet uuid; v_sb_id uuid; v_sb_amount bigint;
   begin
     assert (select current_user) = 'authenticated', 'role switch did not take effect';
     assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'wrong impersonated user';
@@ -1795,6 +1795,21 @@ begin;
       select 1 from public.get_budget_status('2026-08-01','2026-08-31')
       where wallet_id = v_wallet and category_id is null and budget_minor = 100000
     ), 'PERMISSION BROKEN: get_budget_status did not return alice''s own overall budget';
+
+    -- set_budget (Task 4 fix round, F-1): constraints.sql cannot cover this
+    -- boundary at all -- that file's own header says it runs as the
+    -- table-owning superuser and deliberately bypasses RLS. This is the
+    -- only suite that can prove a genuine member's WRITE actually lands
+    -- under her own RLS. A different period_start (September, not the
+    -- August row inserted directly above) so this is an independent
+    -- INSERT through the function, not a coincidental re-read of the same
+    -- row.
+    select public.set_budget(v_wallet, null, '2026-09-01', 45000) into v_sb_id;
+    assert v_sb_id is not null, 'PERMISSION BROKEN: set_budget did not return an id for a genuine member''s own wallet';
+
+    select amount_minor into v_sb_amount from public.budgets where id = v_sb_id;
+    assert v_sb_amount = 45000,
+      format('PERMISSION BROKEN: set_budget landed the wrong amount for a genuine member, got %s', v_sb_amount);
   end $$;
 commit;
 
@@ -1809,6 +1824,25 @@ begin;
     assert (select count(*) from public.budgets) = 0, 'LEAK: a non-member can read another wallet''s budgets';
     assert (select count(*) from public.get_budget_status('2026-08-01','2026-08-31')) = 0,
       'LEAK: get_budget_status returned rows to a non-member';
+
+    -- set_budget (Task 4 fix round, F-1): a non-member must not be able to
+    -- WRITE a budget for a wallet she can only see is denied to her above.
+    -- 'cccccccc-0000-0000-0000-000000000003' is Alice's own wallet from
+    -- section 1 -- Carol is never made a member of it anywhere in this
+    -- file (confirmed by the count(*) = 0 assertion immediately above,
+    -- which covers every wallet with a budget row, including this one).
+    -- security invoker means RLS itself would also refuse the INSERT, but
+    -- set_budget's own explicit is_wallet_member guard is what turns that
+    -- into this specific, readable error rather than a bare policy
+    -- violation -- see 0012's comment on the function.
+    begin
+      perform public.set_budget('cccccccc-0000-0000-0000-000000000003', null, '2026-08-01', 100);
+      raise exception 'LEAK: set_budget let a non-member write a budget for another wallet';
+    exception
+      when others then
+        assert sqlerrm = 'not a member of that wallet',
+          format('wrong rejection reason: %s', sqlerrm);
+    end;
   end $$;
 commit;
 
@@ -1821,6 +1855,17 @@ begin;
     begin
       perform public.get_budget_status('2026-08-01','2026-08-31');
       raise exception 'LEAK: anon could execute get_budget_status';
+    exception when insufficient_privilege then null;
+    end;
+
+    -- set_budget (Task 4 fix round, F-1): the same PRIVILEGE boundary
+    -- (`revoke all ... from public, anon` in 0012), not merely RLS -- anon
+    -- has no session (auth.uid() is NULL for anon), so a broken revoke
+    -- would otherwise be masked by is_wallet_member() also failing for the
+    -- same reason get_budget_status's own comment gives above it.
+    begin
+      perform public.set_budget('cccccccc-0000-0000-0000-000000000003', null, '2026-08-01', 100);
+      raise exception 'LEAK: anon could execute set_budget';
     exception when insufficient_privilege then null;
     end;
   end $$;

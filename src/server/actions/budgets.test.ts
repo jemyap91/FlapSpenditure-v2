@@ -158,6 +158,39 @@ describe("setBudget", () => {
         },
       },
     ]);
+    // Positive control for the `expect(fromTables).toEqual([])` assertion
+    // in "rejects malformed input before touching the database" below: if
+    // the mock's `.from()` recorder silently stopped recording, that
+    // absence check would pass vacuously (an empty array either way).
+    // Asserting a real, non-empty recording on this happy path is what
+    // makes the empty one elsewhere mean "this action touched no table",
+    // not "nothing is being recorded".
+    expect(fromTables).toEqual(["wallet_members", "wallets"]);
+  });
+
+  it("uses the wallet's own currency's minor unit, not a hardcoded 2", async () => {
+    // JPY has minor unit 0 (src/lib/money.ts MINOR_UNITS). With only USD
+    // fixtures elsewhere in this file, a hardcoded `2` in place of
+    // `minorUnitFor(wallet.currency_code)` would leave every other test
+    // green -- this is the one case that can tell the two apart. "600" in
+    // a zero-decimal currency is 600 minor units, not 60000.
+    walletLookup.data = { currency_code: "JPY" };
+
+    const result = await setBudget(WALLET_ID, CATEGORY_ID, {}, budgetForm("600"));
+
+    expect(result).toEqual({});
+    expect(rpcCalls).toEqual([
+      expect.objectContaining({ fn: "set_budget", args: expect.objectContaining({ p_amount_minor: 600 }) }),
+    ]);
+  });
+
+  it("reports the wallet not found when the wallet lookup returns null", async () => {
+    walletLookup.data = null;
+
+    const result = await setBudget(WALLET_ID, CATEGORY_ID, {}, budgetForm("600"));
+
+    expect(result).toEqual({ error: "Account not found." });
+    expect(rpcCalls).toEqual([]);
   });
 
   it("passes a null category through for the overall cap", async () => {
@@ -184,6 +217,20 @@ describe("setBudget", () => {
     expect(result).toEqual({ error: "Enter an amount like 600 or 600.50" });
     expect(fromTables).toEqual([]);
   });
+
+  it("rejects a malformed walletId with the same no-access message a real-but-inaccessible one gets", async () => {
+    const result = await setBudget("not-a-uuid", CATEGORY_ID, {}, budgetForm("600"));
+
+    expect(result).toEqual({ error: "You do not have access to that account." });
+    expect(fromTables).toEqual([]);
+  });
+
+  it("rejects a malformed categoryId before touching the database", async () => {
+    const result = await setBudget(WALLET_ID, "not-a-uuid", {}, budgetForm("600"));
+
+    expect(result).toEqual({ error: "Could not save that budget. Please try again." });
+    expect(fromTables).toEqual([]);
+  });
 });
 
 describe("removeBudget", () => {
@@ -201,6 +248,11 @@ describe("removeBudget", () => {
 
     expect(result).toEqual({});
     expect(revalidatePath).toHaveBeenCalledWith("/budgets");
+    // Positive control for the `expect(budgetsEqCalls).toEqual([])`
+    // assertion in "returns an error when there is no session" below —
+    // same reasoning as the fromTables positive control above: a silently
+    // non-recording mock would make that absence check pass vacuously.
+    expect(budgetsEqCalls).toEqual([["eq", "id", BUDGET_ID]]);
   });
 
   it("returns an error, never throws, when the delete fails", async () => {
@@ -217,6 +269,13 @@ describe("removeBudget", () => {
     const result = await removeBudget(BUDGET_ID);
 
     expect(result).toEqual({ error: "Not signed in" });
+    expect(budgetsEqCalls).toEqual([]);
+  });
+
+  it("rejects a malformed id with the same not-found message a real-but-inaccessible one gets", async () => {
+    const result = await removeBudget("not-a-uuid");
+
+    expect(result).toEqual({ error: "That budget no longer exists." });
     expect(budgetsEqCalls).toEqual([]);
   });
 });
