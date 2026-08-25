@@ -64,7 +64,18 @@ create function get_budget_status(from_date date, to_date date)
   returns table(
     wallet_id uuid, wallet_name text, currency_code char(3),
     category_id uuid, category_name text, color_slot smallint, icon text,
-    spent_minor bigint, budget_minor bigint
+    spent_minor bigint, budget_minor bigint,
+    -- The underlying `budgets` row this figure came from -- both NULL when
+    -- there is no effective budget (spending-only row). The UI
+    -- (src/app/(app)/budgets, Task 5) needs `budget_id` to call
+    -- `removeBudget(id)`: this aggregate is not a plain select over
+    -- `budgets`, so there is no other column here that already carries it.
+    -- `budget_period_start` rides along so the UI can tell a CURRENT-month
+    -- budget from one carried forward from an earlier month (spec: "the
+    -- effective budget for a month is the most recent row at or before
+    -- it") and disclose that a Remove click on an old row is not scoped to
+    -- just this month.
+    budget_id uuid, budget_period_start date
   )
   language plpgsql stable security definer set search_path = '' as $$
 begin
@@ -76,7 +87,7 @@ begin
   ),
   eff as (
     select distinct on (b.wallet_id, b.category_id)
-           b.wallet_id, b.category_id, b.amount_minor
+           b.wallet_id, b.category_id, b.amount_minor, b.id, b.period_start
     from public.budgets b
     join mine m on m.id = b.wallet_id
     where b.period_start <= from_date
@@ -106,7 +117,8 @@ begin
   -- categories are budgeted.
   select m.id, m.name, m.currency_code,
          null::uuid, null::text, null::smallint, null::text,
-         coalesce(o.spent, 0)::bigint, e.amount_minor
+         coalesce(o.spent, 0)::bigint, e.amount_minor,
+         e.id, e.period_start
   from mine m
   left join overall o on o.wallet_id = m.id
   left join eff e on e.wallet_id = m.id and e.category_id is null
@@ -120,7 +132,8 @@ begin
   -- means a real budget is never 0 anyway.
   select m.id, m.name, m.currency_code,
          c.id, c.name, c.color_slot, c.icon,
-         coalesce(s.spent, 0)::bigint, e.amount_minor
+         coalesce(s.spent, 0)::bigint, e.amount_minor,
+         e.id, e.period_start
   from mine m
   join public.categories c on c.wallet_id = m.id
   left join spend s on s.wallet_id = m.id and s.category_id = c.id

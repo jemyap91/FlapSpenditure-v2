@@ -18,6 +18,14 @@ import type { Database } from "@/lib/database.types";
  *   spending but no budget set for it: "no budget" is NULL, deliberately
  *   never 0, so it stays distinguishable from a budget of zero (which the
  *   `amount_minor > 0` CHECK on `budgets` makes impossible anyway).
+ * - `budget_id`, `budget_period_start` -- the underlying `budgets` row this
+ *   figure came from (added in 0012's fix round, so the /budgets UI can call
+ *   `removeBudget(id)` and disclose which month a budget was actually SET
+ *   in, rather than the UI re-deriving that id via a second, separate query
+ *   over `budgets` that could drift out of sync with this function's own
+ *   "most recent period_start at or before the queried month" rule). Both
+ *   NULL together with `budget_minor` for exactly the same reason:
+ *   no effective budget exists for that row.
  *
  * Deliberately NOT a hand-edit of `database.types.ts` (generated file,
  * regenerated wholesale by `npm run db:types` -- a hand-edit there would
@@ -28,13 +36,21 @@ import type { Database } from "@/lib/database.types";
 type GeneratedBudgetStatusRow = Database["public"]["Functions"]["get_budget_status"]["Returns"][number];
 export type BudgetStatusRow = Omit<
   GeneratedBudgetStatusRow,
-  "category_id" | "category_name" | "color_slot" | "icon" | "budget_minor"
+  | "category_id"
+  | "category_name"
+  | "color_slot"
+  | "icon"
+  | "budget_minor"
+  | "budget_id"
+  | "budget_period_start"
 > & {
   category_id: string | null;
   category_name: string | null;
   color_slot: number | null;
   icon: string | null;
   budget_minor: number | null;
+  budget_id: string | null;
+  budget_period_start: string | null;
 };
 
 /** The subset of `get_budget_status`'s row this derivation needs. */

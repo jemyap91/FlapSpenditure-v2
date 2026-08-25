@@ -321,7 +321,16 @@ test.describe("accessibility", () => {
     await signUpAndOnboard(page);
 
     for (const path of ["/", "/wallets", "/transactions", "/transactions/new", "/budgets", "/categories"]) {
-      await page.goto(path);
+      // `page.goto` does not throw on a 500 — a broken route (e.g. a
+      // Server Component crashing on a bad import) renders Next's dev
+      // error overlay, which axe can score as violation-free, so the loop
+      // below would silently pass on a page that never actually rendered.
+      // Caught for real during this fix round: /budgets 500'd from calling
+      // a "use client" module's exported function inside a Server
+      // Component, and this exact loop (before this assertion existed)
+      // still reported zero accessibility violations for it.
+      const res = await page.goto(path);
+      expect(res?.status(), `${path} did not render`).toBeLessThan(400);
       await expectNoViolations(page, path);
     }
   });

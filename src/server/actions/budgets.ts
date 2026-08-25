@@ -122,7 +122,11 @@ export async function setBudget(
   if (error) return { error: "Could not save that budget. Please try again." };
 
   revalidatePath("/budgets");
-  return {};
+  // A `notice`, not `{}`: the always-mounted `role="status"` paragraph
+  // BudgetList.tsx renders this state through is otherwise silent on
+  // success — the amount just changes on screen, with nothing said aloud.
+  // Matches inviteToWallet's identical shape (src/server/actions/invites.ts).
+  return { notice: "Budget saved." };
 }
 
 export async function removeBudget(id: string): Promise<BudgetState> {

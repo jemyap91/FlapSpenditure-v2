@@ -398,7 +398,9 @@ export type Database = {
       get_budget_status: {
         Args: { from_date: string; to_date: string }
         Returns: {
+          budget_id: string
           budget_minor: number
+          budget_period_start: string
           category_id: string
           category_name: string
           color_slot: number

@@ -1,13 +1,32 @@
 "use client";
 
-import { useState, useTransition, useActionState } from "react";
+import { useId, useState, useTransition, useActionState } from "react";
 import { setBudget, removeBudget, type BudgetState } from "@/server/actions/budgets";
 import { formatMoney } from "@/lib/money";
 import { budgetProgress, type BudgetStatusRow } from "@/lib/budget-status";
-import { budgetRowKey } from "./budget-row-key";
 
 const FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+
+/**
+ * Whole-month abbreviations for `budget_period_start` ("YYYY-MM-01" —
+ * `budgets.period_start`, always the first of a month). Read by INDEX from
+ * the string, never via `new Date(dateStr)`: a plain `date` column has no
+ * time zone, and `new Date("2026-09-01")` parses as UTC midnight — in any
+ * timezone BEHIND UTC, formatting that back out can read back one day
+ * EARLIER (still within the same month here, since every value is always
+ * the 1st, but the wrong month entirely is exactly the class of bug
+ * `month-range.ts`'s own doc comment exists to warn about, and there is no
+ * reason to risk it for a two-character slice). Pure string indexing has
+ * no such round-trip at all.
+ */
+const MONTH_ABBREV = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+function monthAbbrev(periodStart: string): string {
+  const month = Number(periodStart.slice(5, 7));
+  return MONTH_ABBREV[month - 1] ?? periodStart;
+}
 
 /**
  * Rows grouped by wallet, in first-seen order, with the overall cap
@@ -41,27 +60,21 @@ function groupByWallet(
  */
 export function BudgetList({
   rows,
-  budgetIds = {},
+  currentPeriodStart,
 }: {
   rows: BudgetStatusRow[];
   /**
-   * `budgetRowKey(row) -> budgets.id`. `get_budget_status` (0012) does not
-   * — and structurally cannot cleanly — return the underlying `budgets`
-   * row's own id: it is an aggregate over `spend` and the WALLET's
-   * currently-effective budget, not a select over `budgets` itself, and a
-   * category can appear here from spending alone with no budget row at
-   * all. `removeBudget` (src/server/actions/budgets.ts), however, deletes
-   * by that exact id. `page.tsx` closes the gap with one extra read of
-   * `budgets` itself (RLS-scoped the same way every other read here is)
-   * and resolves each row's CURRENTLY EFFECTIVE budget id the same way the
-   * SQL's own `eff` CTE does — most recent `period_start` at or before the
-   * queried month. Optional, and defaulted to `{}`, so a caller that has
-   * no budget rows yet (or, as here, a unit test that only cares about the
-   * read-side rendering) never has to supply it: a row with no resolvable
-   * id simply renders without a Remove control, rather than one that would
-   * fail whenever clicked.
+   * This month's `period_start` (`monthRange().from` — page.tsx computes it
+   * once and passes the same string down, rather than this component
+   * calling `monthRange()` itself a second time and risking it disagreeing
+   * with the value the page already queried `get_budget_status` with).
+   * Optional: the pinned component test (BudgetList.test.tsx) never passes
+   * it, and with no reference to compare against there is nothing honest
+   * to disclose, so every row is rendered as if it were the current
+   * month's own — never a FALSE "set in the past" claim, only a possibly
+   * missing true one.
    */
-  budgetIds?: Record<string, string>;
+  currentPeriodStart?: string;
 }) {
   const groups = groupByWallet(rows);
 
@@ -85,10 +98,13 @@ export function BudgetList({
             {group.walletName}
           </h2>
           <ul className="flex flex-col gap-3">
-            {group.rows.map((row) => {
-              const key = budgetRowKey(row);
-              return <BudgetRow key={key} row={row} budgetId={budgetIds[key]} />;
-            })}
+            {group.rows.map((row) => (
+              <BudgetRow
+                key={`${row.wallet_id}::${row.category_id ?? "overall"}`}
+                row={row}
+                currentPeriodStart={currentPeriodStart}
+              />
+            ))}
           </ul>
         </section>
       ))}
@@ -96,10 +112,17 @@ export function BudgetList({
   );
 }
 
-function BudgetRow({ row, budgetId }: { row: BudgetStatusRow; budgetId?: string }) {
+function BudgetRow({
+  row,
+  currentPeriodStart,
+}: {
+  row: BudgetStatusRow;
+  currentPeriodStart?: string;
+}) {
   const isOverall = row.category_id === null;
   const label = isOverall ? "All spending" : (row.category_name ?? "Category");
   const progress = budgetProgress(row);
+  const amountStatusId = useId();
 
   const [formState, formAction, saving] = useActionState<BudgetState, FormData>(
     setBudget.bind(null, row.wallet_id, row.category_id),
@@ -110,15 +133,34 @@ function BudgetRow({ row, budgetId }: { row: BudgetStatusRow; budgetId?: string 
   const [removing, startRemoving] = useTransition();
 
   function handleRemove() {
-    if (!budgetId) return;
+    if (!row.budget_id) return;
     setRemoveError(null);
     startRemoving(async () => {
-      const res = await removeBudget(budgetId);
+      const res = await removeBudget(row.budget_id!);
       if (res.error) setRemoveError(res.error);
     });
   }
 
   const removeLabel = isOverall ? "Remove overall budget" : `Remove budget for ${label}`;
+
+  // Disclosure, not a confirmation dialog (agreed fix round scope): a
+  // budget set in an EARLIER month and never touched since is still that
+  // earlier month's own row (spec: "the effective budget for a month is
+  // the most recent row at or before it"). Clicking Remove here hard-
+  // deletes that row, retroactively un-budgeting every month it was
+  // carried forward into — with no undo. The `aria-label` above stays the
+  // pinned, byte-identical string either way; only the VISIBLE button text
+  // gains the qualifier, so a sighted user sees it without changing what a
+  // screen-reader user is told the control is named.
+  const isPastBudget =
+    row.budget_period_start !== null &&
+    currentPeriodStart !== undefined &&
+    row.budget_period_start !== currentPeriodStart;
+  const removeButtonText = removing
+    ? "Removing…"
+    : isPastBudget
+      ? `Remove (set ${monthAbbrev(row.budget_period_start!)})`
+      : "Remove";
 
   return (
     <li
@@ -129,7 +171,7 @@ function BudgetRow({ row, budgetId }: { row: BudgetStatusRow; budgetId?: string 
         <span className="font-medium" style={{ color: "var(--ink)" }}>
           {label}
         </span>
-        {budgetId && (
+        {row.budget_id && (
           <button
             type="button"
             aria-label={removeLabel}
@@ -138,7 +180,7 @@ function BudgetRow({ row, budgetId }: { row: BudgetStatusRow; budgetId?: string 
             className={`shrink-0 text-xs underline disabled:opacity-60 ${FOCUS_RING}`}
             style={{ color: "var(--ink-2)" }}
           >
-            {removing ? "Removing…" : "Remove"}
+            {removeButtonText}
           </button>
         )}
       </div>
@@ -186,8 +228,14 @@ function BudgetRow({ row, budgetId }: { row: BudgetStatusRow; budgetId?: string 
 
       {/* Always mounted, not conditionally rendered — a role="alert" node
           that appears and gets its text in the same instant is not
-          reliably announced (MembersSection.tsx's own reasoning). */}
-      <p role="alert" className="text-sm" style={{ color: "var(--neg)" }}>
+          reliably announced (MembersSection.tsx's own reasoning).
+          `aria-label` is per-ROW (derived from `label`, not a bare
+          "Error"): this page renders one of these per row, unlike
+          MembersSection's single instance for a whole section, so an
+          unlabelled `role="alert"` would make every row's live region
+          indistinguishable from every other's, both to `getByRole("alert")`
+          and to a screen-reader user who has more than one open. */}
+      <p role="alert" aria-label={`Error for ${label}`} className="text-sm" style={{ color: "var(--neg)" }}>
         {removeError}
       </p>
 
@@ -202,6 +250,7 @@ function BudgetRow({ row, budgetId }: { row: BudgetStatusRow; budgetId?: string 
             name="amount"
             autoComplete="off"
             placeholder="0.00"
+            aria-describedby={formState.error ? amountStatusId : undefined}
             className={`rounded-md border px-3 py-2 text-sm ${FOCUS_RING}`}
             style={{ borderColor: "var(--ink-2)", background: "var(--surface)", color: "var(--ink)" }}
           />
@@ -219,9 +268,20 @@ function BudgetRow({ row, budgetId }: { row: BudgetStatusRow; budgetId?: string 
           always-mounted role="alert" above (the Remove error) — a second
           simultaneous role="alert" node makes getByRole("alert") ambiguous
           for anything that queries by role alone (MembersSection.tsx's own
-          reasoning for the identical split). */}
-      <p role="status" className="text-sm" style={{ color: "var(--neg)" }}>
-        {formState.error}
+          reasoning for the identical split). Per-row `aria-label` for the
+          same reason the alert above has one. Doubles as the save NOTICE
+          on success (`formState.notice`, e.g. "Budget saved.") so a save
+          is announced rather than silent — coloured var(--neg) only when
+          it is actually an error, matching MembersSection's identical
+          error-vs-notice split for its own invite-result paragraph. */}
+      <p
+        id={amountStatusId}
+        role="status"
+        aria-label={`Status for ${label}`}
+        className="text-sm"
+        style={{ color: formState.error ? "var(--neg)" : "var(--ink-2)" }}
+      >
+        {formState.error ?? formState.notice}
       </p>
     </li>
   );

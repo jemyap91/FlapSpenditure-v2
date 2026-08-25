@@ -146,7 +146,7 @@ describe("setBudget", () => {
 
     const result = await setBudget(WALLET_ID, CATEGORY_ID, {}, budgetForm("600"));
 
-    expect(result).toEqual({});
+    expect(result).toEqual({ notice: "Budget saved." });
     expect(rpcCalls).toEqual([
       {
         fn: "set_budget",
@@ -178,7 +178,7 @@ describe("setBudget", () => {
 
     const result = await setBudget(WALLET_ID, CATEGORY_ID, {}, budgetForm("600"));
 
-    expect(result).toEqual({});
+    expect(result).toEqual({ notice: "Budget saved." });
     expect(rpcCalls).toEqual([
       expect.objectContaining({ fn: "set_budget", args: expect.objectContaining({ p_amount_minor: 600 }) }),
     ]);
@@ -196,7 +196,7 @@ describe("setBudget", () => {
   it("passes a null category through for the overall cap", async () => {
     const result = await setBudget(WALLET_ID, null, {}, budgetForm("600"));
 
-    expect(result).toEqual({});
+    expect(result).toEqual({ notice: "Budget saved." });
     expect(rpcCalls).toEqual([
       expect.objectContaining({ fn: "set_budget", args: expect.objectContaining({ p_category_id: null }) }),
     ]);
