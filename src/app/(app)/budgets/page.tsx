@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { monthRange } from "@/lib/month-range";
-import { BudgetList, MONTH_ABBREV } from "./BudgetList";
+import { BudgetList, MONTH_NAME } from "./BudgetList";
 import type { BudgetStatusRow } from "@/lib/budget-status";
 
 /**
@@ -39,8 +39,8 @@ export default async function BudgetsPage() {
   // own doc comment: a request straddling local midnight could otherwise
   // label a window it did not query). `from` is always "YYYY-MM-01"
   // (monthRange()), so index 5-6 is the month and 0-3 is the year; reuses
-  // BudgetList's own MONTH_ABBREV table rather than a second copy of it.
-  const monthLabel = `${MONTH_ABBREV[Number(from.slice(5, 7)) - 1]} ${from.slice(0, 4)}`;
+  // BudgetList's own MONTH_NAME table rather than a second copy of it.
+  const monthLabel = `${MONTH_NAME[Number(from.slice(5, 7)) - 1]} ${from.slice(0, 4)}`;
 
   return (
     <div className="mx-auto max-w-2xl p-6">

@@ -24,6 +24,17 @@ export const MONTH_ABBREV = [
   "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 /**
+ * Full names, for the page heading. Deliberately a second table rather than a
+ * reuse of MONTH_ABBREV: the abbreviations exist for the cramped inline Remove
+ * label (`Remove (set Aug)`), where brevity is the whole point, and a heading
+ * reading "Aug 2026" would be shortening prose for no reason. Both are indexed
+ * the same way, from a "YYYY-MM-DD" string's month digits — never from a Date.
+ */
+export const MONTH_NAME = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+/**
  * `Aug` for a budget set in the current calendar year, `Aug 2025` for one
  * set in an earlier year — `currentPeriodStart` (this month's own
  * "YYYY-MM-01") is what "current year" means here, not the viewer's clock,
