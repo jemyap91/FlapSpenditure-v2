@@ -382,3 +382,93 @@ begin
             where wallet_id = 'bbbb3333-0000-4000-8000-000000000003' and category_id = exp_cat) = 2,
     'CONSTRAINT BROKEN: budgets_category_period rejected a legitimate different-month budget for the same wallet+category';
 end $$;
+
+-- set_budget (0012): proves the ON CONFLICT upsert this function performs
+-- actually infers the two PARTIAL indexes (budgets_category_period,
+-- budgets_overall_period) rather than silently duplicating rows. This is
+-- the exact bug class the brief's CORRECTION describes: a bare
+-- `on conflict (wallet_id, category_id, period_start)` (no predicate)
+-- cannot infer a partial index and fails at the database with "there is no
+-- unique or exclusion constraint matching the ON CONFLICT specification" --
+-- see the "watch it fail" step below, deliberately reproduced and then
+-- reverted.
+--
+-- Reuses wallet 'bbbb3333-...-003' (Kinds) and its owner
+-- 'aaaa3333-...-003' from the expenses-only block above, and that block's
+-- own begin/set local request.jwt.claims/commit wrapper: set_budget
+-- resolves membership through auth.uid() (via is_wallet_member), which is
+-- NULL in this superuser session with no JWT claims set.
+begin;
+  set local request.jwt.claims = '{"sub":"aaaa3333-0000-4000-8000-000000000003"}';
+  do $$
+  declare
+    exp_cat uuid;
+    v_id_first  uuid;
+    v_id_second uuid;
+    v_amount    bigint;
+    v_count     int;
+  begin
+    assert (select auth.uid()) = 'aaaa3333-0000-4000-8000-000000000003'::uuid,
+      'test setup broken: auth.uid() did not resolve to the wallet owner';
+
+    select id into exp_cat from public.categories
+     where wallet_id = 'bbbb3333-0000-4000-8000-000000000003' and kind = 'expense' limit 1;
+    assert exp_cat is not null, 'test setup broken: wallet Kinds has no seeded expense category';
+
+    -- CATEGORY shape: first call with no existing row creates one.
+    select public.set_budget(
+      'bbbb3333-0000-4000-8000-000000000003', exp_cat, '2026-11-01', 10000
+    ) into v_id_first;
+    assert v_id_first is not null, 'set_budget (category) did not return an id on insert';
+
+    select amount_minor into v_amount from public.budgets where id = v_id_first;
+    assert v_amount = 10000,
+      format('set_budget (category) insert: expected amount 10000, got %s', v_amount);
+
+    -- CATEGORY shape: second call, same (wallet, category, month), different
+    -- amount, must leave EXACTLY ONE row carrying the new amount -- not a
+    -- second row. Row count, not just amount: "updated" and "inserted a
+    -- duplicate" both leave a row with the new amount, so amount alone
+    -- cannot distinguish them.
+    select public.set_budget(
+      'bbbb3333-0000-4000-8000-000000000003', exp_cat, '2026-11-01', 20000
+    ) into v_id_second;
+
+    select count(*) into v_count from public.budgets
+     where wallet_id = 'bbbb3333-0000-4000-8000-000000000003'
+       and category_id = exp_cat and period_start = '2026-11-01';
+    assert v_count = 1,
+      format('SET_BUDGET UPSERT BROKEN (category): expected exactly 1 row after re-calling set_budget, got %s', v_count);
+
+    select amount_minor into v_amount from public.budgets where id = v_id_second;
+    assert v_amount = 20000,
+      format('SET_BUDGET UPSERT BROKEN (category): expected updated amount 20000, got %s', v_amount);
+
+    -- OVERALL shape: p_category_id => null. First call with no existing row
+    -- creates one.
+    select public.set_budget(
+      'bbbb3333-0000-4000-8000-000000000003', null, '2026-11-01', 30000
+    ) into v_id_first;
+    assert v_id_first is not null, 'set_budget (overall) did not return an id on insert';
+
+    select amount_minor into v_amount from public.budgets where id = v_id_first;
+    assert v_amount = 30000,
+      format('set_budget (overall) insert: expected amount 30000, got %s', v_amount);
+
+    -- OVERALL shape: second call, same (wallet, month), different amount,
+    -- must again leave exactly one row.
+    select public.set_budget(
+      'bbbb3333-0000-4000-8000-000000000003', null, '2026-11-01', 40000
+    ) into v_id_second;
+
+    select count(*) into v_count from public.budgets
+     where wallet_id = 'bbbb3333-0000-4000-8000-000000000003'
+       and category_id is null and period_start = '2026-11-01';
+    assert v_count = 1,
+      format('SET_BUDGET UPSERT BROKEN (overall): expected exactly 1 row after re-calling set_budget, got %s', v_count);
+
+    select amount_minor into v_amount from public.budgets where id = v_id_second;
+    assert v_amount = 40000,
+      format('SET_BUDGET UPSERT BROKEN (overall): expected updated amount 40000, got %s', v_amount);
+  end $$;
+commit;

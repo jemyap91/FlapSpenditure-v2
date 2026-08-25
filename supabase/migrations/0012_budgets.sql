@@ -130,3 +130,59 @@ end $$;
 
 revoke all on function get_budget_status(date, date) from public, anon;
 grant execute on function get_budget_status(date, date) to authenticated;
+
+-- Writing a budget needs INSERT ... ON CONFLICT, and the two uniqueness rules
+-- above are PARTIAL indexes. Postgres can only infer a partial index when the
+-- statement repeats the index predicate, and PostgREST's `onConflict` emits a
+-- bare column list -- so `from("budgets").upsert(...)` fails outright with
+-- "there is no unique or exclusion constraint matching the ON CONFLICT
+-- specification". The upsert therefore lives here, where the predicate can be
+-- written. The two shapes need two branches because an ON CONFLICT predicate
+-- is part of the statement, not a value, so it cannot be parameterised.
+--
+-- security invoker, following create_transfer (0005): this function SHOULD run
+-- under the caller's RLS, so budgets_member decides whether the write lands.
+-- The explicit is_wallet_member guard is belt-and-braces for the error message
+-- -- without it RLS still refuses, but as a policy violation rather than a
+-- sentence. search_path is set to '' with everything schema-qualified, for the
+-- reason 0005 documents at length: not privilege escalation here, but so an
+-- unqualified name cannot silently resolve to a caller-created temp table.
+create function set_budget(
+  p_wallet_id uuid, p_category_id uuid, p_period_start date, p_amount_minor bigint
+) returns uuid
+  language plpgsql security invoker set search_path = '' as $$
+declare
+  bid uuid;
+begin
+  -- Explicit null checks, for the reason create_transfer documents: a plpgsql
+  -- parameter cannot carry `not null`, and `p_amount_minor <= 0` alone
+  -- evaluates to NULL rather than true, which plpgsql's `if` treats as false.
+  if p_wallet_id is null or p_period_start is null or p_amount_minor is null then
+    raise exception 'wallet, period and amount must not be null';
+  end if;
+  if p_amount_minor <= 0 then
+    raise exception 'budget amount must be positive';
+  end if;
+  if not public.is_wallet_member(p_wallet_id) then
+    raise exception 'not a member of that wallet';
+  end if;
+
+  if p_category_id is null then
+    insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
+    values (p_wallet_id, null, p_period_start, p_amount_minor)
+    on conflict (wallet_id, period_start) where category_id is null
+      do update set amount_minor = excluded.amount_minor
+    returning id into bid;
+  else
+    insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
+    values (p_wallet_id, p_category_id, p_period_start, p_amount_minor)
+    on conflict (wallet_id, category_id, period_start) where category_id is not null
+      do update set amount_minor = excluded.amount_minor
+    returning id into bid;
+  end if;
+
+  return bid;
+end $$;
+
+revoke all on function set_budget(uuid, uuid, date, bigint) from public, anon;
+grant execute on function set_budget(uuid, uuid, date, bigint) to authenticated;
