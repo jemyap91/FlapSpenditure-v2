@@ -472,3 +472,145 @@ begin;
       format('SET_BUDGET UPSERT BROKEN (overall): expected updated amount 40000, got %s', v_amount);
   end $$;
 commit;
+
+-- budgets_category_same_wallet (0012, item 4): spec §6 requires, verbatim,
+-- "the composite FK rejects a cross-wallet category." The constraint was
+-- declared correctly and verified live once during review, but no
+-- committed test exercised it. Same pattern as
+-- transactions_category_same_wallet above: a REJECT paired with a
+-- SAME-wallet POSITIVE, so this proves the constraint and not a broken
+-- insert path. Reuses wallets 'bbbb3333-...-003' (Kinds) and
+-- 'bbbb4444-...-004' (Other) from the expenses-only block above.
+do $$
+declare foreign_cat uuid;
+begin
+  select id into foreign_cat from public.categories
+   where wallet_id = 'bbbb4444-0000-4000-8000-000000000004' and kind = 'expense' limit 1;
+  assert foreign_cat is not null, 'test setup broken: wallet Other has no seeded expense category';
+
+  begin
+    insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
+    values ('bbbb3333-0000-4000-8000-000000000003', foreign_cat, '2026-12-01', 10000);
+    raise exception 'CONSTRAINT BROKEN: budgets_category_same_wallet did not reject a cross-wallet category';
+  exception when foreign_key_violation then
+    null; -- correct
+  end;
+end $$;
+
+-- POSITIVE, paired with the REJECT above: the SAME wallet's own category is
+-- accepted. Without this, a constraint (or insert path) that rejected
+-- EVERY category_id would sail through the REJECT above.
+do $$
+declare exp_cat uuid; n int;
+begin
+  select id into exp_cat from public.categories
+   where wallet_id = 'bbbb3333-0000-4000-8000-000000000003' and kind = 'expense' limit 1;
+  assert exp_cat is not null, 'test setup broken: wallet Kinds has no seeded expense category';
+
+  insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
+  values ('bbbb3333-0000-4000-8000-000000000003', exp_cat, '2026-12-01', 10000);
+
+  select count(*) into n from public.budgets
+   where wallet_id = 'bbbb3333-0000-4000-8000-000000000003'
+     and category_id = exp_cat and period_start = '2026-12-01';
+  assert n = 1,
+    format('CONSTRAINT BROKEN: budgets_category_same_wallet rejected a category from the budget''s OWN wallet (%s row(s) landed)', n);
+end $$;
+
+-- budgets_period_start_check (0012, item 4): period_start must be the
+-- first of a month (`extract(day from period_start) = 1`). No permanent
+-- guard existed before this. REJECT paired with a same-wallet POSITIVE
+-- (a genuine first-of-month row), the same shape as every other REJECT in
+-- this file.
+do $$
+declare
+  v_sqlstate   text;
+  v_constraint text;
+begin
+  begin
+    insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
+    values ('bbbb3333-0000-4000-8000-000000000003', null, '2026-10-15', 10000);
+    raise exception 'CONSTRAINT BROKEN: budgets_period_start_check did not reject a mid-month period_start';
+  exception
+    when others then
+      get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+      assert v_sqlstate = '23514' and v_constraint = 'budgets_period_start_check',
+        format('expected check_violation (23514) from budgets_period_start_check, got SQLSTATE %s (constraint %s): %s',
+               v_sqlstate, v_constraint, sqlerrm);
+  end;
+end $$;
+
+do $$
+declare n int;
+begin
+  -- POSITIVE, paired with the REJECT above: a genuine first-of-month
+  -- period_start for the same wallet is accepted.
+  insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
+  values ('bbbb3333-0000-4000-8000-000000000003', null, '2026-10-01', 10000);
+
+  select count(*) into n from public.budgets
+   where wallet_id = 'bbbb3333-0000-4000-8000-000000000003'
+     and category_id is null and period_start = '2026-10-01';
+  assert n = 1,
+    format('CONSTRAINT BROKEN: budgets_period_start_check rejected a legitimate first-of-month period_start (%s row(s) landed)', n);
+end $$;
+
+-- budgets_amount_minor_check (0012, item 4): amount_minor must be strictly
+-- positive -- "a zero budget is indistinguishable from no budget; deleting
+-- the row is how a budget is removed" (0012's own comment). No permanent
+-- guard existed before this. Both zero and negative are rejected; neither
+-- REJECT lands a row, so both reuse the same fresh (wallet, month) --
+-- 2027-01-01, not 2026-11-01: the set_budget block above already left a
+-- REAL overall-cap row for this wallet at 2026-11-01 (amount 40000), and
+-- reusing that period here would risk a unique-index conflict masking
+-- which constraint actually fired.
+do $$
+declare
+  v_sqlstate   text;
+  v_constraint text;
+begin
+  begin
+    insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
+    values ('bbbb3333-0000-4000-8000-000000000003', null, '2027-01-01', 0);
+    raise exception 'CONSTRAINT BROKEN: budgets_amount_minor_check did not reject a zero amount';
+  exception
+    when others then
+      get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+      assert v_sqlstate = '23514' and v_constraint = 'budgets_amount_minor_check',
+        format('expected check_violation (23514) from budgets_amount_minor_check (zero), got SQLSTATE %s (constraint %s): %s',
+               v_sqlstate, v_constraint, sqlerrm);
+  end;
+end $$;
+
+do $$
+declare
+  v_sqlstate   text;
+  v_constraint text;
+begin
+  begin
+    insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
+    values ('bbbb3333-0000-4000-8000-000000000003', null, '2027-01-01', -100);
+    raise exception 'CONSTRAINT BROKEN: budgets_amount_minor_check did not reject a negative amount';
+  exception
+    when others then
+      get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+      assert v_sqlstate = '23514' and v_constraint = 'budgets_amount_minor_check',
+        format('expected check_violation (23514) from budgets_amount_minor_check (negative), got SQLSTATE %s (constraint %s): %s',
+               v_sqlstate, v_constraint, sqlerrm);
+  end;
+end $$;
+
+do $$
+declare n int;
+begin
+  -- POSITIVE, paired with both REJECTs above: a genuine positive amount for
+  -- the same wallet+month is accepted.
+  insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
+  values ('bbbb3333-0000-4000-8000-000000000003', null, '2026-12-01', 100);
+
+  select count(*) into n from public.budgets
+   where wallet_id = 'bbbb3333-0000-4000-8000-000000000003'
+     and category_id is null and period_start = '2026-12-01';
+  assert n = 1,
+    format('CONSTRAINT BROKEN: budgets_amount_minor_check rejected a legitimate positive amount (%s row(s) landed)', n);
+end $$;

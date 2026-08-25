@@ -46,6 +46,18 @@ alter table budgets
 alter table budgets enable row level security;
 grant select, insert, update, delete on budgets to authenticated;
 
+-- Column-restrict UPDATE, closing the exact hole 0004_rls.sql documents at
+-- length for transactions: `budgets_member`'s USING/WITH CHECK both ask
+-- the identical is_wallet_member(wallet_id) question, one against the OLD
+-- row and one against the NEW, so RLS alone cannot stop a member of two
+-- wallets from doing `update budgets set wallet_id = <my other wallet>`
+-- and moving a shared wallet's budget out from under its co-members.
+-- set_budget's DO UPDATE writes only amount_minor, and its `returning id`
+-- needs only SELECT, so narrowing to that single column does not touch the
+-- upsert this function performs.
+revoke update on budgets from authenticated;
+grant update (amount_minor) on budgets to authenticated;
+
 -- Member-writable, matching transactions_member and categories_member.
 -- Members are equal on money; owner-only is reserved for membership and
 -- archiving.

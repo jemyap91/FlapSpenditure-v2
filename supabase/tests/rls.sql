@@ -1759,6 +1759,28 @@ begin;
 commit;
 
 -- =====================================================================
+-- Budgets (0012): TRUNCATE must not have leaked in via default privileges.
+-- `budgets` is the first table this project has created since
+-- 0004_rls.sql's `alter default privileges in schema public revoke
+-- truncate, references, trigger, maintain on tables from anon,
+-- authenticated` was written -- that line's own comment says the plain
+-- `revoke all on all tables` above it "only fixes tables that exist
+-- today", and this is the first real test of the default-privilege half
+-- closing the gap for anything created after. TRUNCATE is table-level and
+-- is not filtered by RLS at all, so if the default-privilege revoke did
+-- not take, one signed-in user could wipe every user's budgets. No
+-- impersonation needed: has_table_privilege(role_name, ...) reads the
+-- grant catalog for that role directly, regardless of the session's own
+-- current_user.
+-- =====================================================================
+do $$ begin
+  assert not has_table_privilege('authenticated', 'public.budgets', 'TRUNCATE'),
+    'authenticated must not hold TRUNCATE on budgets';
+  assert not has_table_privilege('anon', 'public.budgets', 'TRUNCATE'),
+    'anon must not hold TRUNCATE on budgets';
+end $$;
+
+-- =====================================================================
 -- Budgets (0012). Alice budgets her own wallet; Bob must see nothing of it.
 -- Carol (a total stranger to this wallet, already inserted into auth.users
 -- above in the Invitations section) is the LEAK check's actor.
@@ -1772,8 +1794,20 @@ begin;
     assert (select current_user) = 'authenticated', 'role switch did not take effect';
     assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'wrong impersonated user';
 
-    select w.id into v_wallet from public.wallets w
-     where w.owner_id = 'aaaaaaaa-0000-0000-0000-000000000001' limit 1;
+    -- The hardcoded id Carol's LEAK check and anon's privilege denial
+    -- (both below) already target, not an unordered `limit 1` over
+    -- Alice's wallets. By this point in the file Alice owns at least seven
+    -- wallets and one (a3a3a3a3-...-001, archived earlier in this file) is
+    -- archived: get_budget_status's `mine` CTE filters `archived_at is
+    -- null`, but this INSERT and the count(*) below do not, so an
+    -- unordered `limit 1` that happened to land on the archived wallet
+    -- would make the INSERT and count still pass while the positive
+    -- control just below (which reads through get_budget_status, and so
+    -- IS filtered by archived_at) failed -- a red suite pointing at
+    -- nothing real. It passed before only because wallets_owner is a
+    -- partial index `where archived_at is null` and the planner happened
+    -- to prefer it -- accidental, not designed.
+    v_wallet := 'cccccccc-0000-0000-0000-000000000003';
 
     insert into public.budgets (wallet_id, period_start, amount_minor)
     values (v_wallet, '2026-08-01', 100000);
@@ -1868,5 +1902,56 @@ begin;
       raise exception 'LEAK: anon could execute set_budget';
     exception when insufficient_privilege then null;
     end;
+  end $$;
+commit;
+
+-- =====================================================================
+-- Budgets (0012, item 8): column-privilege boundary on UPDATE, closing the
+-- same wallet_id-reassignment hole section 10 above closes for
+-- transactions. budgets_member is `for all using (is_wallet_member(...))
+-- with check (is_wallet_member(...))` -- both ask the identical question,
+-- one against the OLD row and one against the NEW, so a member of two
+-- wallets could otherwise `update budgets set wallet_id = <their other
+-- wallet>` and move a shared wallet's budget out from under its
+-- co-members. Bob is a genuine member of Alice's shared wallet
+-- cccccccc-003 (section 9 above) and owns ffffffff-006 (section 5) in his
+-- own right -- the same pairing section 10 uses. Reuses Alice's overall-cap
+-- budget row inserted in the Budgets positive-control block above
+-- (cccccccc-003, category_id null, period 2026-08-01).
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002"}';
+  do $$ begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+  end $$;
+
+  -- Attack: bob, a real member of alice's wallet, tries to migrate her
+  -- budget into his own wallet by reassigning wallet_id.
+  do $$
+  begin
+    update budgets set wallet_id = 'ffffffff-0000-0000-0000-000000000006'
+      where wallet_id = 'cccccccc-0000-0000-0000-000000000003' and category_id is null;
+    raise exception 'LEAK: bob migrated alice''s budget into his own wallet via wallet_id';
+  exception
+    when insufficient_privilege then
+      null; -- expected, COLUMN PRIVILEGE: authenticated has no UPDATE grant on wallet_id
+  end $$;
+
+  -- Positive control, shape-identical to the attack above (same user, same
+  -- row, same wallet membership -- only the column touched differs): bob
+  -- CAN update the one allowed column (amount_minor) on the very same row.
+  -- Without this, a UPDATE grant narrowed to nothing at all (rather than
+  -- to amount_minor specifically) would still make the denial above pass,
+  -- for the wrong reason.
+  do $$
+  declare v_amount bigint;
+  begin
+    update budgets set amount_minor = 150000
+      where wallet_id = 'cccccccc-0000-0000-0000-000000000003' and category_id is null;
+    select amount_minor into v_amount from budgets
+      where wallet_id = 'cccccccc-0000-0000-0000-000000000003' and category_id is null;
+    assert v_amount = 150000,
+      format('PERMISSION BROKEN: bob (legitimate member) cannot update amount_minor on the shared wallet''s budget, got %s', v_amount);
   end $$;
 commit;
