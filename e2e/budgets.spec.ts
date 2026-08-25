@@ -1,12 +1,19 @@
 import { test, expect, type Page } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
 
 /**
  * Task 6's end-to-end proof of the feature's defining requirement, in the
  * requester's own words: "budgets should only register for expenses.
  * income and transfers shouldn't be included." Everything else in this
- * file is supporting cast for that one sentence, which must be proven in a
- * real browser, not only in SQL (supabase/tests — the RLS/constraints
- * suites — never exercise `get_budget_status` at all).
+ * file is supporting cast for that one sentence.
+ *
+ * `supabase/tests/constraints.sql` (search "get_budget_status counts
+ * EXPENSES ONLY", ~line 221) already proves the filter at query level — one
+ * wallet, one expense, one income, one real `create_transfer` pair,
+ * asserting the summed `spent_minor` is the expense alone. What that suite
+ * cannot cover is the browser: whether the SCREEN a person actually reads
+ * renders the right figures, with the right rows, off the right controls.
+ * That is what this file proves instead.
  *
  * Runs against the LOCAL Supabase stack, same as e2e/ledger.spec.ts — see
  * that file's own doc comment for the confirmations-disabled signup flow
@@ -70,12 +77,20 @@ async function pressAmount(page: Page, amount: string) {
  * `category` must be a category of the matching kind — CategoryPicker
  * filters its list by `kind`, so an income transaction can only ever be
  * filed against an income category (e.g. "Salary"), never an expense one
- * like "Groceries". That restriction is exactly why this suite's "watch it
- * fail" exercise (below) has to target the wallet's OVERALL cap rather
- * than a single category: income can never be filed under Groceries
- * through this screen, so a category-scoped budget could never show a
- * leak no matter what the SQL does — only a cap that sums the whole
- * wallet can.
+ * like "Groceries".
+ *
+ * That restriction is one of FOUR independent layers standing between an
+ * income/transfer transaction and an expense category's own row: the
+ * picker filters by kind, the picker is not rendered at all for a transfer
+ * (see recordTransfer below), createTransaction/createTransfer reject a
+ * kind mismatch server-side, and 0003's `transfer_shape` CHECK forces a
+ * transfer's `category_id` to NULL in the database regardless. A
+ * CATEGORY-scoped budget (Groceries, below) therefore cannot be made to
+ * show a leak through this screen no matter what `get_budget_status`'s SQL
+ * does — only the wallet's OVERALL cap, which sums every category's spend
+ * for the wallet, actually can. See the comments at the income and
+ * transfer steps below for how this test still gets a non-vacuous check
+ * out of the category row despite that.
  */
 async function recordTransaction(page: Page, kind: "expense" | "income", amount: string, category: string) {
   await page.goto("/transactions/new");
@@ -109,20 +124,38 @@ async function recordTransfer(page: Page, amount: string) {
  * ONCE PER ROW (task-6-brief.md's controller addendum 2, verified against
  * BudgetList.tsx), so a bare `page.getByLabel("Budget amount")` throws a
  * strict-mode violation the moment more than one row is on screen — which
- * is true for nearly every assertion below, since this test deliberately
- * keeps both a category budget (Groceries) and the wallet's overall cap
- * (All spending) live at once.
+ * is true for nearly every assertion below.
  */
 function budgetRow(page: Page, label: string) {
   return page.getByRole("listitem").filter({ hasText: label });
 }
 
-/** Fills a row's amount field and saves it, waiting for the row's own
- *  per-row status region to confirm the write landed. */
-async function setBudgetOnRow(row: ReturnType<typeof budgetRow>, amount: string) {
+/**
+ * Fills a row's amount field and saves it, confirming the write through
+ * the row's OWN pinned live region — `role="status"`,
+ * `aria-label="Status for <label>"` (addendum 2's verified contract, which
+ * cost a full fix round to land correctly: an earlier draft put the
+ * `aria-label` on the wrong node and it silently overrode the describable
+ * error text). `label` is `"All spending"` for the overall cap, else the
+ * category's own name — the same rule BudgetList.tsx itself uses to build
+ * both the alert and the status region's `aria-label`.
+ */
+async function setBudgetOnRow(row: ReturnType<typeof budgetRow>, label: string, amount: string) {
   await row.getByLabel("Budget amount").fill(amount);
   await row.getByRole("button", { name: "Save budget" }).click();
-  await expect(row.getByText("Budget saved.", { exact: true })).toBeVisible();
+  await expect(row.getByRole("status", { name: `Status for ${label}` })).toHaveText("Budget saved.");
+}
+
+/** Same axe configuration as ledger.spec.ts's own `expectNoViolations` —
+ *  duplicated rather than imported, matching how this file is otherwise a
+ *  single self-contained spec with no shared helper module (see the file's
+ *  own doc comment). */
+async function expectNoViolations(page: Page, context: string) {
+  const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "best-practice"]).analyze();
+  expect(
+    results.violations.map((v) => `${v.id} (${v.nodes.length}): ${v.help}`),
+    `axe violations on ${context}`,
+  ).toEqual([]);
 }
 
 test("a budget counts expenses, and ignores income and transfers", async ({ page }) => {
@@ -148,35 +181,85 @@ test("a budget counts expenses, and ignores income and transfers", async ({ page
   // Budget BOTH the category and the wallet's overall cap at 100, so both
   // shapes spec §1 calls out ("per category and overall cap ... both
   // rendered") are exercised by the same scenario.
-  await setBudgetOnRow(groceries, "100");
-  await setBudgetOnRow(overall, "100");
+  await setBudgetOnRow(groceries, "Groceries", "100");
+  await setBudgetOnRow(overall, "All spending", "100");
   await expect(groceries.getByText("$30.00 of $100.00 · 30%")).toBeVisible();
   await expect(overall.getByText("$30.00 of $100.00 · 30%")).toBeVisible();
 
-  // *** The assertion this whole feature is defined by ***
   // Income against a real income category ("Salary", one of the seeded
-  // defaults) must move NEITHER figure. Both rows must still read exactly
-  // 30 of 100 — not 530, not anything else.
+  // defaults) must move NEITHER figure.
+  //
+  // The two per-row assertions just below CANNOT, by themselves, catch a
+  // regression that deletes the expenses-only filter: the four layers
+  // documented on recordTransaction's own comment make it structurally
+  // impossible for an income transaction to ever land under Groceries
+  // through this screen, filter or no filter. They are kept anyway — a
+  // `group by`/join regression that scrambled the figures without
+  // touching the filter would still move them — but they are not this
+  // step's proof.
+  //
+  // The row-COUNT check below is what actually is that proof, and it was
+  // watched failing for real (task-6-report.md's fix-round section has the
+  // exact numbers): with `t.kind = 'expense'` removed from 0012's `spend`
+  // CTE, the $500 income materialised its OWN "Salary" row on /budgets —
+  // a category that has never had a budget or a real expense has no
+  // business appearing here at all — taking the row count from 2 to 3.
   await recordTransaction(page, "income", "500", "Salary");
   await page.goto("/budgets");
   await expect(budgetRow(page, "Groceries").getByText("$30.00 of $100.00 · 30%")).toBeVisible();
   await expect(budgetRow(page, "All spending").getByText("$30.00 of $100.00 · 30%")).toBeVisible();
+  await expect(page.getByRole("listitem")).toHaveCount(2); // Groceries + All spending, nothing else
 
   // A transfer between the two wallets must not move either figure either
-  // — money moving between accounts is not spending in either one.
+  // — money moving between accounts is not spending in either one. Same
+  // caveat as the income step: the per-row checks are a regression guard,
+  // not proof; the row count is the proof. A leaked transfer leg would
+  // give the Savings wallet its own spend for the first time, materialising
+  // an entire second wallet SECTION (a "Savings" <h2> plus its own "All
+  // spending" row) that must not exist — taking the count from 2 to 3 again.
   await recordTransfer(page, "40");
   await page.goto("/budgets");
   await expect(budgetRow(page, "Groceries").getByText("$30.00 of $100.00 · 30%")).toBeVisible();
   await expect(budgetRow(page, "All spending").getByText("$30.00 of $100.00 · 30%")).toBeVisible();
+  await expect(page.getByRole("listitem")).toHaveCount(2);
 
-  // A further genuine expense DOES move both figures, past the cap, and
-  // the overrun is stated in words, never by colour alone.
-  await recordTransaction(page, "expense", "80", "Groceries");
+  // Distinguish the overall cap from the category budget. Every expense up
+  // to this point has gone to the ONE budgeted category, so "All spending"
+  // and "Groceries" have read identically at every assertion so far and
+  // the cap's own defining rule — 0012's own doc comment: the overall cap
+  // is "deliberately NOT the sum of the category rows ... it counts every
+  // expense in the wallet, including categories with no budget of their
+  // own" — has never actually been exercised, at any layer, on this
+  // branch. Filing this expense against Transport (unbudgeted, untouched
+  // until now) instead of Groceries again is what finally tells the two
+  // rows apart: Groceries must stay put, the cap must move by the full
+  // amount, and Transport must appear as bare unbudgeted spending.
+  await recordTransaction(page, "expense", "80", "Transport");
   await page.goto("/budgets");
-  const groceriesOver = budgetRow(page, "Groceries");
-  const overallOver = budgetRow(page, "All spending");
-  await expect(groceriesOver.getByText("$110.00 of $100.00 · 110%")).toBeVisible();
-  await expect(groceriesOver.getByText("Over by $10.00")).toBeVisible();
-  await expect(overallOver.getByText("$110.00 of $100.00 · 110%")).toBeVisible();
-  await expect(overallOver.getByText("Over by $10.00")).toBeVisible();
+  const groceriesFinal = budgetRow(page, "Groceries");
+  const overallFinal = budgetRow(page, "All spending");
+  const transport = budgetRow(page, "Transport");
+  await expect(groceriesFinal.getByText("$30.00 of $100.00 · 30%")).toBeVisible();
+  await expect(overallFinal.getByText("$110.00 of $100.00 · 110%")).toBeVisible();
+  await expect(overallFinal.getByText("Over by $10.00")).toBeVisible();
+  await expect(transport.getByText("$80.00 spent · No budget set")).toBeVisible();
+
+  // Remove — the only destructive control on this screen, and the reason
+  // `get_budget_status` was changed to return `budget_id` directly rather
+  // than have the UI re-derive it. Targeted by its pinned aria-label, never
+  // by its visible text, which discloses the budget's own set-month rather
+  // than reading "Remove" (BudgetList.test.tsx already covers that
+  // disclosure directly; no need to construct a cross-month fixture here).
+  await groceriesFinal.getByRole("button", { name: "Remove budget for Groceries" }).click();
+  await expect(groceriesFinal.getByText("$30.00 spent · No budget set")).toBeVisible();
+
+  // The populated screen — a budgeted row, an over-budget cap, a bare
+  // unbudgeted row, and the aftermath of a Remove, all on screen together
+  // — must clear the same axe gate every other route in this app holds.
+  // ledger.spec.ts's own accessibility sweep visits /budgets too, but only
+  // ever with a freshly-onboarded user, which always renders the EMPTY
+  // state ("No spending or budgets recorded this month.") — so the
+  // progress bar, both per-row live regions, and Remove have never
+  // actually been through axe before this assertion.
+  await expectNoViolations(page, "/budgets (populated)");
 });
