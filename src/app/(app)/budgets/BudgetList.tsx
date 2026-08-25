@@ -20,7 +20,7 @@ const FOCUS_RING =
  * reason to risk it for a two-character slice). Pure string indexing has
  * no such round-trip at all.
  */
-const MONTH_ABBREV = [
+export const MONTH_ABBREV = [
   "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 /**
@@ -45,8 +45,17 @@ function monthAbbrev(periodStart: string, currentPeriodStart: string): string {
 
 /**
  * Rows grouped by wallet, in first-seen order, with the overall cap
- * (`category_id === null`) sorted first within each group — spec: "the
- * overall cap first ... then each category" (task-5-brief.md Step 3).
+ * (`category_id === null`) sorted first within each group, followed by
+ * every category row — spec §5: "The wallet's overall cap, then each
+ * budgeted category, then any unbudgeted category that has spending this
+ * month."
+ *
+ * `get_budget_status` (0012_budgets.sql) has no `ORDER BY` at all, unlike
+ * `get_category_breakdown` (`order by 5 desc`), so relying on whatever
+ * order Postgres happens to hand back is heap order — a `VACUUM` can
+ * reshuffle it between two loads of the same page. The category half of
+ * the spec's order (budgeted before unbudgeted, alphabetical within each)
+ * is therefore enforced here in TypeScript rather than left to chance.
  */
 function groupByWallet(
   rows: readonly BudgetStatusRow[],
@@ -63,7 +72,13 @@ function groupByWallet(
   return order.map((walletId) => {
     const group = byWallet.get(walletId)!;
     const overall = group.rows.filter((r) => r.category_id === null);
-    const categories = group.rows.filter((r) => r.category_id !== null);
+    const categories = group.rows
+      .filter((r) => r.category_id !== null)
+      .sort(
+        (a, b) =>
+          Number(b.budget_minor !== null) - Number(a.budget_minor !== null) ||
+          (a.category_name ?? "").localeCompare(b.category_name ?? ""),
+      );
     return { walletId, walletName: group.walletName, rows: [...overall, ...categories] };
   });
 }

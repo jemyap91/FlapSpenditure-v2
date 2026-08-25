@@ -56,6 +56,15 @@ export default defineConfig({
   webServer: {
     command: `npm run dev -- --port ${PORT}`,
     url: BASE_URL,
+    // `test:e2e` pins TZ=Asia/Singapore, but that env var only reaches a
+    // server THIS config starts. If a `next dev` is already running on
+    // this port from another terminal (no TZ pin), `reuseExistingServer`
+    // (deliberately true outside CI, for local-loop speed — see the file
+    // header) attaches to it instead, silently testing an SGT browser
+    // against a UTC server. A budgets/month-boundary assertion can then
+    // flake on the 1st or 31st with no obvious cause locally. CI always
+    // starts its own server (reuseExistingServer is false there), so it is
+    // unaffected.
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },

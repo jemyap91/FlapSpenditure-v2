@@ -30,10 +30,16 @@ beforeEach(() => {
 
 describe("BudgetList", () => {
   it("shows spending against its budget in figures, not only a bar", () => {
-    render(<BudgetList rows={[row({ spent_minor: 41200, budget_minor: 60000 })]} />);
+    const { container } = render(<BudgetList rows={[row({ spent_minor: 41200, budget_minor: 60000 })]} />);
     expect(screen.getByText(/SGD 412\.00/)).toBeInTheDocument();
     expect(screen.getByText(/SGD 600\.00/)).toBeInTheDocument();
     expect(screen.getByText(/69%/)).toBeInTheDocument();
+    // Positive control for the null-budget test's `.h-2` absence assertion
+    // below: without this, a rename of the bar's height class (e.g.
+    // `h-2` -> `h-1.5`) would make that selector match nothing anywhere in
+    // this file, and the absence assertion would pass vacuously forever
+    // instead of catching the drift.
+    expect(container.querySelector(".h-2")).toBeInTheDocument();
   });
 
   it("states an overrun in words, never by colour alone", () => {
@@ -60,6 +66,30 @@ describe("BudgetList", () => {
     // bar assertion (`table.querySelector("td div div")`) is the same
     // "query the container directly for a decorative node" precedent.
     expect(container.querySelector(".h-2")).not.toBeInTheDocument();
+  });
+
+  it("orders category rows per spec regardless of the order the DB returns them in", () => {
+    // Spec §5: "The wallet's overall cap, then each budgeted category, then
+    // any unbudgeted category that has spending this month." get_budget_status
+    // (0012_budgets.sql) has no ORDER BY at all, so this deliberately supplies
+    // rows in an order that satisfies NEITHER "budgeted before unbudgeted"
+    // NOR alphabetical -- an unbudgeted category first, then two budgeted
+    // categories out of alphabetical order -- so the assertion below can
+    // only pass if BudgetList itself imposes the order, not by accident of
+    // input order.
+    const { container } = render(
+      <BudgetList
+        rows={[
+          row({ category_id: "c-apple", category_name: "Apple", spent_minor: 100, budget_minor: null }),
+          row({ category_id: "c-zebra", category_name: "Zebra", spent_minor: 500, budget_minor: 5000 }),
+          row({ category_id: "c-mango", category_name: "Mango", spent_minor: 300, budget_minor: 3000 }),
+        ]}
+      />,
+    );
+    const labels = Array.from(container.querySelectorAll("li span.font-medium")).map(
+      (el) => el.textContent,
+    );
+    expect(labels).toEqual(["Mango", "Zebra", "Apple"]);
   });
 
   it("labels the wallet-wide cap distinctly from a category", () => {

@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { monthRange } from "@/lib/month-range";
-import { BudgetList } from "./BudgetList";
+import { BudgetList, MONTH_ABBREV } from "./BudgetList";
 import type { BudgetStatusRow } from "@/lib/budget-status";
 
 /**
@@ -33,13 +33,22 @@ export default async function BudgetsPage() {
   // Component here.
   if (error) throw new Error("Failed to load budgets");
 
+  // Derived from `from` (the exact window just queried) by string slicing,
+  // never a second, independent `new Date()` — an earlier task spent a
+  // whole fix round unifying exactly this bug class (see month-range.ts's
+  // own doc comment: a request straddling local midnight could otherwise
+  // label a window it did not query). `from` is always "YYYY-MM-01"
+  // (monthRange()), so index 5-6 is the month and 0-3 is the year; reuses
+  // BudgetList's own MONTH_ABBREV table rather than a second copy of it.
+  const monthLabel = `${MONTH_ABBREV[Number(from.slice(5, 7)) - 1]} ${from.slice(0, 4)}`;
+
   return (
     <div className="mx-auto max-w-2xl p-6">
       <h1 className="mb-1 text-2xl font-semibold" style={{ color: "var(--ink)" }}>
         Budgets
       </h1>
       <p className="mb-6 text-sm" style={{ color: "var(--ink-2)" }}>
-        {new Date().toLocaleString("en-US", { month: "long", year: "numeric" })} · expenses only
+        {monthLabel} · expenses only
       </p>
       <BudgetList rows={(data ?? []) as BudgetStatusRow[]} currentPeriodStart={from} />
     </div>
