@@ -1766,15 +1766,35 @@ commit;
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
-  do $$ begin
+  do $$
+  declare v_wallet uuid;
+  begin
     assert (select current_user) = 'authenticated', 'role switch did not take effect';
     assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'wrong impersonated user';
-  end $$;
-  insert into public.budgets (wallet_id, period_start, amount_minor)
-  select w.id, '2026-08-01', 100000 from public.wallets w
-   where w.owner_id = 'aaaaaaaa-0000-0000-0000-000000000001' limit 1;
-  do $$ begin
+
+    select w.id into v_wallet from public.wallets w
+     where w.owner_id = 'aaaaaaaa-0000-0000-0000-000000000001' limit 1;
+
+    insert into public.budgets (wallet_id, period_start, amount_minor)
+    values (v_wallet, '2026-08-01', 100000);
+
     assert (select count(*) from public.budgets) >= 1, 'a member cannot read their own wallet''s budget';
+
+    -- Positive control, paired with Carol's LEAK check and anon's privilege
+    -- denial immediately below: a genuine member calling get_budget_status
+    -- gets a REAL row back -- the budget she just set, at the amount she
+    -- set it to -- not merely nothing for everyone. Without this, a
+    -- get_budget_status that regressed to returning empty for every caller
+    -- would still make both denials below pass, for the wrong reason (this
+    -- file's own rule: "every denial must be paired with the corresponding
+    -- permission, so a wholly broken setup cannot pass by accident").
+    -- Scoped to v_wallet (the exact wallet just inserted into, captured
+    -- above) rather than re-deriving "alice's wallet" a second time, so
+    -- this assertion is tied to the row this block actually created.
+    assert exists (
+      select 1 from public.get_budget_status('2026-08-01','2026-08-31')
+      where wallet_id = v_wallet and category_id is null and budget_minor = 100000
+    ), 'PERMISSION BROKEN: get_budget_status did not return alice''s own overall budget';
   end $$;
 commit;
 

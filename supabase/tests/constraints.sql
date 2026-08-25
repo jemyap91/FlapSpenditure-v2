@@ -270,6 +270,75 @@ begin;
   end $$;
 commit;
 
+-- ROUND-1 FIX (Important/Minor pairing, review round 1): carry-forward.
+-- "The effective budget for a month is the most recent row at or BEFORE
+-- it" is one of the spec's four headline decisions (get_budget_status's own
+-- header comment: "one row set in September governs October onward, and
+-- raising the amount in October leaves September measured against
+-- September's row"). The SQL (order by period_start desc, filtered to
+-- period_start <= from_date, DISTINCT ON (wallet_id, category_id)) was
+-- correct by inspection but had no assertion proving it -- a refactor could
+-- silently break this user-facing promise with nothing to catch it. Placed
+-- in constraints.sql, not rls.sql: this is a functional/business-logic
+-- property of get_budget_status's query, the same category the
+-- expenses-only block immediately above already tests in this file, not an
+-- RLS access-boundary property (that suite lives in rls.sql). A fresh
+-- wallet/user fixture is used so this is not entangled with any other
+-- block's budget rows.
+insert into auth.users (id, email) values ('aaaa6666-0000-4000-8000-000000000006','b6@x.io');
+insert into public.wallets (id, owner_id, name, kind, currency_code, starting_balance_minor, color_slot, icon)
+values ('bbbb6666-0000-4000-8000-000000000006','aaaa6666-0000-4000-8000-000000000006','Carry Forward','bank','USD',0,3,'landmark');
+
+begin;
+  -- Same reason as the expenses-only block above: get_budget_status resolves
+  -- membership via auth.uid(), which needs an explicit transaction for
+  -- SET LOCAL to take effect.
+  set local request.jwt.claims = '{"sub":"aaaa6666-0000-4000-8000-000000000006"}';
+  do $$
+  declare v bigint;
+  begin
+    assert (select auth.uid()) = 'aaaa6666-0000-4000-8000-000000000006'::uuid,
+      'test setup broken: auth.uid() did not resolve to the carry-forward wallet''s owner';
+
+    -- September's own budget: 500.00.
+    insert into public.budgets (wallet_id, period_start, amount_minor)
+    values ('bbbb6666-0000-4000-8000-000000000006', '2026-09-01', 50000);
+    -- October's RAISED budget: 800.00. A different amount for a later month.
+    insert into public.budgets (wallet_id, period_start, amount_minor)
+    values ('bbbb6666-0000-4000-8000-000000000006', '2026-10-01', 80000);
+
+    -- The whole behaviour in one pair of assertions: September must still
+    -- report September's OWN amount, unaffected by October's later raise;
+    -- October must report the raised amount.
+    select budget_minor into v from public.get_budget_status('2026-09-01','2026-09-30')
+     where wallet_id = 'bbbb6666-0000-4000-8000-000000000006' and category_id is null;
+    assert v = 50000,
+      format('CARRY-FORWARD BROKEN: September must be measured against its own row (50000), got %s', v);
+
+    select budget_minor into v from public.get_budget_status('2026-10-01','2026-10-31')
+     where wallet_id = 'bbbb6666-0000-4000-8000-000000000006' and category_id is null;
+    assert v = 80000,
+      format('CARRY-FORWARD BROKEN: October must report its own raised amount (80000), got %s', v);
+
+    -- Bonus coverage for the other half of the same header comment: a month
+    -- with NO row of its own (November) must carry forward the most recent
+    -- prior row (October's 80000), not October's superseded September value
+    -- and not "no budget".
+    select budget_minor into v from public.get_budget_status('2026-11-01','2026-11-30')
+     where wallet_id = 'bbbb6666-0000-4000-8000-000000000006' and category_id is null;
+    assert v = 80000,
+      format('CARRY-FORWARD BROKEN: November (no row of its own) must carry forward October''s 80000, got %s', v);
+
+    -- And a month BEFORE any budget existed (August) must show no budget
+    -- row at all -- there is nothing at or before August for the eff CTE
+    -- to find, so this wallet must not appear in the overall-cap branch.
+    assert not exists (
+      select 1 from public.get_budget_status('2026-08-01','2026-08-31')
+       where wallet_id = 'bbbb6666-0000-4000-8000-000000000006' and category_id is null
+    ), 'CARRY-FORWARD BROKEN: a month before any budget existed must not report one';
+  end $$;
+commit;
+
 -- ADDITIONAL SCOPE (task-2 ruling, beyond the brief): budgets_category_period
 -- must reject a second budget for the same (wallet, category, month) -- the
 -- CATEGORY partial index's own bad case. Task 1's verification exercised
