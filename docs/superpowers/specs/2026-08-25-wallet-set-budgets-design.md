@@ -82,6 +82,23 @@ create table budget_wallets (
   currency drift visible instead of silent (§4).
 - Money stays `bigint` minor units. `parseFloat(x) * 100` remains banned.
 
+### "All wallets" is materialised, not dynamic
+
+Choosing "all accounts" writes **one `budget_wallets` row per matching wallet**
+at creation time. It does not mean "whatever wallets exist whenever this is
+read".
+
+The alternative — a `covers_all_wallets` flag resolved at query time — would
+auto-include wallets added later, but it cannot use §3's visibility rule: a
+dynamic set has no fixed membership to test, so such a budget would have to be
+personal to `created_by`, reintroducing the second visibility rule this design
+exists to remove.
+
+**Accepted cost: a wallet created after a budget is not covered by it.** The UI
+must therefore never label a materialised set "All accounts" once it has gone
+stale. It shows the count (`3 accounts`), and where the user has wallets in the
+budget's currency that it does not cover, says so and offers to add them.
+
 ### Uniqueness moves out of the schema
 
 `0012` enforced uniqueness with two partial indexes. A wallet *set* cannot be
