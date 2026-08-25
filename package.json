@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "TZ=Asia/Singapore vitest run",
     "test:watch": "TZ=Asia/Singapore vitest",
-    "test:e2e": "playwright test",
+    "test:e2e": "TZ=Asia/Singapore playwright test",
     "test:rls": "./scripts/test-rls.sh",
     "test:constraints": "./scripts/test-constraints.sh",
     "test:seed": "./scripts/test-seed.sh",
