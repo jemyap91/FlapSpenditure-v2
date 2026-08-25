@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import { CategoryBreakdown, type BreakdownRow } from "@/components/CategoryBreakdown";
 import { CashFlow, type FlowRow } from "@/components/CashFlow";
 import { formatMoney } from "@/lib/money";
+import { monthRange } from "@/lib/month-range";
 
 /**
  * Task 21's dashboard — the first thing a returning user sees. Replaces
@@ -10,50 +11,13 @@ import { formatMoney } from "@/lib/money";
  * why the route lives here rather than at `src/app/page.tsx` — see that
  * file's history / this task's report for the landmine it avoided).
  *
- * Current calendar month, inclusive both ends, as LOCAL calendar-date
- * strings built directly — never via `Date.toISOString()`.
- *
- * REVIEW-CAUGHT (Critical): the first version of this function built
- * `from`/`to` with `new Date(y, m, 1)` (a LOCAL midnight) and then read it
- * back with `.toISOString().slice(0, 10)` (a UTC re-interpretation). In any
- * UTC+ timezone that silently shifts the whole window backward by one day:
- * on this codebase's own dev machine (Asia/Singapore, UTC+8),
- * `new Date(2026,7,1).toISOString().slice(0,10)` is `"2026-07-31"`, not
- * `"2026-08-01"`. `occurred_on` (supabase/migrations/0003_transactions.sql)
- * is a plain `date` column with no time zone — a LOCAL calendar date — so
- * that shifted window silently counted a 31 July expense into "August" and
- * dropped a 31 August expense from it, while the header below still read
- * "August 2026". This is the exact bug class `TransactionForm.tsx`'s
- * `todayLocalDate()` doc comment exists to warn about (Task 19), on the
- * INPUT side of the same local/UTC round-trip this function was doing on
- * the OUTPUT side. Fixed by never constructing a `Date` for the boundary
- * values at all — `y`/`m`/`last` are plain numbers, and the returned
- * strings are built by direct interpolation, so there is no local-midnight-
- * to-UTC step for a UTC+ offset to corrupt.
- *
- * Residual, deliberately NOT fixed here (flagged, not solved): this still
- * matches the SERVER's calendar month/day, not necessarily the actual
- * viewer's — a request straddling local midnight in a timezone far from
- * the server's could still see a one-day-off window, and the `:93` header
- * label (`new Date().toLocaleString(...)`, also evaluated server-side) has
- * the identical exposure. A real fix needs the viewer's timezone to reach
- * the server (a client-set cookie, an `Intl`-derived offset sent up, or a
- * profile-level timezone field — none of which exist in this schema
- * today) and is out of this task's scope; see this task's report.
+ * `monthRange` (the current calendar month, inclusive both ends, as LOCAL
+ * calendar-date strings) now lives in `@/lib/month-range` — Task 3 of the
+ * budgets plan extracted it so budgets and the dashboard share one
+ * implementation rather than drifting apart. See that module's doc comment
+ * for the timezone rationale (a REVIEW-CAUGHT bug where building the range
+ * via `Date.toISOString()` silently shifted it by a day in UTC+ timezones).
  */
-function monthRange(now = new Date()) {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const y = now.getFullYear();
-  const m = now.getMonth(); // 0-11
-  const lastDay = new Date(y, m + 1, 0).getDate(); // still a Date, but only
-  // ever used for its LOCAL getDate() — never round-tripped through
-  // toISOString(), so it carries no UTC-shift risk.
-  return {
-    from: `${y}-${pad(m + 1)}-01`,
-    to: `${y}-${pad(m + 1)}-${pad(lastDay)}`,
-  };
-}
-
 export default async function DashboardPage() {
   const supabase = await createClient();
   const { from, to } = monthRange();
