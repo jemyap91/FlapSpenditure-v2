@@ -33,6 +33,17 @@
  * Extracted from the dashboard (Task 21) so budgets and the dashboard agree
  * on what "this month" means rather than keeping two copies that could
  * drift apart.
+ *
+ * TEST-SUITE NOTE: `month-range.test.ts`'s "never via toISOString" case is
+ * the only automated guard for the bug above, but it is meaningless in a
+ * UTC test runner — in UTC, local and UTC calendar dates coincide, so a
+ * reintroduced `.toISOString()` would produce the SAME string as the
+ * correct local-parts version and the test would pass either way. To keep
+ * the guard load-bearing, `package.json`'s `test` and `test:watch` scripts
+ * pin `TZ=Asia/Singapore` (UTC+8) for the whole suite — deliberately, not
+ * incidentally — so this exact regression reproduces under `npm test`
+ * (and therefore in CI, which otherwise runs `ubuntu-latest` in UTC with
+ * no TZ override) rather than only on a developer's own UTC+ machine.
  */
 export function monthRange(now = new Date()): { from: string; to: string } {
   const pad = (n: number) => String(n).padStart(2, "0");

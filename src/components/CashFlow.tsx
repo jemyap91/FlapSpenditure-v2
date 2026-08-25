@@ -4,7 +4,7 @@ import { formatMoney } from "@/lib/money";
  * One row of `get_cash_flow`'s result (supabase/migrations/0006_aggregates.sql).
  * `bucket_start` is a plain SQL `date` (`date_trunc(bucket, t.occurred_on)::date`),
  * never a timestamp, so Supabase serialises it as a bare "YYYY-MM-DD" string with
- * no time-zone component to round-trip through — unlike `page.tsx`'s `monthRange`,
+ * no time-zone component to round-trip through — unlike `@/lib/month-range`'s `monthRange`,
  * nothing here ever constructs a `Date` object from it. `in_minor` and `out_minor`
  * are BOTH already positive magnitudes — the RPC computes
  * `sum(t.amount_minor) filter (where amount_minor > 0)` and

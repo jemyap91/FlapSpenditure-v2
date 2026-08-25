@@ -39,4 +39,20 @@ describe("budgetProgress", () => {
   it("reports zero percent for a budget with no spending yet", () => {
     expect(budgetProgress(row(0, 30000)).percent).toBe(0);
   });
+
+  it("treats a non-positive budget as untracked, not a division by zero", () => {
+    // Unreachable through the real schema (the `budgets` CHECK requires
+    // amount_minor > 0), but budgetProgress is pure and public, so a zero or
+    // negative budget must not produce Infinity/NaN — it degrades to
+    // "untracked" the same as a NULL budget.
+    const zero = budgetProgress(row(9000, 0));
+    expect(zero.percent).toBeNull();
+    expect(zero.remainingMinor).toBeNull();
+    expect(zero.isOver).toBe(false);
+
+    const negative = budgetProgress(row(9000, -100));
+    expect(negative.percent).toBeNull();
+    expect(negative.remainingMinor).toBeNull();
+    expect(negative.isOver).toBe(false);
+  });
 });
