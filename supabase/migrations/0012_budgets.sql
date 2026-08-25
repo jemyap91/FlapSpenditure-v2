@@ -52,3 +52,81 @@ grant select, insert, update, delete on budgets to authenticated;
 create policy budgets_member on budgets
   for all to authenticated
   using (is_wallet_member(wallet_id)) with check (is_wallet_member(wallet_id));
+
+-- The effective budget for a month is the most recent row at or BEFORE it, so
+-- one row set in September governs October onward, and raising the amount in
+-- October leaves September measured against September's row (spec §2).
+--
+-- No wallet-ids parameter: this self-scopes via is_wallet_member, the same
+-- shape get_wallet_members/get_pending_invites use, so there is no
+-- caller-supplied filter to tamper with.
+create function get_budget_status(from_date date, to_date date)
+  returns table(
+    wallet_id uuid, wallet_name text, currency_code char(3),
+    category_id uuid, category_name text, color_slot smallint, icon text,
+    spent_minor bigint, budget_minor bigint
+  )
+  language plpgsql stable security definer set search_path = '' as $$
+begin
+  return query
+  with mine as (
+    select w.id, w.name, w.currency_code
+    from public.wallets w
+    where public.is_wallet_member(w.id) and w.archived_at is null
+  ),
+  eff as (
+    select distinct on (b.wallet_id, b.category_id)
+           b.wallet_id, b.category_id, b.amount_minor
+    from public.budgets b
+    join mine m on m.id = b.wallet_id
+    where b.period_start <= from_date
+    order by b.wallet_id, b.category_id, b.period_start desc
+  ),
+  -- EXPENSES ONLY. t.kind = 'expense' is the same filter
+  -- get_category_breakdown applies. Transfers are excluded twice over: by
+  -- kind, and because 0003's transfer_shape CHECK forces their category_id
+  -- to NULL. Income cannot leak in even if someone budgets an income
+  -- category.
+  spend as (
+    select t.wallet_id, t.category_id, sum(-t.amount_minor)::bigint as spent
+    from public.transactions t
+    join mine m on m.id = t.wallet_id
+    where t.kind = 'expense'
+      and t.deleted_at is null
+      and t.occurred_on between from_date and to_date
+    group by t.wallet_id, t.category_id
+  ),
+  overall as (
+    select s.wallet_id, sum(s.spent)::bigint as spent
+    from spend s group by s.wallet_id
+  )
+  -- The wallet's overall cap. Deliberately NOT the sum of the category rows:
+  -- it counts every expense in the wallet, including categories with no
+  -- budget of their own. That is what makes a cap useful when only some
+  -- categories are budgeted.
+  select m.id, m.name, m.currency_code,
+         null::uuid, null::text, null::smallint, null::text,
+         coalesce(o.spent, 0)::bigint, e.amount_minor
+  from mine m
+  left join overall o on o.wallet_id = m.id
+  left join eff e on e.wallet_id = m.id and e.category_id is null
+  where o.spent is not null or e.amount_minor is not null
+
+  union all
+
+  -- One row per category that has a budget OR has spending. budget_minor is
+  -- NULL (never 0) for a category with spending but no budget: "no budget"
+  -- and "budgeted at zero" must stay distinguishable, and amount_minor > 0
+  -- means a real budget is never 0 anyway.
+  select m.id, m.name, m.currency_code,
+         c.id, c.name, c.color_slot, c.icon,
+         coalesce(s.spent, 0)::bigint, e.amount_minor
+  from mine m
+  join public.categories c on c.wallet_id = m.id
+  left join spend s on s.wallet_id = m.id and s.category_id = c.id
+  left join eff e on e.wallet_id = m.id and e.category_id = c.id
+  where s.spent is not null or e.amount_minor is not null;
+end $$;
+
+revoke all on function get_budget_status(date, date) from public, anon;
+grant execute on function get_budget_status(date, date) to authenticated;

@@ -1757,3 +1757,51 @@ begin;
       format('LEAK: a non-member read a merged category breakdown for wallets she does not belong to (%s row(s))', n);
   end $$;
 commit;
+
+-- =====================================================================
+-- Budgets (0012). Alice budgets her own wallet; Bob must see nothing of it.
+-- Carol (a total stranger to this wallet, already inserted into auth.users
+-- above in the Invitations section) is the LEAK check's actor.
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select current_user) = 'authenticated', 'role switch did not take effect';
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'wrong impersonated user';
+  end $$;
+  insert into public.budgets (wallet_id, period_start, amount_minor)
+  select w.id, '2026-08-01', 100000 from public.wallets w
+   where w.owner_id = 'aaaaaaaa-0000-0000-0000-000000000001' limit 1;
+  do $$ begin
+    assert (select count(*) from public.budgets) >= 1, 'a member cannot read their own wallet''s budget';
+  end $$;
+commit;
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"cccccccc-0000-0000-0000-000000000009","email":"carol@x.io"}';
+  do $$ begin
+    assert (select current_user) = 'authenticated', 'role switch did not take effect';
+    assert (select auth.uid()) = 'cccccccc-0000-0000-0000-000000000009'::uuid, 'wrong impersonated user';
+    -- Paired with the permission proven immediately above, so a wholly
+    -- broken grants/RLS setup cannot pass this by accident.
+    assert (select count(*) from public.budgets) = 0, 'LEAK: a non-member can read another wallet''s budgets';
+    assert (select count(*) from public.get_budget_status('2026-08-01','2026-08-31')) = 0,
+      'LEAK: get_budget_status returned rows to a non-member';
+  end $$;
+commit;
+
+-- anon must be blocked at the PRIVILEGE boundary, not merely by an empty
+-- predicate -- the same barrier 0010's functions carry.
+begin;
+  set local role anon;
+  do $$ begin
+    assert (select current_user) = 'anon', 'role switch did not take effect';
+    begin
+      perform public.get_budget_status('2026-08-01','2026-08-31');
+      raise exception 'LEAK: anon could execute get_budget_status';
+    exception when insufficient_privilege then null;
+    end;
+  end $$;
+commit;

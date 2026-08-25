@@ -217,3 +217,99 @@ begin
   assert n = 1,
     format('CONSTRAINT BROKEN: a transfer leg with category_id null was not accepted (%s row(s) landed)', n);
 end $$;
+
+-- get_budget_status counts EXPENSES ONLY (spec, Global Constraints). A wallet
+-- holding one expense, one income and one transfer must report only the
+-- expense. This runs as the table owner, so it tests the FILTER, not RLS --
+-- the RLS half lives in rls.sql.
+insert into auth.users (id, email) values ('aaaa3333-0000-4000-8000-000000000003','b3@x.io');
+insert into public.wallets (id, owner_id, name, kind, currency_code, starting_balance_minor, color_slot, icon)
+values ('bbbb3333-0000-4000-8000-000000000003','aaaa3333-0000-4000-8000-000000000003','Kinds','bank','USD',0,1,'landmark'),
+       ('bbbb4444-0000-4000-8000-000000000004','aaaa3333-0000-4000-8000-000000000003','Other','bank','USD',0,2,'landmark');
+
+-- create_transfer and get_budget_status both resolve wallet membership via
+-- public.is_wallet_member(), which reads auth.uid() -- itself derived from
+-- the request.jwt.claim(s) GUCs. This file runs as the table-owning
+-- superuser and deliberately bypasses RLS (see this file's header), but
+-- that bypass is orthogonal to these two functions: they are SECURITY
+-- DEFINER and consult auth.uid() directly, not RLS, so with no JWT claims
+-- set auth.uid() is NULL and both would see zero membership regardless of
+-- the bypass. SET LOCAL requires an explicit transaction (the same rule
+-- rls.sql's header documents) so both calls below are wrapped in one.
+begin;
+  set local request.jwt.claims = '{"sub":"aaaa3333-0000-4000-8000-000000000003"}';
+  do $$
+  declare exp_cat uuid; inc_cat uuid; total bigint;
+  begin
+    assert (select auth.uid()) = 'aaaa3333-0000-4000-8000-000000000003'::uuid,
+      'test setup broken: auth.uid() did not resolve to the wallet owner';
+
+    select id into exp_cat from public.categories
+     where wallet_id = 'bbbb3333-0000-4000-8000-000000000003' and kind = 'expense' limit 1;
+    select id into inc_cat from public.categories
+     where wallet_id = 'bbbb3333-0000-4000-8000-000000000003' and kind = 'income' limit 1;
+
+    insert into public.transactions (wallet_id, kind, amount_minor, currency_code, category_id, occurred_on)
+    values ('bbbb3333-0000-4000-8000-000000000003','expense',-5000,'USD',exp_cat,'2026-08-10'),
+           ('bbbb3333-0000-4000-8000-000000000003','income',  90000,'USD',inc_cat,'2026-08-11');
+
+    -- A real transfer pair, so the transfer branch is genuinely exercised
+    -- rather than assumed absent.
+    perform public.create_transfer(
+      'bbbb3333-0000-4000-8000-000000000003',
+      'bbbb4444-0000-4000-8000-000000000004',
+      2500, 2500, '2026-08-12', null);
+
+    select coalesce(sum(spent_minor), 0) into total
+    from public.get_budget_status('2026-08-01','2026-08-31')
+    where wallet_id = 'bbbb3333-0000-4000-8000-000000000003' and category_id is not null;
+
+    if total <> 5000 then
+      raise exception 'expenses-only broken: expected 5000, got %', total;
+    end if;
+  end $$;
+commit;
+
+-- ADDITIONAL SCOPE (task-2 ruling, beyond the brief): budgets_category_period
+-- must reject a second budget for the same (wallet, category, month) -- the
+-- CATEGORY partial index's own bad case. Task 1's verification exercised
+-- budgets_overall_period (the wallet-wide cap) but never this one; a
+-- reviewer confirmed ad-hoc that budgets_category_period does reject a
+-- duplicate, but left no permanent guard. This is that guard. Reuses wallet
+-- 'bbbb3333-...-003' (Kinds) from the expenses-only block above, which
+-- already has a seeded expense category to budget against.
+do $$
+declare
+  exp_cat uuid;
+  v_sqlstate   text;
+  v_constraint text;
+begin
+  select id into exp_cat from public.categories
+   where wallet_id = 'bbbb3333-0000-4000-8000-000000000003' and kind = 'expense' limit 1;
+  assert exp_cat is not null, 'test setup broken: wallet Kinds has no seeded expense category';
+
+  -- ACCEPT: the first budget for this (wallet, category, month) must succeed.
+  insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
+  values ('bbbb3333-0000-4000-8000-000000000003', exp_cat, '2026-08-01', 10000);
+
+  -- REJECT: a second budget for the SAME (wallet, category, month) -> budgets_category_period.
+  begin
+    insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
+    values ('bbbb3333-0000-4000-8000-000000000003', exp_cat, '2026-08-01', 20000);
+    raise exception 'CONSTRAINT BROKEN: budgets_category_period did not reject a second budget for the same (wallet, category, month)';
+  exception
+    when unique_violation then
+      get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+      assert v_sqlstate = '23505' and v_constraint = 'budgets_category_period',
+        format('expected unique_violation (23505) from budgets_category_period, got SQLSTATE %s (constraint %s): %s',
+               v_sqlstate, v_constraint, sqlerrm);
+  end;
+
+  -- POSITIVE control, paired with the denial above: a DIFFERENT month for
+  -- the same wallet+category is unaffected by the index and must succeed.
+  insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
+  values ('bbbb3333-0000-4000-8000-000000000003', exp_cat, '2026-09-01', 10000);
+  assert (select count(*) from public.budgets
+            where wallet_id = 'bbbb3333-0000-4000-8000-000000000003' and category_id = exp_cat) = 2,
+    'CONSTRAINT BROKEN: budgets_category_period rejected a legitimate different-month budget for the same wallet+category';
+end $$;
