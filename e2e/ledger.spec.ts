@@ -320,7 +320,7 @@ test.describe("accessibility", () => {
   test("signed-in pages have no accessibility violations", async ({ page }) => {
     await signUpAndOnboard(page);
 
-    for (const path of ["/", "/wallets", "/transactions", "/transactions/new", "/categories"]) {
+    for (const path of ["/", "/wallets", "/transactions", "/transactions/new", "/budgets", "/categories"]) {
       await page.goto(path);
       await expectNoViolations(page, path);
     }

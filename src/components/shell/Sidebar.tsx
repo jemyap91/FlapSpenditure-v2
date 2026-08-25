@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Wallet, TrendingUp, Tags, LogOut, Plus } from "lucide-react";
+import { Home, Wallet, TrendingUp, Tags, LogOut, Plus, Target } from "lucide-react";
 import { signOut } from "@/server/actions/auth";
 import type { ThemePref } from "@/lib/supabase/current-user";
 import { ThemeToggle } from "./ThemeToggle";
@@ -20,6 +20,7 @@ const NAV = [
   { href: "/wallets", label: "Wallets", Icon: Wallet },
   { href: "/transactions/new", label: "Add", Icon: Plus },
   { href: "/transactions", label: "Transactions", Icon: TrendingUp },
+  { href: "/budgets", label: "Budgets", Icon: Target },
   { href: "/categories", label: "Categories", Icon: Tags },
 ];
 

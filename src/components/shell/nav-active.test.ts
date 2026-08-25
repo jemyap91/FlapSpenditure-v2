@@ -5,8 +5,8 @@ import { isActive } from "./nav-active";
 // BOTH navs, so the prefix-collision case below (a longer href winning over
 // the shorter one it contains) is exercised for the sidebar too, not just
 // the tab bar.
-const SIDEBAR_HREFS = ["/", "/wallets", "/transactions/new", "/transactions", "/categories"];
-const TABBAR_HREFS = ["/", "/wallets", "/transactions/new", "/transactions", "/categories"];
+const SIDEBAR_HREFS = ["/", "/wallets", "/transactions/new", "/transactions", "/budgets", "/categories"];
+const TABBAR_HREFS = ["/", "/wallets", "/transactions/new", "/transactions", "/budgets", "/categories"];
 
 describe("isActive", () => {
   it("matches the home href only on an exact match", () => {
