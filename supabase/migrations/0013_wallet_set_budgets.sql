@@ -65,7 +65,11 @@ alter table budget_wallets enable row level security;
 -- HAZARD: `not exists` over zero rows is TRUE, so a budget with NO wallets
 -- would be visible to everyone. set_budget (Task 3) refuses to create one and
 -- get_budget_status (Task 2) ignores any that exists. This is the single
--- fails-open case in an otherwise fails-closed design; rls.sql tests it.
+-- fails-open case in an otherwise fails-closed design. UNTESTED as of this
+-- task: rls.sql does not yet assert the empty-set case (grep confirms no
+-- such assertion exists), and the fix round that restored budget coverage
+-- here did not add one either -- a later task's job, not a claim of
+-- present coverage.
 --
 -- SECURITY DEFINER wrapper is REQUIRED, not stylistic, and for the exact
 -- reason 0004_rls.sql's opening comment gives for is_wallet_member: Postgres
@@ -85,6 +89,21 @@ alter table budget_wallets enable row level security;
 -- is_wallet_member relies on), so the inner select sees every
 -- budget_wallets row regardless of the caller's membership, and the
 -- fails-closed intent below is what actually executes.
+--
+-- ACCEPTED RISK, not fixed here: this function is `not exists`, so it fails
+-- OPEN, not closed, if it ever stops actually bypassing budget_wallets' RLS
+-- -- if it is re-owned to a non-superuser role, or if `alter table
+-- budget_wallets force row level security` is ever added (which applies RLS
+-- even to the table owner). Under either degradation the inner scan would
+-- see zero rows, `not exists` returns TRUE, and budget_visible silently
+-- returns true for every budget -- this is C1 all over again, and it would
+-- raise no error. Contrast is_wallet_member (0004), which is `exists`: the
+-- identical degradation there makes it see zero rows and return FALSE --
+-- fails CLOSED. That asymmetry is unavoidable here, not an oversight: the
+-- empty-set HAZARD above requires `not exists`, so the fail-open direction
+-- cannot be designed away without closing a hazard this task is explicitly
+-- not scoped to close. Documented so the next reader relies on a fence,
+-- not a guess.
 create function budget_visible(b uuid) returns boolean
   language sql stable security definer set search_path = '' as $$
   select not exists (

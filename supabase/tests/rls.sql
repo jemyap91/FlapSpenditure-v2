@@ -1914,3 +1914,82 @@ begin;
       'PERMISSION BROKEN: budget_wallets row disappeared despite DELETE being denied';
   end $$;
 commit;
+
+-- =====================================================================
+-- Budgets (0013): the actual multi-wallet semantics (re-review, item 1).
+-- Every budget test above uses a ONE-wallet set, so the rule this whole
+-- redesign exists to implement -- "visible to exactly those who are
+-- members of EVERY wallet in the set" -- was untested: the C1 pair proves
+-- a boundary exists, but a much simpler (and wrong) `created_by =
+-- auth.uid()` policy, or one checking ANY membership instead of EVERY,
+-- would have passed it just as happily. This is the test that
+-- discriminates the two.
+--
+-- Alice creates a SECOND wallet, deliberately a FRESH one rather than
+-- reusing an earlier wallet from this 1900+ line file: bob's membership
+-- elsewhere by this point depends on the Invitations section's
+-- `... where w.owner_id = 'aaaaaaaa...' limit 1` (unordered), which could
+-- have landed on any of alice's several wallets -- including ones an
+-- earlier comment, written before that section ran, claimed he wasn't in.
+-- A fresh wallet's membership history is exactly one row: the
+-- owner-membership trigger (0002) adds alice, and nothing else ever
+-- touches it.
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+
+    insert into public.wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+      values ('d0000000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+              'Alice Solo', 'card', 'USD', 3, 'credit-card');
+    assert is_wallet_member('d0000000-0000-0000-0000-000000000001'::uuid) = true,
+      'test setup broken: alice should be an owner-member of her own new wallet';
+
+    -- A budget whose set will span BOTH wallets alice is in.
+    insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+    values ('b0000000-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001',
+            'USD', null, '2026-10-01', 75000);
+  end $$;
+commit;
+
+-- Seed the two-wallet set as the table-owning superuser, for the same
+-- reason the C1 fixture above does: budget_wallets grants no INSERT to
+-- authenticated (I2), and set_budget -- the intended path -- is Task 3's
+-- job. This is setup, not the thing under test.
+insert into public.budget_wallets (budget_id, wallet_id) values
+  ('b0000000-0000-0000-0000-000000000003', 'cccccccc-0000-0000-0000-000000000003'),
+  ('b0000000-0000-0000-0000-000000000003', 'd0000000-0000-0000-0000-000000000001');
+
+-- Positive control: alice is a member of BOTH wallets in the set, so she
+-- sees exactly one row -- paired with bob's denial immediately below.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+    assert (select count(*) from public.budgets where id = 'b0000000-0000-0000-0000-000000000003') = 1,
+      'PERMISSION BROKEN: a member of every wallet in a multi-wallet set cannot read the budget';
+  end $$;
+commit;
+
+-- THE core semantics assertion. Bob is a member of exactly ONE of the
+-- set's two wallets (cccccccc-003, made a genuine member in the
+-- membership section above and never revoked) but not the other
+-- (d0000000-...-001, created moments ago and never shared with him).
+-- "Visible to members of EVERY wallet" must deny him -- a policy that
+-- only checked ANY membership would let him through instead.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+    assert is_wallet_member('cccccccc-0000-0000-0000-000000000003'::uuid) = true,
+      'test setup broken: bob should still be a member of cccccccc-003';
+    assert is_wallet_member('d0000000-0000-0000-0000-000000000001'::uuid) = false,
+      'test setup broken: bob should not be a member of alice''s new solo wallet';
+    assert (select count(*) from public.budgets where id = 'b0000000-0000-0000-0000-000000000003') = 0,
+      'LEAK: a member of only ONE wallet in a multi-wallet budget set can read it -- the policy is checking ANY membership, not EVERY';
+  end $$;
+commit;
