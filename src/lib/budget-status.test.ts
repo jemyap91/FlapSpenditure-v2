@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { budgetProgress } from "./budget-status";
+import { budgetProgress, scopeLabel } from "./budget-status";
 
 const row = (spent: number, budget: number | null) => ({
   spent_minor: spent,
@@ -54,5 +54,34 @@ describe("budgetProgress", () => {
     expect(negative.percent).toBeNull();
     expect(negative.remainingMinor).toBeNull();
     expect(negative.isOver).toBe(false);
+  });
+});
+
+describe("scopeLabel", () => {
+  it("names a single account outright", () => {
+    expect(scopeLabel(["Everyday"], 1, 3)).toBe("Everyday");
+  });
+
+  it("joins two accounts, because the names still fit", () => {
+    expect(scopeLabel(["Everyday", "Savings"], 2, 3)).toBe("Everyday + Savings");
+  });
+
+  it("counts beyond two rather than listing them", () => {
+    expect(scopeLabel(["A", "B", "C"], 3, 5)).toBe("3 accounts");
+  });
+
+  it("says All accounts only when it really covers all of them", () => {
+    expect(scopeLabel(["A", "B", "C"], 3, 3)).toBe("All accounts");
+  });
+
+  it("does NOT say All accounts once a new account exists outside it", () => {
+    // The set is materialised at creation (spec §1), so a wallet added later
+    // is not covered. Claiming "All accounts" here would be a false statement,
+    // not merely a stale one.
+    expect(scopeLabel(["A", "B", "C"], 3, 4)).toBe("3 accounts");
+  });
+
+  it("falls back for an unbudgeted row, which has no scope", () => {
+    expect(scopeLabel(null, null, 3)).toBe("");
   });
 });

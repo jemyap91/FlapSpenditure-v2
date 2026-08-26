@@ -1,55 +1,52 @@
 import type { Database } from "@/lib/database.types";
 
 /**
- * `get_budget_status`'s (0012) generated row type, narrowed to reflect
+ * `get_budget_status`'s (0013) generated row type, narrowed to reflect
  * nullability its `returns table(...)` signature actually has but
  * Supabase's codegen cannot express. `returns table` columns are typed
- * from the declared column type alone (e.g. `category_id uuid`), with no
- * way to see that a specific SELECT branch inside the function body emits
- * NULL for it -- the same class of gap `set_budget`'s `p_category_id`
- * argument has (src/server/actions/budgets.ts), just on the return side
- * instead of the argument side.
+ * from the declared column type alone (e.g. `budget_id uuid`), with no way
+ * to see that a specific SELECT branch inside the function body emits NULL
+ * for it -- the same class of gap `set_budget`'s `p_category_id` argument
+ * has (src/server/actions/budgets.ts), just on the return side instead of
+ * the argument side.
  *
- * Concretely, the function's own SQL (0012_budgets.sql) is NULL for:
- * - `category_id`, `category_name`, `color_slot`, `icon` -- the overall-cap
- *   row (`null::uuid, null::text, null::smallint, null::text`), which
- *   represents the wallet's total cap rather than any one category.
- * - `budget_minor` -- any row for a category (or the overall cap) that has
- *   spending but no budget set for it: "no budget" is NULL, deliberately
- *   never 0, so it stays distinguishable from a budget of zero (which the
- *   `amount_minor > 0` CHECK on `budgets` makes impossible anyway).
- * - `budget_id`, `budget_period_start` -- the underlying `budgets` row this
- *   figure came from (added in 0012's fix round, so the /budgets UI can call
- *   `removeBudget(id)` and disclose which month a budget was actually SET
- *   in, rather than the UI re-deriving that id via a second, separate query
- *   over `budgets` that could drift out of sync with this function's own
- *   "most recent period_start at or before the queried month" rule). Both
- *   NULL together with `budget_minor` for exactly the same reason:
- *   no effective budget exists for that row.
+ * Concretely, the function's own SQL (0013_wallet_set_budgets.sql, final
+ * `select ... union all select ...`) is NULL for:
+ * - `budget_id`, `wallet_names`, `wallet_count`, `budget_minor`,
+ *   `budget_period_start` -- the UNCOVERED-spending branch (`union all`'s
+ *   second arm: `null::uuid, ..., null::text[], null::int, ..., null::bigint,
+ *   null::date`), which reports spending in a category no visible budget
+ *   covers for that wallet. There is no budget row backing it, so nothing
+ *   about the budget -- its id, its wallet set, its amount, or the period it
+ *   was set in -- exists to report.
+ * - `category_key`, `category_label` -- the OVERALL-CAP row (a budget with
+ *   a NULL `category_key`, representing a wallet set's total cap rather
+ *   than any one category). The main branch's `coalesce((select min(name)
+ *   from categories where lower(btrim(name)) = e.category_key), ...)`
+ *   can't resolve a label when the key itself is NULL, so both stay NULL
+ *   together.
  *
  * Deliberately NOT a hand-edit of `database.types.ts` (generated file,
  * regenerated wholesale by `npm run db:types` -- a hand-edit there would
- * just be silently discarded on the next run). This narrowing type is
- * unused until the /budgets UI (a later task) imports it; that is
- * intended, not dead code.
+ * just be silently discarded on the next run).
  */
 type GeneratedBudgetStatusRow = Database["public"]["Functions"]["get_budget_status"]["Returns"][number];
 export type BudgetStatusRow = Omit<
   GeneratedBudgetStatusRow,
-  | "category_id"
-  | "category_name"
-  | "color_slot"
-  | "icon"
-  | "budget_minor"
   | "budget_id"
+  | "category_key"
+  | "category_label"
+  | "wallet_names"
+  | "wallet_count"
+  | "budget_minor"
   | "budget_period_start"
 > & {
-  category_id: string | null;
-  category_name: string | null;
-  color_slot: number | null;
-  icon: string | null;
-  budget_minor: number | null;
   budget_id: string | null;
+  category_key: string | null;
+  category_label: string | null;
+  wallet_names: string[] | null;
+  wallet_count: number | null;
+  budget_minor: number | null;
   budget_period_start: string | null;
 };
 
@@ -90,4 +87,27 @@ export function budgetProgress(row: BudgetRow): {
     // Strictly greater: spending exactly the budget is 100%, not an overrun.
     isOver: spentMinor > budgetMinor,
   };
+}
+
+/**
+ * How a budget's wallet set reads on screen. "All accounts" is claimed ONLY
+ * when the set covers every wallet in that currency — a set is materialised
+ * when the budget is created (spec §1), so a wallet created afterwards is not
+ * covered, and calling that "All accounts" would state something false rather
+ * than merely stale.
+ *
+ * Pure function of its three arguments -- deliberately does not reach for
+ * the row so callers can pass whatever they already have on hand (e.g. a
+ * currency-scoped wallet count computed once for a whole list).
+ */
+export function scopeLabel(
+  names: string[] | null,
+  count: number | null,
+  totalInCurrency: number,
+): string {
+  if (!names || !count) return "";
+  if (count === totalInCurrency) return "All accounts";
+  if (count === 1) return names[0]!;
+  if (count === 2) return `${names[0]} + ${names[1]}`;
+  return `${count} accounts`;
 }
