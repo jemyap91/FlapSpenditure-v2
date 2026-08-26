@@ -479,6 +479,15 @@ export type Database = {
         }[]
       }
       is_wallet_member: { Args: { w: string }; Returns: boolean }
+      set_budget: {
+        Args: {
+          p_amount_minor: number
+          p_category_key: string
+          p_period_start: string
+          p_wallet_ids: string[]
+        }
+        Returns: string
+      }
     }
     Enums: {
       category_kind: "expense" | "income"

@@ -368,3 +368,151 @@ begin
       format('wrong constraint fired (empty string): %s', v_constraint);
   end;
 end $$;
+
+-- set_budget (0013, Task 3). This file runs entirely as the table-owning
+-- superuser (see the header comment), so auth.uid() -- which set_budget
+-- consults for membership (via is_wallet_member) and for created_by -- would
+-- otherwise be NULL throughout. Wrapped in its own begin/set local
+-- request.jwt.claims/commit, exactly as the controller addendum for this
+-- task requires, so auth.uid() resolves to a real user for the whole block.
+--
+-- This is NOT a substitute for supabase/tests/rls.sql's coverage of the same
+-- function: set_budget is SECURITY DEFINER and bypasses RLS entirely, so
+-- impersonation here only fixes auth.uid() -- it does not exercise the RLS
+-- boundary at all (there isn't one left to exercise for this function). The
+-- membership/currency/empty-set guards below are the function's OWN checks,
+-- which is exactly why this file -- which tests invariants directly, not
+-- through RLS -- is where they belong; rls.sql separately proves a
+-- REAL member/non-member distinction using genuine wallet_members rows and
+-- impersonated callers.
+--
+-- Fixtures: a second user (Carol) and three wallets -- two of Alice's
+-- sharing one currency (for the positive/duplicate/overlap cases) and one
+-- more of Alice's in a different currency (for the mixed-currency REJECT),
+-- plus one wallet Alice does NOT belong to (Carol's) for the membership
+-- REJECT.
+insert into auth.users (id, email) values
+  ('bbbbbbbb-0000-0000-0000-0000000000c1', 'carol@x.io');
+insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon) values
+  ('cccccccc-0000-0000-0000-0000000000b1', 'aaaaaaaa-0000-0000-0000-000000000001', 'SB Wallet A', 'bank', 'SGD', 1, 'landmark'),
+  ('cccccccc-0000-0000-0000-0000000000b2', 'aaaaaaaa-0000-0000-0000-000000000001', 'SB Wallet B', 'bank', 'SGD', 2, 'wallet'),
+  ('cccccccc-0000-0000-0000-0000000000b3', 'aaaaaaaa-0000-0000-0000-000000000001', 'SB Wallet EUR', 'bank', 'EUR', 3, 'euro'),
+  ('cccccccc-0000-0000-0000-0000000000b4', 'bbbbbbbb-0000-0000-0000-0000000000c1', 'Carol Wallet', 'bank', 'SGD', 1, 'landmark');
+
+begin;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid,
+      'impersonation failed: auth.uid() did not resolve to alice';
+  end $$;
+
+  -- REJECT 1, 2, 3 below each use a nested begin/exception, NOT the
+  -- "raise exception ... ; exception when others" idiom this file's earlier
+  -- CHECK-constraint blocks use: those work because `when check_violation`
+  -- (a SPECIFIC condition) does not catch the deliberately-raised
+  -- top-level "CONSTRAINT BROKEN" (default SQLSTATE P0001), so an
+  -- unexpectedly-successful statement propagates and aborts the script
+  -- loudly. set_budget's guards all raise plain `raise exception` with no
+  -- distinct SQLSTATE, so `when others` here WOULD also catch a
+  -- deliberately-raised "GUARD BROKEN" and mask it behind a merely-wrong
+  -- error-message assertion instead of the intended one. Structuring each
+  -- block as an inner begin/exception around ONLY the call, setting a flag
+  -- on success, and asserting the flag is still false afterward avoids that
+  -- trap entirely.
+
+  -- REJECT 1: an empty wallet array must be refused (the fails-open case
+  -- this whole branch has been fighting -- see the guard's own comment in
+  -- 0013).
+  do $$
+  declare v_ok boolean := false;
+  begin
+    begin
+      perform set_budget('groceries', '2026-11-01', 50000, array[]::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'a budget must cover at least one account',
+        format('wrong error for empty array: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: set_budget accepted an empty wallet array';
+  end $$;
+
+  -- REJECT 2: a set mixing two currencies must be refused.
+  do $$
+  declare v_ok boolean := false;
+  begin
+    begin
+      perform set_budget('groceries', '2026-11-01', 50000,
+        array['cccccccc-0000-0000-0000-0000000000b1', 'cccccccc-0000-0000-0000-0000000000b3']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'every account in a budget must use the same currency',
+        format('wrong error for mixed currency: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: set_budget accepted a mixed-currency wallet set';
+  end $$;
+
+  -- REJECT 3: a set containing a wallet the caller is not a member of must
+  -- be refused. cccccccc-...-b4 is Carol's; alice has no membership row on
+  -- it at all. This is the guard that matters most (the controller
+  -- addendum's own words): the only thing standing between a caller and
+  -- every wallet in the database now that set_budget runs with owner rights.
+  do $$
+  declare v_ok boolean := false;
+  begin
+    begin
+      perform set_budget('groceries', '2026-11-01', 50000,
+        array['cccccccc-0000-0000-0000-0000000000b1', 'cccccccc-0000-0000-0000-0000000000b4']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'not a member of every account in that set',
+        format('wrong error for non-member wallet: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: set_budget accepted a wallet alice is not a member of';
+  end $$;
+
+  -- ACCEPT + REJECT 4: calling set_budget twice for the SAME category, set
+  -- and month must leave exactly ONE row, carrying the SECOND amount. Row
+  -- count is asserted, not only the amount, since "updated" and "inserted a
+  -- duplicate" read identically if only the amount is checked.
+  do $$
+  declare v_id1 uuid; v_id2 uuid; v_rows int; v_amount bigint;
+  begin
+    v_id1 := set_budget('dining', '2026-12-01', 30000,
+      array['cccccccc-0000-0000-0000-0000000000b1', 'cccccccc-0000-0000-0000-0000000000b2']::uuid[]);
+    v_id2 := set_budget('dining', '2026-12-01', 45000,
+      array['cccccccc-0000-0000-0000-0000000000b1', 'cccccccc-0000-0000-0000-0000000000b2']::uuid[]);
+
+    assert v_id1 = v_id2,
+      format('IDEMPOTENCY BROKEN: second call for the same set/category/month returned a different id (%s vs %s)', v_id1, v_id2);
+
+    select count(*) into v_rows from public.budgets
+      where category_key = 'dining' and period_start = '2026-12-01'
+        and id = v_id1;
+    assert v_rows = 1,
+      format('IDEMPOTENCY BROKEN: expected exactly 1 row for the repeated set/category/month, found %s', v_rows);
+
+    select amount_minor into v_amount from public.budgets where id = v_id1;
+    assert v_amount = 45000,
+      format('IDEMPOTENCY BROKEN: row should carry the second call''s amount (45000), found %s', v_amount);
+  end $$;
+
+  -- ACCEPT 5: the same category and month over a DIFFERENT set creates a
+  -- SECOND budget -- overlapping budgets are a supported feature, not a
+  -- collision.
+  do $$
+  declare v_id1 uuid; v_id2 uuid; v_rows int;
+  begin
+    v_id1 := set_budget('transport', '2026-12-01', 10000,
+      array['cccccccc-0000-0000-0000-0000000000b1']::uuid[]);
+    v_id2 := set_budget('transport', '2026-12-01', 20000,
+      array['cccccccc-0000-0000-0000-0000000000b2']::uuid[]);
+
+    assert v_id1 <> v_id2,
+      'OVERLAP BROKEN: same category/month over a DIFFERENT wallet set collapsed onto the same budget id';
+
+    select count(*) into v_rows from public.budgets
+      where category_key = 'transport' and period_start = '2026-12-01';
+    assert v_rows = 2,
+      format('OVERLAP BROKEN: expected 2 distinct budgets for the same category/month over different sets, found %s', v_rows);
+  end $$;
+commit;

@@ -371,3 +371,130 @@ end $$;
 
 revoke all on function get_budget_status(date, date) from public, anon;
 grant execute on function get_budget_status(date, date) to authenticated;
+
+-- Creating or updating a budget is multi-row (a budgets row plus one
+-- budget_wallets row per wallet) and carries invariants a client cannot be
+-- trusted with, so it lives here, as the brief for this task already argued.
+--
+-- SECURITY DEFINER, NOT `security invoker` as an earlier draft of this
+-- function (and 0012_budgets.sql's own set_budget, for the single-wallet
+-- shape that preceded this one) had it. That precedent does not carry over:
+-- folding the non-empty-set test into budget_visible (above) makes
+-- `budgets_visible`'s WITH CHECK (`budget_visible(id)`) unsatisfiable for
+-- EVERY insert, no matter who runs it or what the row contains -- at the
+-- instant a budgets row is inserted it has zero budget_wallets children by
+-- construction (they FK to a budget_id that must already exist), so
+-- budget_visible's first conjunct is false unconditionally. There is no
+-- ordering of the two inserts that fixes this: the child cannot precede the
+-- parent. `authenticated` also holds no INSERT on budgets and no INSERT or
+-- DELETE on budget_wallets any more (both revoked earlier in this file) --
+-- an invoker-rights function would have neither the privilege nor a
+-- satisfiable policy to create anything. This function therefore runs with
+-- OWNER RIGHTS, bypasses RLS entirely on both tables, and is now the ONLY
+-- path by which a budget can be created or its wallet set composed.
+--
+-- Because it is DEFINER, its own guards below are the WHOLE security
+-- boundary, not a friendlier error message in front of one RLS already
+-- provides (contrast create_transfer, 0005, which is genuinely invoker and
+-- says so). RLS will not catch a caller submitting a wallet she does not
+-- belong to; nothing else will either. Every guard is therefore an explicit,
+-- verified check, not a courtesy.
+--
+-- search_path = '' with every name schema-qualified, for the same
+-- pg_temp-hijack reason 0004's is_wallet_member gives, and more sharply here:
+-- this function writes, as the table owner, to two tables a caller has no
+-- direct grant to touch.
+create function set_budget(
+  p_category_key text, p_period_start date, p_amount_minor bigint, p_wallet_ids uuid[]
+) returns uuid
+  language plpgsql security definer set search_path = '' as $$
+declare
+  v_currency char(3);
+  v_count int;
+  v_existing uuid;
+  v_key text;
+  v_id uuid;
+begin
+  if p_period_start is null or p_amount_minor is null or p_wallet_ids is null then
+    raise exception 'period, amount and accounts must not be null';
+  end if;
+  if p_amount_minor <= 0 then
+    raise exception 'budget amount must be positive';
+  end if;
+  -- The fails-open case: a budget with no wallets satisfies budget_visible's
+  -- non-empty test for NO ONE (it now fails closed -- see 0013's HAZARD
+  -- comment above budget_visible), so a wallet-less budget this function
+  -- created would be invisible to its own creator forever, with no path to
+  -- recover it. Refused here rather than left to rot silently.
+  if array_length(p_wallet_ids, 1) is null then
+    raise exception 'a budget must cover at least one account';
+  end if;
+
+  -- EVERY wallet in the set, not any: budget_visible's second conjunct
+  -- (documented above as fails-open under RLS degradation) is exactly the
+  -- property this guard exists to enforce unconditionally, since this
+  -- function does not rely on that RLS conjunct at all -- it runs before
+  -- RLS is ever consulted. A caller who shares only some of the submitted
+  -- wallets must not be able to plant a budget over the rest.
+  select count(*) into v_count from public.wallets w
+   where w.id = any(p_wallet_ids) and public.is_wallet_member(w.id);
+  if v_count <> array_length(p_wallet_ids, 1) then
+    raise exception 'not a member of every account in that set';
+  end if;
+
+  select count(distinct w.currency_code) into v_count from public.wallets w
+   where w.id = any(p_wallet_ids);
+  if v_count <> 1 then
+    raise exception 'every account in a budget must use the same currency';
+  end if;
+  select distinct w.currency_code into v_currency from public.wallets w
+   where w.id = any(p_wallet_ids);
+
+  v_key := (select string_agg(x::text, ',' order by x) from unnest(p_wallet_ids) x);
+
+  -- Uniqueness lives here rather than in an index: a wallet SET cannot be a
+  -- unique index key without a trigger-maintained canonical column, and this
+  -- schema deliberately has no ON CONFLICT target for that reason -- do not
+  -- add one. A duplicate is no longer catastrophic (overlapping budgets over
+  -- DIFFERENT sets are a supported feature, so it would render as two
+  -- identical rows rather than a corrupted figure) but calling this function
+  -- twice for the SAME set, category and month must still read as an EDIT,
+  -- not a second budget, so read-modify-write against the canonical set_key
+  -- below.
+  select b.id into v_existing
+    from public.budgets b
+   where b.period_start = p_period_start
+     and b.category_key is not distinct from p_category_key
+     and (select string_agg(bw.wallet_id::text, ',' order by bw.wallet_id)
+            from public.budget_wallets bw where bw.budget_id = b.id) = v_key
+   limit 1;
+
+  if v_existing is not null then
+    -- Safe to update unconditionally: v_existing was found by matching
+    -- v_key, the canonical form of p_wallet_ids, so v_existing's wallet set
+    -- IS p_wallet_ids -- the exact set membership was just verified over,
+    -- above. There is no way to reach this branch with a set the caller is
+    -- not a full member of.
+    update public.budgets set amount_minor = p_amount_minor where id = v_existing;
+    return v_existing;
+  end if;
+
+  -- created_by = auth.uid(), the CALLER -- not a parameter, so there is
+  -- nothing here for a caller to forge. SECURITY DEFINER changes the
+  -- executing ROLE for privilege checks, not the JWT session claims:
+  -- auth.uid() still reads request.jwt.claims from the calling session, so
+  -- this identifies the person who invoked the RPC, exactly as it would
+  -- under security invoker. Verified in supabase/tests/rls.sql, not merely
+  -- asserted here.
+  insert into public.budgets (created_by, currency_code, category_key, period_start, amount_minor)
+  values (auth.uid(), v_currency, p_category_key, p_period_start, p_amount_minor)
+  returning id into v_id;
+
+  insert into public.budget_wallets (budget_id, wallet_id)
+  select v_id, x from unnest(p_wallet_ids) x;
+
+  return v_id;
+end $$;
+
+revoke all on function set_budget(text, date, bigint, uuid[]) from public, anon;
+grant execute on function set_budget(text, date, bigint, uuid[]) to authenticated;

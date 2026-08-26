@@ -2608,3 +2608,209 @@ begin;
       format('wrong uncovered category_label: %s', uncov_label);
   end $$;
 commit;
+
+-- =====================================================================
+-- Budgets (0013): set_budget (Task 3). set_budget is SECURITY DEFINER and
+-- bypasses RLS on budgets/budget_wallets entirely, so -- unlike every other
+-- section in this file -- impersonation here is NOT what stands between a
+-- caller and someone else's data. The function's OWN guards are. This
+-- section proves three things supabase/tests/constraints.sql cannot, since
+-- that file runs as the table-owning superuser throughout:
+--   1. the EXECUTE grant is actually scoped to `authenticated` (revoked from
+--      anon/public) -- a superuser session bypasses function ACLs entirely,
+--      so only a real role check catches a missing/wrong grant;
+--   2. the membership guard holds against REAL wallet_members rows, added
+--      through the ordinary owner-invites-member path, not rows inserted at
+--      superuser scope for convenience;
+--   3. the created_by = auth.uid() claim -- SECURITY DEFINER changes the
+--      executing ROLE, not request.jwt.claims, but that is asserted here
+--      against a genuinely impersonated session rather than taken on faith;
+--   4. a budget set_budget creates is then actually visible, through
+--      ordinary RLS, to the caller who created it -- closing the loop this
+--      function's own comment opens ("bypasses budgets_visible entirely by
+--      design" on write; read-back still goes through it).
+-- The empty-array/mixed-currency/duplicate/overlap cases are already
+-- covered in detail in constraints.sql (which exercises the function's own
+-- logic directly); they are not re-proven here except where a real
+-- impersonated caller adds something a superuser session cannot.
+--
+-- Fixtures: two of Alice's wallets sharing SGD, the second one genuinely
+-- shared with Bob (owner-invites-member, not a superuser insert); a third,
+-- Bob's own, that Alice never touches. 5e7b0000-... is a prefix unused
+-- anywhere else in this file.
+-- =====================================================================
+
+do $$ begin
+  assert has_function_privilege('authenticated', 'public.set_budget(text,date,bigint,uuid[])', 'EXECUTE'),
+    'GRANT BROKEN: authenticated must be able to EXECUTE set_budget';
+  assert not has_function_privilege('anon', 'public.set_budget(text,date,bigint,uuid[])', 'EXECUTE'),
+    'LEAK: anon must not be able to EXECUTE set_budget';
+  assert not has_function_privilege('public', 'public.set_budget(text,date,bigint,uuid[])', 'EXECUTE'),
+    'LEAK: public must not be able to EXECUTE set_budget';
+end $$;
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+  end $$;
+
+  insert into public.wallets (id, owner_id, name, kind, currency_code, color_slot, icon) values
+    ('5e7b0000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001', 'SB Wallet One', 'bank', 'SGD', 1, 'landmark'),
+    ('5e7b0000-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001', 'SB Wallet Two', 'bank', 'SGD', 2, 'wallet'),
+    ('5e7b0000-0000-0000-0000-000000000004', 'aaaaaaaa-0000-0000-0000-000000000001', 'SB Wallet EUR', 'bank', 'EUR', 4, 'euro');
+
+  -- Real membership, granted by the owner, not seeded at superuser scope --
+  -- this is the row the membership-denial block below relies on being
+  -- genuine.
+  insert into public.wallet_members (wallet_id, user_id, role)
+    values ('5e7b0000-0000-0000-0000-000000000002', 'bbbbbbbb-0000-0000-0000-000000000002', 'member');
+
+  do $$ begin
+    assert is_wallet_member('5e7b0000-0000-0000-0000-000000000001'::uuid) = true
+       and is_wallet_member('5e7b0000-0000-0000-0000-000000000002'::uuid) = true,
+      'test setup broken: alice should be a member of both her own wallets';
+  end $$;
+commit;
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+  end $$;
+
+  insert into public.wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+    values ('5e7b0000-0000-0000-0000-000000000003', 'bbbbbbbb-0000-0000-0000-000000000002', 'Bob Solo', 'card', 'SGD', 3, 'credit-card');
+commit;
+
+-- Positive control: alice is a member of EVERY wallet in the submitted set.
+-- Also proves created_by = the CALLER (not a caller-suppliable value -- the
+-- function takes no such parameter, but this proves auth.uid() resolves
+-- correctly under SECURITY DEFINER rather than trusting the comment that
+-- says so) and that the created row is then readable back through ordinary
+-- RLS, not just returned by the function call itself.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$
+  declare v_id uuid; v_created_by uuid; v_seen int;
+  begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+
+    v_id := set_budget('rent', '2026-09-01', 120000,
+      array['5e7b0000-0000-0000-0000-000000000001', '5e7b0000-0000-0000-0000-000000000002']::uuid[]);
+    assert v_id is not null,
+      'PERMISSION BROKEN: alice, a member of every wallet in the set, could not create a budget';
+
+    select created_by into v_created_by from public.budgets where id = v_id;
+    assert v_created_by = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid,
+      format('created_by should be the calling user (alice), got %s', v_created_by);
+
+    select count(*) into v_seen from public.budgets where id = v_id;
+    assert v_seen = 1,
+      'PERMISSION BROKEN: alice cannot see, through ordinary RLS, the budget set_budget just created for her';
+  end $$;
+commit;
+
+-- THE guard that matters most (per the controller addendum for this task):
+-- bob is a genuine member of ONLY ONE of the set's two wallets
+-- (5e7b0000-...-002, via the real invite above) and not the other
+-- (5e7b0000-...-001, alice's alone). Since set_budget runs with OWNER
+-- RIGHTS, this guard -- not RLS -- is the only thing standing between bob
+-- and a budget over alice's private wallet. Uses the same nested
+-- begin/exception + flag pattern as constraints.sql, and for the same
+-- reason: `when others` would otherwise swallow a deliberately-raised
+-- "LEAK" exception and mask it as a wrong-message assertion instead.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
+  do $$
+  declare v_ok boolean := false;
+  begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+    assert is_wallet_member('5e7b0000-0000-0000-0000-000000000002'::uuid) = true,
+      'test setup broken: bob should be a genuine member of SB Wallet Two';
+    assert is_wallet_member('5e7b0000-0000-0000-0000-000000000001'::uuid) = false,
+      'test setup broken: bob should not be a member of SB Wallet One';
+
+    begin
+      perform set_budget('rent', '2026-09-01', 999900,
+        array['5e7b0000-0000-0000-0000-000000000001', '5e7b0000-0000-0000-0000-000000000002']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'not a member of every account in that set',
+        format('wrong error for partial membership: %s', sqlerrm);
+    end;
+    assert not v_ok,
+      'LEAK: bob, a member of only ONE wallet in the submitted set, created a budget covering the other -- set_budget''s membership guard did not hold under owner rights';
+  end $$;
+commit;
+
+-- Confirm bob's rejected attempt left no trace: the exception unwound
+-- set_budget before its INSERT ran (the membership guard is the first
+-- thing checked after the null/positive-amount guards), so no row keyed to
+-- amount 999900 should exist.
+do $$ begin
+  assert (select count(*) from public.budgets where amount_minor = 999900) = 0,
+    'LEAK: a trace of bob''s rejected cross-membership budget attempt survived';
+end $$;
+
+-- Empty array and mixed-currency guards, re-proven here under a genuinely
+-- impersonated caller (constraints.sql proves these against the function's
+-- own logic; this confirms the same guards fire when reached through the
+-- real authenticated role, not a superuser session with borrowed claims).
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$
+  declare v_ok boolean := false;
+  begin
+    begin
+      perform set_budget('utilities', '2026-09-01', 5000, array[]::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'a budget must cover at least one account',
+        format('wrong error for empty array: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: set_budget accepted an empty wallet array under real impersonation';
+  end $$;
+
+  do $$
+  declare v_ok boolean := false;
+  begin
+    begin
+      perform set_budget('utilities', '2026-09-01', 5000,
+        array['5e7b0000-0000-0000-0000-000000000001', '5e7b0000-0000-0000-0000-000000000004']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'every account in a budget must use the same currency',
+        format('wrong error for mixed currency: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: set_budget accepted a mixed-currency wallet set under real impersonation';
+  end $$;
+
+  -- Idempotency and overlap, once each, as a real-role sanity check that
+  -- the read-modify-write path (not just the guards) survives contact with
+  -- an actually-impersonated session rather than a superuser one.
+  do $$
+  declare v_id1 uuid; v_id2 uuid; v_rows int;
+  begin
+    v_id1 := set_budget('subscriptions', '2026-09-01', 2000,
+      array['5e7b0000-0000-0000-0000-000000000001']::uuid[]);
+    v_id2 := set_budget('subscriptions', '2026-09-01', 3500,
+      array['5e7b0000-0000-0000-0000-000000000001']::uuid[]);
+    assert v_id1 = v_id2,
+      'IDEMPOTENCY BROKEN: repeat call for the same set/category/month returned a different budget id';
+    select count(*) into v_rows from public.budgets where id = v_id1;
+    assert v_rows = 1, format('IDEMPOTENCY BROKEN: expected exactly 1 row, found %s', v_rows);
+    assert (select amount_minor from public.budgets where id = v_id1) = 3500,
+      'IDEMPOTENCY BROKEN: row should carry the second call''s amount';
+
+    v_id2 := set_budget('subscriptions', '2026-09-01', 4000,
+      array['5e7b0000-0000-0000-0000-000000000002']::uuid[]);
+    assert v_id1 <> v_id2,
+      'OVERLAP BROKEN: same category/month over a DIFFERENT wallet set collapsed onto the same budget';
+  end $$;
+commit;
