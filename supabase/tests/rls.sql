@@ -1796,26 +1796,24 @@ end $$;
 -- function that bypasses budget_wallets' RLS the same way is_wallet_member
 -- bypasses wallet_members'.
 --
--- Alice creates a budget over her own wallet (cccccccc-003, from section 1)
--- -- fixed ids (not `limit 1`-derived), for the same reason the deleted
--- 0012 section gave: several actors below must target the SAME row.
+-- Alice's budget over her own wallet (cccccccc-003, from section 1) --
+-- fixed ids (not `limit 1`-derived), for the same reason the deleted 0012
+-- section gave: several actors below must target the SAME row.
+--
+-- C1 fix round (Task 2, later than the paragraph above): budgets INSERT is
+-- now REVOKED from authenticated entirely -- an authenticated caller could
+-- otherwise INSERT a budget with zero budget_wallets rows and land exactly
+-- the world-readable, world-deletable row 0013's HAZARD comment (above
+-- budget_visible's definition) describes, at will, with no attacker
+-- required. set_budget (Task 3, SECURITY DEFINER) becomes the sole
+-- creator. So this fixture's insert, like the budget_wallets attach right
+-- after it, moves to superuser scope, outside any impersonation: it is
+-- setup for the visibility assertions that follow, not itself a
+-- permission being exercised.
 -- =====================================================================
-begin;
-  set local role authenticated;
-  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
-  do $$ begin
-    assert (select current_user) = 'authenticated', 'role switch did not take effect';
-    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'wrong impersonated user';
-
-    -- budgets INSERT is granted to authenticated, and budgets_visible's
-    -- WITH CHECK passes vacuously here (no budget_wallets row references
-    -- this id yet, so `not exists` is trivially true) -- a real exercise of
-    -- the policy, not a bypass.
-    insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
-    values ('b0000000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
-            'USD', null, '2026-08-01', 100000);
-  end $$;
-commit;
+insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+values ('b0000000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+        'USD', null, '2026-08-01', 100000);
 
 -- Attaching a wallet to the budget is done here as the table-owning
 -- superuser, deliberately outside any role impersonation: I2 (below)
@@ -1826,6 +1824,34 @@ commit;
 -- assertions immediately below are what actually exercises RLS.
 insert into public.budget_wallets (budget_id, wallet_id)
 values ('b0000000-0000-0000-0000-000000000001', 'cccccccc-0000-0000-0000-000000000003');
+
+-- Denial + positive: authenticated genuinely cannot INSERT into budgets --
+-- checked at the PRIVILEGE boundary (grant revoked), not merely by RLS, so
+-- this must raise insufficient_privilege even for a row alice could
+-- otherwise legally own (her own id as created_by, no budget_wallets row
+-- naming it, so budget_visible's WITH CHECK would pass if the grant let
+-- the statement reach it). The positive control (SELECT, in the same
+-- block) proves the table did not become wholesale unreachable -- only
+-- INSERT is gone.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select current_user) = 'authenticated', 'role switch did not take effect';
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'wrong impersonated user';
+
+    begin
+      insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+      values ('b0000000-0000-0000-0000-000000000099', 'aaaaaaaa-0000-0000-0000-000000000001',
+              'USD', null, '2026-08-01', 1);
+      raise exception 'LEAK: authenticated could INSERT into budgets directly';
+    exception when insufficient_privilege then null;
+    end;
+
+    assert (select count(*) from public.budgets where id = 'b0000000-0000-0000-0000-000000000099') = 0,
+      'PERMISSION BROKEN: the denied INSERT above left a row behind';
+  end $$;
+commit;
 
 begin;
   set local role authenticated;
@@ -1869,6 +1895,18 @@ commit;
 -- work, so a wholesale-revoked table (which would also block SELECT)
 -- cannot make the two denials below pass for the wrong reason.
 -- =====================================================================
+-- A second, wallet-less budget of Alice's own, seeded here at superuser
+-- scope: budgets INSERT is no longer granted to authenticated at all (C1
+-- fix round, Task 2 -- see the comment above the C1 fixture's insert,
+-- earlier in this section), so there is no impersonated path left that
+-- could create it. Left deliberately without a budget_wallets row: this is
+-- the fixture the empty-set assertions in the get_budget_status test
+-- section below (and its table-layer denial) target -- found, per that
+-- task's addendum, rather than creating a second wallet-less budget.
+insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+values ('b0000000-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001',
+        'USD', null, '2026-09-01', 50000);
+
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
@@ -1879,13 +1917,6 @@ begin;
     -- the join row for a budget/wallet pair she belongs to.
     assert (select count(*) from public.budget_wallets where budget_id = 'b0000000-0000-0000-0000-000000000001') = 1,
       'PERMISSION BROKEN: a member cannot read budget_wallets for her own budget';
-
-    -- A second, wallet-less budget of Alice's own (INSERT on budgets is
-    -- still granted), so the INSERT attempt below cannot be masked by a
-    -- primary-key collision with the row already in place above.
-    insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
-    values ('b0000000-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001',
-            'USD', null, '2026-09-01', 50000);
 
     -- I2: INSERT must be blocked at the PRIVILEGE boundary (grant revoked),
     -- not merely by RLS -- a member of the wallet named in the new row
@@ -1956,23 +1987,17 @@ begin;
   end $$;
 commit;
 
--- Bob -- not alice -- creates the budget. budgets INSERT is granted to
--- authenticated unconditionally (created_by carries no permission, per
--- 0013's own comment), and budgets_visible's WITH CHECK passes vacuously
--- here: no budget_wallets row references this id yet, so `not exists` is
--- trivially true (the documented empty-set HAZARD, exercised harmlessly
--- as a mid-transaction intermediate state, not left in that shape).
-begin;
-  set local role authenticated;
-  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
-  do $$ begin
-    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
-
-    insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
-    values ('b0000000-0000-0000-0000-000000000003', 'bbbbbbbb-0000-0000-0000-000000000002',
-            'USD', null, '2026-10-01', 75000);
-  end $$;
-commit;
+-- Bob -- not alice -- "creates" the budget (created_by = bob). Seeded here
+-- at superuser scope, like every budgets/budget_wallets fixture in this
+-- file since the C1 fix round (Task 2): budgets INSERT is no longer
+-- granted to authenticated at all, so there is no impersonated path left
+-- to exercise. created_by still carries no permission (0013's own
+-- comment: "who can see this budget is decided entirely by its wallet set
+-- ... never by created_by") -- which is exactly why a superuser can set it
+-- to bob without bob ever having run the INSERT himself.
+insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+values ('b0000000-0000-0000-0000-000000000003', 'bbbbbbbb-0000-0000-0000-000000000002',
+        'USD', null, '2026-10-01', 75000);
 
 -- Seed the two-wallet set as the table-owning superuser, for the same
 -- reason the C1 fixture above does: budget_wallets grants no INSERT to
@@ -2018,16 +2043,26 @@ begin;
   end $$;
 commit;
 
+
 -- =====================================================================
 -- Budgets (0013): get_budget_status (Task 2). The sections above test RLS
 -- on budgets/budget_wallets themselves (SELECT/INSERT/DELETE); this section
 -- tests the SECURITY DEFINER aggregate that reports spending against a
 -- budget. get_budget_status bypasses RLS by design, so its own `vis` CTE --
--- not the table's policy -- is the only thing standing between a caller and
--- every budget in the database: every visibility case exercised above for
--- budgets_visible / budget_visible is re-exercised here against the
--- function's own output, since RLS agreeing does not prove this function
--- agrees.
+-- not the table's policy -- decides what this function returns; but as the
+-- C1 fix round below establishes, that CTE is emphatically NOT the only
+-- thing standing between a caller and a budget's data -- budget_visible
+-- itself, called from BOTH `vis` and the table's own `budgets_visible`
+-- policy, is. Every visibility case exercised above for budgets_visible /
+-- budget_visible is re-exercised here against the function's own output,
+-- since RLS agreeing does not prove this function agrees.
+--
+-- Every `budgets` row below is seeded at superuser scope, outside
+-- impersonation, the same way every budget_wallets row already had to be
+-- (I2): the C1 fix round revokes INSERT on budgets from authenticated
+-- entirely, so there is no impersonated path left to create one. Wallets
+-- and transactions, whose grants are untouched, are still created under
+-- impersonation so ownership/membership triggers fire normally.
 --
 -- Dedicated wallets (the facade00-... prefix, unused anywhere else in this
 -- file) and fixed 2026 calendar dates, never current_date, keep every
@@ -2035,8 +2070,8 @@ commit;
 -- happens to run, and independent of the transaction history the sections
 -- above already built up in cccccccc-003 and its siblings. Presence/absence
 -- checks (count/found), rather than exact spent_minor, are used wherever a
--- shared fixture's full history is not being controlled here (blocks 3 and
--- 4, which reuse budgets b0000000-...-003 and -002 from the sections above).
+-- shared fixture's full history is not being controlled here (block 3,
+-- which reuses budget b0000000-...-003 from the section above).
 -- =====================================================================
 
 -- 1. Positive: Alice creates a budget over her own (fresh) wallet, with a
@@ -2055,16 +2090,12 @@ begin;
     insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, occurred_on)
       values ('facade00-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
               'expense', -4200, 'USD', '2026-01-15');
-
-    insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
-      values ('facade00-0000-0000-0000-000000000101', 'aaaaaaaa-0000-0000-0000-000000000001',
-              'USD', null, '2026-01-01', 200000);
   end $$;
 commit;
 
--- Superuser, outside impersonation, for the same reason the C1/I2 fixtures
--- above do it that way: budget_wallets grants no INSERT to authenticated,
--- and set_budget (the intended path) is Task 3's job.
+insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+values ('facade00-0000-0000-0000-000000000101', 'aaaaaaaa-0000-0000-0000-000000000001',
+        'USD', null, '2026-01-01', 200000);
 insert into public.budget_wallets (budget_id, wallet_id) values
   ('facade00-0000-0000-0000-000000000101', 'facade00-0000-0000-0000-000000000001');
 
@@ -2084,6 +2115,13 @@ begin;
     assert r.wallet_names = array['GBS Wallet One'], format('wrong wallet_names: %s', r.wallet_names);
     assert r.currency_code = 'USD', 'wrong currency_code';
     assert r.budget_period_start = '2026-01-01'::date, 'wrong budget_period_start';
+    -- M3 (not a bug -- documented, expected behaviour for the overall cap):
+    -- category_key null must produce category_label null too. The
+    -- category_label subquery matches on `lower(btrim(c.name)) =
+    -- e.category_key`, and no category's name is ever NULL, so a NULL
+    -- category_key can never match a row -- the subquery returns NULL and
+    -- coalesce falls through to e.category_key, itself NULL.
+    assert r.category_label is null, format('wrong category_label for an overall cap: %s', r.category_label);
   end $$;
 commit;
 
@@ -2169,11 +2207,67 @@ commit;
 
 -- 4. Empty-set: b0000000-...-002 is Alice's own budget from the I2 fixture
 --    above, deliberately left with NO budget_wallets row -- this task's
---    hazard to close, not create a second instance of. `vis`'s
---    `exists (...)` clause must filter it out even for the user who
---    created it. WATCHED TO FAIL: temporarily removing that clause from
---    `vis` made this budget appear for a caller with no connection to it
---    at all (see task-2-report.md for the exact transcript).
+--    hazard to close (folded into budget_visible itself, C1 fix round; see
+--    0013's HAZARD comment above budget_visible's definition), not create
+--    a second instance of.
+--
+--    C2 correction to an earlier draft of this block: get_budget_status's
+--    own exclusion of this row is NOT the falsifiable protection for this
+--    hazard. It is three-fold redundant beneath budget_visible -- `keyed`,
+--    `spend`, and `scope` each independently INNER JOIN budget_wallets, so
+--    disabling any ONE of them (or budget_visible itself) still would not
+--    surface this budget through get_budget_status; confirmed by removing
+--    the (now-deleted) standalone `exists (...)` clause that used to live
+--    in this function's own `vis` CTE and observing the row still did NOT
+--    appear (see task-2-report.md -- that transcript is what this comment
+--    used to, wrongly, claim showed the opposite). The get_budget_status
+--    assertions in this block are therefore NOT the falsifiable guard for
+--    this hazard and must not be read as one.
+--
+--    The FALSIFIABLE assertion is the table-layer block further down:
+--    before the C1 fix, budgets_visible's predicate (= budget_visible(id),
+--    with no non-empty test) returned TRUE for this row regardless of who
+--    asked, so it was readable -- and, until this same fix round revoked
+--    INSERT, writable/deletable -- by ANY authenticated user via
+--    PostgREST, not merely mis-reported by one aggregate function.
+--    Reverting budget_visible's non-empty conjunct alone (leaving
+--    keyed/spend/scope untouched) makes that block fail; see
+--    task-2-report.md for the transcript.
+--
+--    A positive control in the SAME get_budget_status call is seeded and
+--    asserted FIRST (C3), so the empty-set assertion below it cannot pass
+--    merely because get_budget_status is broken and returns nothing for
+--    everyone.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+
+    insert into public.wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+      values ('facade00-0000-0000-0000-000000000008', 'aaaaaaaa-0000-0000-0000-000000000001',
+              'GBS Wallet Five', 'bank', 'USD', 7, 'landmark');
+  end $$;
+commit;
+
+insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+values ('facade00-0000-0000-0000-000000000107', 'aaaaaaaa-0000-0000-0000-000000000001',
+        'USD', null, '2026-09-01', 60000);
+insert into public.budget_wallets (budget_id, wallet_id) values
+  ('facade00-0000-0000-0000-000000000107', 'facade00-0000-0000-0000-000000000008');
+
+-- Setup guard, OUTSIDE impersonation at superuser scope (C3): an
+-- impersonated count would silently read 0 rows (looking like "still
+-- empty") even if a future fixture attached a wallet the impersonated
+-- user cannot see, since budget_wallets' own RLS (budget_wallets_member)
+-- would hide that row from her -- masking exactly the regression this
+-- guard exists to catch.
+do $$ begin
+  assert (select count(*) from public.budget_wallets
+            where budget_id = 'b0000000-0000-0000-0000-000000000002') = 0,
+    'test setup broken: b0000000-...-002 must still have no budget_wallets rows for this to test the empty-set hazard';
+end $$;
+
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
@@ -2181,12 +2275,50 @@ begin;
   declare n int;
   begin
     assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
-    assert (select count(*) from public.budget_wallets
-              where budget_id = 'b0000000-0000-0000-0000-000000000002') = 0,
-      'test setup broken: b0000000-...-002 must still have no budget_wallets rows for this to test the empty-set hazard';
+
+    -- Positive control, in the SAME call as the empty-set assertion below:
+    -- the wallet-FUL September budget IS returned.
+    select count(*) into n from public.get_budget_status('2026-09-01','2026-09-30')
+      where budget_id = 'facade00-0000-0000-0000-000000000107';
+    assert n = 1, 'test setup broken: the wallet-FUL positive control was not returned by get_budget_status';
+
+    -- The empty-set assertion. NOT the falsifiable guard -- see the
+    -- comment above this block.
     select count(*) into n from public.get_budget_status('2026-09-01','2026-09-30')
       where budget_id = 'b0000000-0000-0000-0000-000000000002';
     assert n = 0, 'HAZARD OPEN: a wallet-less budget was reported by get_budget_status';
+  end $$;
+commit;
+
+-- Table-layer denial (C1) -- THE falsifiable assertion for this hazard.
+-- Carol, a total stranger to b0000000-...-002, reads it directly from
+-- `budgets` (not through get_budget_status) and must get zero rows.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"cccccccc-0000-0000-0000-000000000009","email":"carol@x.io"}';
+  do $$
+  declare n int;
+  begin
+    assert (select auth.uid()) = 'cccccccc-0000-0000-0000-000000000009'::uuid, 'impersonation failed';
+    select count(*) into n from public.budgets where id = 'b0000000-0000-0000-0000-000000000002';
+    assert n = 0,
+      'LEAK: carol can read a wallet-less budget directly from the budgets table -- the empty-set hazard is open at the RLS layer';
+  end $$;
+commit;
+
+-- And the SAME holds for the budget's own CREATOR: budget_visible does not
+-- special-case authorship, so 0013's "invisible to everyone, including the
+-- creator" documentation is a real, tested claim, not just prose.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$
+  declare n int;
+  begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+    select count(*) into n from public.budgets where id = 'b0000000-0000-0000-0000-000000000002';
+    assert n = 0,
+      'DOCUMENTATION MISMATCH: alice (the creator) can still read her own wallet-less budget directly -- 0013''s HAZARD comment claims this is invisible to everyone including the creator';
   end $$;
 commit;
 
@@ -2216,13 +2348,12 @@ begin;
               'income', 5000, 'USD', '2026-02-10');
     perform create_transfer('facade00-0000-0000-0000-000000000003', 'facade00-0000-0000-0000-000000000004',
                              2000, 2000, '2026-02-10', 'gbs test transfer');
-
-    insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
-      values ('facade00-0000-0000-0000-000000000102', 'aaaaaaaa-0000-0000-0000-000000000001',
-              'USD', null, '2026-02-01', 300000);
   end $$;
 commit;
 
+insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+values ('facade00-0000-0000-0000-000000000102', 'aaaaaaaa-0000-0000-0000-000000000001',
+        'USD', null, '2026-02-01', 300000);
 insert into public.budget_wallets (budget_id, wallet_id) values
   ('facade00-0000-0000-0000-000000000102', 'facade00-0000-0000-0000-000000000003');
 
@@ -2256,16 +2387,15 @@ begin;
     insert into public.wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
       values ('facade00-0000-0000-0000-000000000005', 'aaaaaaaa-0000-0000-0000-000000000001',
               'GBS Wallet Four', 'bank', 'USD', 4, 'landmark');
-
-    insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
-      values ('facade00-0000-0000-0000-000000000103', 'aaaaaaaa-0000-0000-0000-000000000001',
-              'USD', null, '2026-09-01', 50000);
-    insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
-      values ('facade00-0000-0000-0000-000000000104', 'aaaaaaaa-0000-0000-0000-000000000001',
-              'USD', null, '2026-10-01', 80000);
   end $$;
 commit;
 
+insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+values ('facade00-0000-0000-0000-000000000103', 'aaaaaaaa-0000-0000-0000-000000000001',
+        'USD', null, '2026-09-01', 50000);
+insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+values ('facade00-0000-0000-0000-000000000104', 'aaaaaaaa-0000-0000-0000-000000000001',
+        'USD', null, '2026-10-01', 80000);
 insert into public.budget_wallets (budget_id, wallet_id) values
   ('facade00-0000-0000-0000-000000000103', 'facade00-0000-0000-0000-000000000005'),
   ('facade00-0000-0000-0000-000000000104', 'facade00-0000-0000-0000-000000000005');
@@ -2278,19 +2408,26 @@ begin;
   begin
     assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
 
-    -- September: its own budget (50000), not October's.
-    select * into r from public.get_budget_status('2026-09-10','2026-09-20') g
+    -- September: its own budget (50000), not October's. `into strict` (M1),
+    -- not plain `into` + `assert found`: a plain `into` silently takes an
+    -- arbitrary row if more than one matches, so if `distinct on` in `eff`
+    -- ever regressed to letting both facade00-...-103 and -104 through for
+    -- the same month, this would keep passing nondeterministically instead
+    -- of raising TOO_MANY_ROWS.
+    select * into strict r from public.get_budget_status('2026-09-10','2026-09-20') g
       where g.budget_id in ('facade00-0000-0000-0000-000000000103','facade00-0000-0000-0000-000000000104');
-    assert found, 'CARRY-FORWARD BROKEN: no row for the facade00-...-005 set in September';
     assert r.budget_id = 'facade00-0000-0000-0000-000000000103'::uuid,
       format('CARRY-FORWARD BROKEN: September must use its own budget, got %s', r.budget_id);
     assert r.budget_minor = 50000, format('wrong September budget_minor: %s', r.budget_minor);
     assert r.budget_period_start = '2026-09-01'::date, 'wrong September budget_period_start';
+    -- I2: no transactions exist for this wallet at all, so spent_minor must
+    -- be a genuine zero, not absent -- the only fixture in this file that
+    -- exercises `coalesce(sum(...), 0)` for real.
+    assert r.spent_minor = 0, format('wrong September spent_minor: %s', r.spent_minor);
 
     -- November: no budget of its own -- must carry October's (80000) forward.
-    select * into r from public.get_budget_status('2026-11-05','2026-11-10') g
+    select * into strict r from public.get_budget_status('2026-11-05','2026-11-10') g
       where g.budget_id in ('facade00-0000-0000-0000-000000000103','facade00-0000-0000-0000-000000000104');
-    assert found, 'CARRY-FORWARD BROKEN: no row for the facade00-...-005 set in November';
     assert r.budget_id = 'facade00-0000-0000-0000-000000000104'::uuid,
       format('CARRY-FORWARD BROKEN: November must carry October''s budget forward, got %s', r.budget_id);
     assert r.budget_minor = 80000, format('wrong November (carried-forward) budget_minor: %s', r.budget_minor);
@@ -2320,16 +2457,15 @@ begin;
     insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, occurred_on)
       values ('facade00-0000-0000-0000-000000000007', 'aaaaaaaa-0000-0000-0000-000000000001',
               'expense', -3000, 'USD', '2026-04-10');
-
-    insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
-      values ('facade00-0000-0000-0000-000000000105', 'aaaaaaaa-0000-0000-0000-000000000001',
-              'USD', null, '2026-04-01', 10000);
-    insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
-      values ('facade00-0000-0000-0000-000000000106', 'aaaaaaaa-0000-0000-0000-000000000001',
-              'USD', null, '2026-04-01', 20000);
   end $$;
 commit;
 
+insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+values ('facade00-0000-0000-0000-000000000105', 'aaaaaaaa-0000-0000-0000-000000000001',
+        'USD', null, '2026-04-01', 10000);
+insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+values ('facade00-0000-0000-0000-000000000106', 'aaaaaaaa-0000-0000-0000-000000000001',
+        'USD', null, '2026-04-01', 20000);
 insert into public.budget_wallets (budget_id, wallet_id) values
   ('facade00-0000-0000-0000-000000000105', 'facade00-0000-0000-0000-000000000007'),
   ('facade00-0000-0000-0000-000000000106', 'facade00-0000-0000-0000-000000000007'),
@@ -2353,5 +2489,100 @@ begin;
 
     assert spent_a = 3000, format('wrong spent_minor for the {A} budget: %s', spent_a);
     assert spent_b = 3000, format('wrong spent_minor for the {A,B} budget: %s', spent_b);
+  end $$;
+commit;
+
+-- 8. I1 + I2: `uncovered`'s NOT EXISTS must be correlated to the WALLET,
+--    not just the category key, and the design's category-matching path
+--    (the `spend` CTE's WHERE clause, the categories JOIN, `uncovered`,
+--    and category_label for a real category) needs at least one fixture
+--    that actually exercises it -- every block above uses
+--    category_key = null and category-less transactions, so all of that
+--    code could be deleted with the suite still green until now.
+--
+--    Budget BG (facade00-...-108) covers Groceries over {W1} ONLY (W1 =
+--    facade00-...-0009). W1 ALSO has an UNCATEGORISED expense (-500),
+--    which must NOT count toward BG -- I2's target: deleting the `spend`
+--    CTE's
+--    `where t.id is null or c.id is not null or e.category_key is null`
+--    line would fold it in, changing BG's spent_minor from 2000 to 2500.
+--    Watched to fail; see task-2-report.md.
+--
+--    W2 (facade00-...-0010) -- NOT in BG's wallet set -- ALSO spends on
+--    ITS OWN Groceries category (-700). Before I1's fix, an uncorrelated
+--    `not exists (select 1 from eff e where e.category_key = 'groceries')`
+--    treated "Groceries is budgeted somewhere" as covering W2 too, so this
+--    700 was excluded from BOTH `spend` (wrong wallet) and `uncovered`
+--    (category exists in eff) -- it vanished from the report entirely,
+--    exactly the "money silently vanishes" bug this fix closes. Watched to
+--    fail against the pre-fix uncorrelated form; see task-2-report.md.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$
+  declare groceries_w1 uuid; groceries_w2 uuid;
+  begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+
+    insert into public.wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+      values ('facade00-0000-0000-0000-000000000009', 'aaaaaaaa-0000-0000-0000-000000000001',
+              'GBS Wallet Six', 'bank', 'USD', 8, 'landmark');
+    insert into public.wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+      values ('facade00-0000-0000-0000-000000000010', 'aaaaaaaa-0000-0000-0000-000000000001',
+              'GBS Wallet Seven', 'bank', 'USD', 1, 'wallet');
+
+    select id into groceries_w1 from public.categories
+      where wallet_id = 'facade00-0000-0000-0000-000000000009'
+        and kind = 'expense' and lower(btrim(name)) = 'groceries';
+    select id into groceries_w2 from public.categories
+      where wallet_id = 'facade00-0000-0000-0000-000000000010'
+        and kind = 'expense' and lower(btrim(name)) = 'groceries';
+    assert groceries_w1 is not null and groceries_w2 is not null,
+      'test setup broken: seed_wallet_categories did not create Groceries for one of the block 8 wallets';
+
+    insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on)
+      values ('facade00-0000-0000-0000-000000000009', 'aaaaaaaa-0000-0000-0000-000000000001',
+              'expense', -2000, 'USD', groceries_w1, '2026-05-10');
+    insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on)
+      values ('facade00-0000-0000-0000-000000000009', 'aaaaaaaa-0000-0000-0000-000000000001',
+              'expense', -500, 'USD', null, '2026-05-12');
+    insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on)
+      values ('facade00-0000-0000-0000-000000000010', 'aaaaaaaa-0000-0000-0000-000000000001',
+              'expense', -700, 'USD', groceries_w2, '2026-05-15');
+  end $$;
+commit;
+
+insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+values ('facade00-0000-0000-0000-000000000108', 'aaaaaaaa-0000-0000-0000-000000000001',
+        'USD', 'groceries', '2026-05-01', 50000);
+insert into public.budget_wallets (budget_id, wallet_id) values
+  ('facade00-0000-0000-0000-000000000108', 'facade00-0000-0000-0000-000000000009');
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$
+  declare bg_spent bigint; bg_label text; uncov_spent bigint; uncov_label text;
+  begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+
+    select spent_minor, category_label into bg_spent, bg_label
+      from public.get_budget_status('2026-05-01','2026-05-31')
+      where budget_id = 'facade00-0000-0000-0000-000000000108';
+    assert found, 'test setup broken: block 8 budget not returned at all';
+    assert bg_spent = 2000,
+      format('I2 BROKEN: BG''s spent_minor should exclude W1''s uncategorised -500 (expect 2000), got %s', bg_spent);
+    assert lower(btrim(bg_label)) = 'groceries',
+      format('wrong category_label for a real category: %s', bg_label);
+
+    select spent_minor, category_label into uncov_spent, uncov_label
+      from public.get_budget_status('2026-05-01','2026-05-31')
+      where budget_id is null and category_key = 'groceries';
+    assert found,
+      'I1 BROKEN: W2''s Groceries spending (budgeted only over W1) vanished instead of appearing in uncovered';
+    assert uncov_spent = 700,
+      format('I1 BROKEN: uncovered spent for W2''s groceries should be 700, got %s', uncov_spent);
+    assert lower(btrim(uncov_label)) = 'groceries',
+      format('wrong uncovered category_label: %s', uncov_label);
   end $$;
 commit;

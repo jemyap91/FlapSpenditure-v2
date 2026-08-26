@@ -62,30 +62,54 @@ alter table budget_wallets enable row level security;
 -- personal. A budget covering a wallet you are not in is unrepresentable, so
 -- it cannot surface figures derived from spending you cannot see.
 --
--- HAZARD: `not exists` over zero rows is TRUE, so budget_visible(b) returns
--- TRUE for a budget with NO budget_wallets rows -- it would be visible to
--- everyone if visibility were decided by budget_visible() alone. set_budget
--- (Task 3) refuses to create one. get_budget_status (Task 2) is where a
--- wallet-less budget's spending would otherwise leak, and structurally it
--- cannot: its `keyed` CTE does `join public.budget_wallets bw on
--- bw.budget_id = v.id`, a plain INNER join, which produces zero rows for
--- any budget_id absent from budget_wallets no matter what `vis` lets
--- through. `vis` also carries its own
--- `exists (select 1 from budget_wallets bw where bw.budget_id = b.id)`
--- check -- but that check is REDUNDANT for this function's output, not the
--- operative protection: removing it and re-running the empty-set assertion
--- below still returned zero rows for the wallet-less budget, because
--- `keyed`'s INNER JOIN excludes it regardless (watched and confirmed; see
--- task-2-report.md for the transcript). It is left in place anyway as
--- defense-in-depth against `keyed`'s join ever being loosened to a LEFT
--- JOIN, and because budget_visible() itself is used elsewhere (the
--- budgets_visible RLS policy above) where no such join exists to fall back
--- on -- but a future reader should not mistake `vis`'s exists() clause for
--- what actually closes this hazard in get_budget_status; `keyed`'s INNER
--- JOIN is. Tested in rls.sql: the "Budgets (0013): get_budget_status"
--- section's empty-set block reuses the wallet-less budget the I2 fixture
--- above already leaves in the database and asserts an ordinary member gets
--- zero rows for it from get_budget_status.
+-- HAZARD (CLOSED, in this function): `not exists` over zero rows is TRUE,
+-- so a membership-only predicate would return TRUE for a budget with NO
+-- budget_wallets rows -- visible to everyone. This is not a paper case:
+-- budget_wallets.wallet_id is ON DELETE CASCADE and any wallet owner can
+-- delete her own wallet at will, so a wallet owner deleting a wallet
+-- silently empties the SET of every budget that named it -- including
+-- budgets she does not own, over sets shared with other members who were
+-- never asked. Before this fix, that left BOTH the table's own RLS policy
+-- (budgets_visible, below, whose predicate IS budget_visible(id)) and
+-- get_budget_status (Task 2) exposed: a wallet-less budget's created_by
+-- (another user's id), category_key (a category NAME -- e.g. "therapy"),
+-- and amount_minor were all readable -- and, until Task 2 additionally
+-- revoked INSERT below, writable/deletable -- by ANY authenticated user
+-- through PostgREST. get_budget_status hiding the same row from its own
+-- output did NOT close this: the aggregate is not the only reader of this
+-- table, and the underlying row stayed exposed at the RLS layer the whole
+-- time.
+--
+-- FIX: the non-empty test lives HERE, in budget_visible itself (the first
+-- conjunct below), not duplicated in get_budget_status's own query -- one
+-- auditable definition, used by both budgets_visible (the table policy)
+-- and get_budget_status (which calls this same function in its `vis` CTE),
+-- so the two cannot silently drift apart on this question again.
+-- get_budget_status's own CTEs (`keyed`, `spend`, `scope`) each ALSO INNER
+-- JOIN budget_wallets independently of `vis`, which gives that function's
+-- output three-fold redundant protection beneath budget_visible -- not
+-- singly redundant, as an earlier draft of this comment (and of the
+-- get_budget_status test section) claimed; confirmed by removing only the
+-- exists() clause that used to live in `vis` and observing the wallet-less
+-- budget still did not surface (see task-2-report.md). That redundancy is
+-- incidental to those CTEs' join shape, not a designed second line of
+-- defense, and none of it reaches the `budgets` table itself: budget_visible
+-- is the only thing that does, which is why the non-empty test belongs here,
+-- not only in the aggregate.
+--
+-- CONSEQUENCE, accepted and deliberate: a budget that loses its entire
+-- wallet set (via this cascade, or any other means) becomes invisible to
+-- EVERYONE, including the user who created it -- budget_visible cannot
+-- distinguish "never had wallets" from "had wallets, all since deleted",
+-- and there is no "recover my orphaned budget" path this schema supports.
+-- That is intentional: silently disappearing is a strictly better failure
+-- mode than the world-readable one it replaces, and it costs only the
+-- budget's own creator (who can create a replacement), not every other
+-- member of the wallets involved. Tested in rls.sql: the "Budgets (0013):
+-- get_budget_status" section's empty-set block asserts absence from
+-- get_budget_status AND, in the table-layer block right after it, absence
+-- from a direct SELECT against `budgets` -- for both a stranger and the
+-- budget's own creator.
 --
 -- SECURITY DEFINER wrapper is REQUIRED, not stylistic, and for the exact
 -- reason 0004_rls.sql's opening comment gives for is_wallet_member: Postgres
@@ -106,26 +130,33 @@ alter table budget_wallets enable row level security;
 -- budget_wallets row regardless of the caller's membership, and the
 -- fails-closed intent below is what actually executes.
 --
--- ACCEPTED RISK, not fixed here: this function is `not exists`, so it fails
--- OPEN, not closed, if it ever stops actually bypassing budget_wallets' RLS
--- -- if it is re-owned to a non-superuser role, or if `alter table
--- budget_wallets force row level security` is ever added (which applies RLS
--- even to the table owner). Under either degradation the inner scan would
--- see zero rows, `not exists` returns TRUE, and budget_visible silently
--- returns true for every budget -- this is C1 all over again, and it would
--- raise no error. Contrast is_wallet_member (0004), which is `exists`: the
--- identical degradation there makes it see zero rows and return FALSE --
--- fails CLOSED. That asymmetry is unavoidable here, not an oversight: the
--- empty-set HAZARD above requires `not exists`, so the fail-open direction
--- cannot be designed away without closing a hazard this task is explicitly
--- not scoped to close. Documented so the next reader relies on a fence,
--- not a guess.
+-- ACCEPTED RISK, narrowed by this fix but NOT eliminated: the EVERY-wallet
+-- half of this predicate (the second conjunct below) is still `not
+-- exists`, so it still fails OPEN for a caller who is a member of AT LEAST
+-- ONE wallet in a multi-wallet set, if this function ever stops actually
+-- bypassing budget_wallets' RLS (re-owned to a non-superuser role, or
+-- `alter table budget_wallets force row level security`). Under that
+-- degradation the inner scan of the second conjunct would see only the
+-- rows the caller's OWN membership already lets her see -- all of which
+-- trivially satisfy is_wallet_member -- so `not exists` still returns TRUE
+-- for her: this is C1 all over again, for a PARTIAL member, and it would
+-- raise no error. The first conjunct (added by this fix) DOES fail closed
+-- under the same degradation for a caller who is a member of NONE of the
+-- set's wallets: degraded RLS would show her zero budget_wallets rows for
+-- this budget_id, `exists` returns FALSE, and the whole function returns
+-- FALSE. So this fix narrows the fails-open surface from "any
+-- authenticated caller" to "a caller who shares at least one wallet with
+-- the set" -- it does not close it. Contrast is_wallet_member (0004),
+-- which is a single `exists`: the identical degradation there fails
+-- CLOSED unconditionally. Documented so the next reader relies on a
+-- fence, not a guess.
 create function budget_visible(b uuid) returns boolean
   language sql stable security definer set search_path = '' as $$
-  select not exists (
-    select 1 from public.budget_wallets bw
-    where bw.budget_id = b and not public.is_wallet_member(bw.wallet_id)
-  )
+  select exists (select 1 from public.budget_wallets bw where bw.budget_id = b)
+     and not exists (
+       select 1 from public.budget_wallets bw
+       where bw.budget_id = b and not public.is_wallet_member(bw.wallet_id)
+     )
 $$;
 revoke all on function budget_visible(uuid) from public, anon;
 grant execute on function budget_visible(uuid) to authenticated;
@@ -146,6 +177,23 @@ grant select, insert, delete on budgets to authenticated;
 -- same question, so an unrestricted grant would let a member re-point a budget
 -- by changing a column the policy cannot distinguish.
 grant update (amount_minor) on budgets to authenticated;
+
+-- C1 fix round (Task 2): INSERT is revoked again immediately. Before this,
+-- an authenticated caller could INSERT a budget of her own choosing with NO
+-- budget_wallets row yet -- budgets_visible's WITH CHECK, at that instant,
+-- asked budget_visible() a question about a budget that still had zero
+-- rows in budget_wallets, which (pre-fix) answered TRUE regardless of who
+-- was asking. That is not a narrow window: nothing stops the caller from
+-- simply never attaching a wallet afterward (she has no INSERT grant on
+-- budget_wallets to do so anyway -- see I2 below), landing exactly the
+-- world-readable row the HAZARD comment above describes, on purpose, at
+-- will. Composition is already function-mediated for budget_wallets;
+-- budgets now matches. set_budget (Task 3, SECURITY DEFINER) becomes the
+-- sole creator, re-checking the WHOLE submitted wallet set -- including
+-- that it is non-empty -- before writing, which per-row table RLS
+-- structurally cannot do (the same reasoning the budget_wallets grant
+-- comment below already gives for why INSERT/DELETE are withheld there).
+revoke insert on budgets from authenticated;
 
 -- SELECT only. INSERT and DELETE are deliberately NOT granted here, even
 -- though budget_wallets_member's own RLS predicate (is_wallet_member) would
@@ -185,26 +233,20 @@ begin
     from public.wallets w
     where public.is_wallet_member(w.id) and w.archived_at is null
   ),
-  -- Visible AND non-empty. The membership half is delegated to
-  -- budget_visible(id) rather than re-inlined here: this function is
-  -- itself SECURITY DEFINER and so bypasses budget_wallets' RLS today, but
-  -- routing through budget_visible keeps the membership rule in one
-  -- auditable place instead of two definitions that could silently drift
-  -- apart. The `exists (...)` non-empty test guards against
-  -- budget_visible's own `not exists`-over-zero-rows-is-TRUE hazard (see
-  -- this migration's HAZARD comment above `budget_visible`'s definition)
-  -- as belt-and-braces, but is NOT what actually keeps a wallet-less
-  -- budget out of this function's output: `keyed` below INNER JOINs to
-  -- budget_wallets, which structurally excludes any budget_id with zero
-  -- rows there regardless of what `vis` contains. Confirmed empirically --
-  -- removing this `exists (...)` clause alone did not surface the
-  -- wallet-less fixture in rls.sql's empty-set assertion (see
-  -- task-2-report.md).
+  -- Delegates entirely to budget_visible(id): membership AND the
+  -- non-empty (wallet-less) test both live there now, folded into one
+  -- definition -- see 0013's HAZARD comment above budget_visible's
+  -- definition for why that fold matters beyond this function: budgets'
+  -- own RLS policy calls the same function, so a wallet-less budget that
+  -- this function alone hid would still have been exposed at the table
+  -- layer. `keyed`, `spend`, and `scope` below each ALSO INNER JOIN
+  -- budget_wallets independently of `vis`, which makes this function's
+  -- own exclusion of a wallet-less budget three-fold redundant beneath
+  -- budget_visible -- incidental to those CTEs' join shape, not a second
+  -- deliberate line of defense, and not a reason to weaken budget_visible
+  -- itself.
   vis as (
-    select b.*
-    from public.budgets b
-    where exists (select 1 from public.budget_wallets bw where bw.budget_id = b.id)
-      and public.budget_visible(b.id)
+    select b.* from public.budgets b where public.budget_visible(b.id)
   ),
   -- Canonical identity for a wallet SET, so carry-forward can ask "the most
   -- recent budget for THIS set and category" without a set-valued join key.
@@ -229,10 +271,17 @@ begin
   -- spending yet would VANISH instead of reporting 0 -- the disappearing-row
   -- dead end this redesign exists to remove. `coalesce` then turns the
   -- no-match case into a genuine zero.
+  -- Joins `mine`, not just `budget_wallets`, for the same restriction
+  -- `scope` already applies (membership AND not-archived): without it, a
+  -- set spanning one active and one archived wallet would sum spending
+  -- from BOTH here while `scope` (and its wallet_names/wallet_count) lists
+  -- only the active one -- a spent_minor nobody could reconcile against
+  -- the wallets shown for it.
   spend as (
     select e.id as budget_id, coalesce(sum(-t.amount_minor), 0)::bigint as spent
     from eff e
     join public.budget_wallets bw on bw.budget_id = e.id
+    join mine m on m.id = bw.wallet_id
     left join public.transactions t
       on t.wallet_id = bw.wallet_id
      and t.kind = 'expense'
@@ -251,7 +300,18 @@ begin
     from public.budget_wallets bw join mine m on m.id = bw.wallet_id
     group by bw.budget_id
   ),
-  -- Spending in my wallets whose category no visible budget covers.
+  -- Spending in my wallets whose category no visible budget covers FOR
+  -- THAT WALLET. Correlated to t.wallet_id via budget_wallets, not just to
+  -- the category key: an uncorrelated `not exists (select 1 from eff e
+  -- where e.category_key = ...)` would treat "Groceries is budgeted
+  -- somewhere" as covering every wallet's Groceries spending, including a
+  -- wallet the budget's set never named -- so spending on a budgeted
+  -- category, in a wallet the budget does NOT cover, would be excluded
+  -- from `spend` (wrong wallet) AND from `uncovered` (category exists in
+  -- `eff`) and vanish from the report entirely. That is exactly the
+  -- scenario this redesign exists to support (a category budgeted for a
+  -- SUBSET of wallets), so it must not be the one case spending goes
+  -- unreported.
   uncovered as (
     select lower(btrim(c.name)) as key, min(c.name) as label,
            m.currency_code, sum(-t.amount_minor)::bigint as spent
@@ -260,7 +320,12 @@ begin
     join public.categories c on c.id = t.category_id
     where t.kind = 'expense' and t.deleted_at is null
       and t.occurred_on between from_date and to_date
-      and not exists (select 1 from eff e where e.category_key = lower(btrim(c.name)))
+      and not exists (
+        select 1 from eff e
+        join public.budget_wallets bw on bw.budget_id = e.id
+        where bw.wallet_id = t.wallet_id
+          and e.category_key = lower(btrim(c.name))
+      )
     group by 1, 3
   )
   select e.id, e.category_key,
