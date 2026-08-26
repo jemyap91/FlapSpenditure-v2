@@ -193,6 +193,33 @@ grant update (amount_minor) on budgets to authenticated;
 -- that it is non-empty -- before writing, which per-row table RLS
 -- structurally cannot do (the same reasoning the budget_wallets grant
 -- comment below already gives for why INSERT/DELETE are withheld there).
+--
+-- LANDMINE FOR TASK 3, spelled out here because it is not obvious from
+-- reading set_budget's own future file in isolation: folding the
+-- non-empty test into budget_visible (above) makes
+-- `with check (budget_visible(id))` UNSATISFIABLE for every INSERT, not
+-- merely tightened. At the instant a row is inserted it has zero
+-- budget_wallets children by construction -- they cannot exist yet, since
+-- budget_wallets.budget_id is a foreign key into a budgets row that must
+-- already exist -- so budget_visible's first conjunct
+-- (`exists (select 1 from budget_wallets bw where bw.budget_id = b)`) is
+-- FALSE for every candidate row, no matter who is inserting or what the
+-- row contains. budgets_visible's WITH CHECK is therefore dead code for
+-- INSERT specifically (it stays live for `update (amount_minor)`, whose
+-- row already has children by the time it runs) and budget creation
+-- survives ONLY through set_budget running as an OWNER-RIGHTS SECURITY
+-- DEFINER function that re-checks membership over the submitted wallet
+-- set itself, inserts the budget row, and inserts its budget_wallets rows
+-- in the same transaction, bypassing budgets_visible entirely by design.
+-- Do NOT follow 0012_budgets.sql's set_budget as precedent here: that
+-- function was deliberately `security invoker`, with its own comment
+-- arguing RLS should decide the write -- correct for 0012's shape, where
+-- a budget referenced at most one wallet_id column, not one for this
+-- shape, where WITH CHECK cannot pass at insert time under ANY caller.
+-- An invoker set_budget written against this schema would have every
+-- budget INSERT rejected by budgets_visible, unconditionally, and the
+-- failure would look identical to a permissions bug rather than the
+-- structural impossibility it actually is.
 revoke insert on budgets from authenticated;
 
 -- SELECT only. INSERT and DELETE are deliberately NOT granted here, even

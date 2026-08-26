@@ -2516,11 +2516,24 @@ commit;
 --    (category exists in eff) -- it vanished from the report entirely,
 --    exactly the "money silently vanishes" bug this fix closes. Watched to
 --    fail against the pre-fix uncorrelated form; see task-2-report.md.
+--
+--    Re-review addition: the -500 uncategorised expense above collapses to
+--    the SAME `c.id is null` branch of the `spend` CTE's WHERE line as any
+--    other non-matching row would, so it alone leaves
+--    `and (e.category_key is null or lower(btrim(c.name)) = e.category_key)`
+--    -- the ON-clause predicate that actually restricts `spend` to the
+--    budget's OWN category, not merely to "has some category" -- deletable
+--    with the suite still green. W1 also spends -800 on Eating out (a
+--    DIFFERENT, real category, not uncategorised): BG's spent_minor must
+--    still be 2000, not 2800, proving the ON-clause predicate stops a
+--    `groceries` budget from silently absorbing Eating out (or Rent, or
+--    any other category) spent in the same wallet. Watched to fail by
+--    deleting that ON-clause predicate; see task-2-report.md.
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
   do $$
-  declare groceries_w1 uuid; groceries_w2 uuid;
+  declare groceries_w1 uuid; groceries_w2 uuid; eating_out_w1 uuid;
   begin
     assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
 
@@ -2537,8 +2550,11 @@ begin;
     select id into groceries_w2 from public.categories
       where wallet_id = 'facade00-0000-0000-0000-000000000010'
         and kind = 'expense' and lower(btrim(name)) = 'groceries';
-    assert groceries_w1 is not null and groceries_w2 is not null,
-      'test setup broken: seed_wallet_categories did not create Groceries for one of the block 8 wallets';
+    select id into eating_out_w1 from public.categories
+      where wallet_id = 'facade00-0000-0000-0000-000000000009'
+        and kind = 'expense' and lower(btrim(name)) = 'eating out';
+    assert groceries_w1 is not null and groceries_w2 is not null and eating_out_w1 is not null,
+      'test setup broken: seed_wallet_categories did not create Groceries/Eating out for one of the block 8 wallets';
 
     insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on)
       values ('facade00-0000-0000-0000-000000000009', 'aaaaaaaa-0000-0000-0000-000000000001',
@@ -2549,6 +2565,12 @@ begin;
     insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on)
       values ('facade00-0000-0000-0000-000000000010', 'aaaaaaaa-0000-0000-0000-000000000001',
               'expense', -700, 'USD', groceries_w2, '2026-05-15');
+    -- A DIFFERENT real category in W1 (not uncategorised): -800 on Eating
+    -- out. Must not count toward BG (Groceries-only) -- see the comment
+    -- above this block.
+    insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on)
+      values ('facade00-0000-0000-0000-000000000009', 'aaaaaaaa-0000-0000-0000-000000000001',
+              'expense', -800, 'USD', eating_out_w1, '2026-05-11');
   end $$;
 commit;
 
@@ -2571,7 +2593,7 @@ begin;
       where budget_id = 'facade00-0000-0000-0000-000000000108';
     assert found, 'test setup broken: block 8 budget not returned at all';
     assert bg_spent = 2000,
-      format('I2 BROKEN: BG''s spent_minor should exclude W1''s uncategorised -500 (expect 2000), got %s', bg_spent);
+      format('I2/ON-CLAUSE BROKEN: BG''s spent_minor should exclude W1''s uncategorised -500 AND W1''s -800 Eating out (a real, DIFFERENT category) -- expect 2000, got %s', bg_spent);
     assert lower(btrim(bg_label)) = 'groceries',
       format('wrong category_label for a real category: %s', bg_label);
 
