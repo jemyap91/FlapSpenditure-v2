@@ -400,10 +400,19 @@ grant execute on function get_budget_status(date, date) to authenticated;
 -- belong to; nothing else will either. Every guard is therefore an explicit,
 -- verified check, not a courtesy.
 --
--- search_path = '' with every name schema-qualified, for the same
--- pg_temp-hijack reason 0004's is_wallet_member gives, and more sharply here:
--- this function writes, as the table owner, to two tables a caller has no
--- direct grant to touch.
+-- search_path = '' for the same pg_temp-hijack reason 0004's is_wallet_member
+-- gives, and more sharply here: this function writes, as the table owner, to
+-- two tables a caller has no direct grant to touch. Every RELATION reference
+-- below is schema-qualified (public.wallets, public.budgets,
+-- public.budget_wallets, public.is_wallet_member, auth.uid()) -- that is
+-- what an empty search_path actually defends: a caller-created pg_temp
+-- table or view shadowing an unqualified name. REVIEW FINDING (M1): an
+-- earlier draft of this comment claimed "every name" was qualified, which
+-- was not true of the plain function/operator calls in the body (unnest,
+-- string_agg, count, cardinality) -- left unqualified deliberately, matching
+-- this file's other functions (get_budget_status, is_wallet_member), because
+-- pg_temp is not searched for functions or operators, only relations, so
+-- there is nothing for those particular names to hijack.
 create function set_budget(
   p_category_key text, p_period_start date, p_amount_minor bigint, p_wallet_ids uuid[]
 ) returns uuid
@@ -421,12 +430,54 @@ begin
   if p_amount_minor <= 0 then
     raise exception 'budget amount must be positive';
   end if;
+
+  -- REVIEW FINDING (I3): normalise BEFORE the read-modify-write lookup
+  -- below uses p_category_key (and before the INSERT), so two calls
+  -- differing only in case or surrounding whitespace match the same
+  -- canonical budget instead of silently creating two. Without this, every
+  -- caller of the only entry point into this table would have to
+  -- pre-normalise client-side, and a non-normalised value would surface as
+  -- a raw budgets_category_key_check violation -- exactly the "rely on a
+  -- constraint to catch what a guard should" pattern this task's addendum
+  -- warned against. nullif(..., '') keeps the NULL meaning ("this set's
+  -- overall cap") intact rather than turning it into the empty string.
+  p_category_key := nullif(lower(btrim(p_category_key)), '');
+
+  -- REVIEW FINDING (I3): likewise for period_start -- budgets_period_start_check
+  -- exists to catch a bug that reaches the table directly (e.g. a future
+  -- migration or an admin script), not to be the caller-facing error for
+  -- the one function that is supposed to have already checked this.
+  if p_period_start <> date_trunc('month', p_period_start)::date then
+    raise exception 'a budget period must start on the first of a month';
+  end if;
+
   -- The fails-open case: a budget with no wallets satisfies budget_visible's
   -- non-empty test for NO ONE (it now fails closed -- see 0013's HAZARD
   -- comment above budget_visible), so a wallet-less budget this function
   -- created would be invisible to its own creator forever, with no path to
   -- recover it. Refused here rather than left to rot silently.
-  if array_length(p_wallet_ids, 1) is null then
+  --
+  -- cardinality(), NOT array_length(p_wallet_ids, 1) as an
+  -- earlier draft had it -- REVIEW FINDING (C1, CRITICAL), left here so the
+  -- next reader does not reintroduce it: array_length(x, 1) measures only
+  -- the array's FIRST DIMENSION. For a doubly-nested literal like
+  -- '{{w1,w2}}'::uuid[] (one row of two columns, not two rows), PostgREST
+  -- accepts this over HTTP from an ordinary JSON array-of-arrays, a raw
+  -- '{{...}}' literal, or Prefer: params=single-object -- all three were
+  -- proven to reach this function with a real authenticated JWT.
+  -- array_length(..., 1) = 1 for that value while `= any(...)` and
+  -- unnest(...) below both traverse EVERY element regardless of
+  -- dimensionality, so the membership guard immediately below silently
+  -- checked membership against only ONE wallet while writing budget_wallets
+  -- rows, and computing v_key, over TWO -- letting a caller who is a member
+  -- of exactly one of two wallets plant (or, worse, silently UPDATE, since
+  -- v_key derived from unnest() collides with the flat form's key) a budget
+  -- over a wallet she has no relationship to. cardinality() counts every
+  -- element regardless of dimensionality and returns 0 (not NULL) for an
+  -- empty array, which is why the non-empty test below reads `= 0` rather
+  -- than `is null`. See supabase/tests/rls.sql's "C1" block for the nested
+  -- payload regression test that watches this fail without the fix.
+  if cardinality(p_wallet_ids) = 0 then
     raise exception 'a budget must cover at least one account';
   end if;
 
@@ -436,10 +487,38 @@ begin
   -- function does not rely on that RLS conjunct at all -- it runs before
   -- RLS is ever consulted. A caller who shares only some of the submitted
   -- wallets must not be able to plant a budget over the rest.
+  --
+  -- Also the guard that keeps v_key (below) canonical: `= any(p_wallet_ids)`
+  -- matches each DISTINCT wallet id in wallets at most once, so a caller
+  -- who submits the same wallet id twice (e.g. [w1, w1]) gets v_count = 1
+  -- against cardinality() = 2 and is refused here too -- with a misleading
+  -- message ("not a member of every account"), since the real problem is a
+  -- duplicate, not a stranger's wallet (see M4 in task-3-report.md). Left
+  -- deliberately unfixed for message accuracy: deduping here would let a
+  -- submitted duplicate silently produce a non-canonical v_key downstream,
+  -- and this count check is the ONLY thing preventing that, not merely the
+  -- membership check it reads as.
   select count(*) into v_count from public.wallets w
    where w.id = any(p_wallet_ids) and public.is_wallet_member(w.id);
-  if v_count <> array_length(p_wallet_ids, 1) then
+  if v_count <> cardinality(p_wallet_ids) then
     raise exception 'not a member of every account in that set';
+  end if;
+
+  -- REVIEW FINDING (M5): without this, a budget over an archived wallet was
+  -- created successfully and then never appeared in get_budget_status,
+  -- whose `scope` CTE inner-joins `mine` (is_wallet_member AND
+  -- archived_at is null) -- a silently orphaned budget, not a rejected one.
+  -- Deliberately placed AFTER the membership guard above, not before: at
+  -- this point every id in p_wallet_ids has already been proven to name a
+  -- wallet the caller is a genuine member of, so this query cannot be used
+  -- to probe the archived status of a wallet belonging to someone else --
+  -- it only ever answers the question for wallets already established as
+  -- the caller's own.
+  if exists (
+    select 1 from public.wallets w
+    where w.id = any(p_wallet_ids) and w.archived_at is not null
+  ) then
+    raise exception 'an archived account cannot be part of a budget';
   end if;
 
   select count(distinct w.currency_code) into v_count from public.wallets w
@@ -473,8 +552,20 @@ begin
     -- Safe to update unconditionally: v_existing was found by matching
     -- v_key, the canonical form of p_wallet_ids, so v_existing's wallet set
     -- IS p_wallet_ids -- the exact set membership was just verified over,
-    -- above. There is no way to reach this branch with a set the caller is
-    -- not a full member of.
+    -- above. This claim depends entirely on v_key actually being canonical
+    -- -- REVIEW FINDING (C1, CRITICAL): an earlier draft of this comment
+    -- claimed this branch was UNREACHABLE with an unverified set, which was
+    -- false while v_key was computed via unnest() (which traverses every
+    -- element of a nested array) but the guard above measured membership
+    -- via array_length(..., 1) (which does not). Under that mismatch, a
+    -- caller who was a genuine member of only ONE of two wallets could
+    -- reach this exact branch by submitting them nested, and UPDATE
+    -- amount_minor on a budget over a wallet set she did not fully belong
+    -- to -- proven reachable end-to-end over PostgREST, not merely
+    -- theoretical. Now that both the guard and v_key agree on
+    -- cardinality/unnest (every element, regardless of dimensionality),
+    -- the claim above holds for real: there is no way to reach this branch
+    -- with a set the caller is not a full member of.
     update public.budgets set amount_minor = p_amount_minor where id = v_existing;
     return v_existing;
   end if;

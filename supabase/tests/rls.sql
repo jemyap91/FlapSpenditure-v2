@@ -2714,6 +2714,37 @@ begin;
   end $$;
 commit;
 
+-- REVIEW FINDING (I1, IMPORTANT): every fixture up to this point has the
+-- caller OWNING every wallet in the set she submits, so this suite could
+-- not tell `is_wallet_member(w.id)` apart from `w.owner_id = auth.uid()` --
+-- swap the guard to the latter and every earlier assertion still passes,
+-- including Bob's denial below (he owns neither wallet either way). The
+-- behaviour that matters most in production -- a non-owner MEMBER
+-- budgeting over a wallet shared with them, not just its owner -- was never
+-- exercised. Fixed here: Bob, who owns NEITHER wallet in the set but is a
+-- genuine invited MEMBER of 5e7b0000-...-002 (added by alice, the owner,
+-- via the real wallet_members insert above -- not a superuser seed), must
+-- be able to budget over that wallet alone. Placed BEFORE the denial block
+-- below so a reader sees the positive and negative controls on the same
+-- membership fact in sequence: member of ...002 alone succeeds; member of
+-- ...002 but not ...001 together is refused.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
+  do $$
+  declare v_id uuid;
+  begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+    assert (select owner_id from public.wallets where id = '5e7b0000-0000-0000-0000-000000000002') <> 'bbbbbbbb-0000-0000-0000-000000000002'::uuid,
+      'test setup broken: bob must NOT own SB Wallet Two, only be a member of it, or this control proves nothing';
+
+    v_id := set_budget('groceries', '2026-08-01', 15000,
+      array['5e7b0000-0000-0000-0000-000000000002']::uuid[]);
+    assert v_id is not null,
+      'I1 REGRESSION: bob, a genuine non-owner MEMBER of SB Wallet Two, could not create a budget over it -- membership, not ownership, must be the standard';
+  end $$;
+commit;
+
 -- THE guard that matters most (per the controller addendum for this task):
 -- bob is a genuine member of ONLY ONE of the set's two wallets
 -- (5e7b0000-...-002, via the real invite above) and not the other
@@ -2755,6 +2786,52 @@ commit;
 do $$ begin
   assert (select count(*) from public.budgets where amount_minor = 999900) = 0,
     'LEAK: a trace of bob''s rejected cross-membership budget attempt survived';
+end $$;
+
+-- REVIEW FINDING (C1, CRITICAL) -- the actual production exploit, not a
+-- variant of the block above. array_length(p_wallet_ids, 1) measures only
+-- the FIRST DIMENSION of the array; `= any(...)` and unnest(...) traverse
+-- EVERY element regardless of dimensionality. A doubly-nested literal like
+-- '{{w1,w2}}'::uuid[] -- one row of two columns, not two rows -- therefore
+-- had array_length(...,1) = 1 while v_count (from `= any`) could also be 1
+-- for a caller who is a genuine member of exactly ONE of the two wallets:
+-- `1 <> 1` is false, so the OLD guard passed. This was proven, before the
+-- fix, to reach set_budget over real PostgREST with an ordinary
+-- authenticated JWT in three independent encodings: a nested JSON array, a
+-- raw '{{...}}' Postgres array literal, and Prefer: params=single-object.
+-- The flat-array test above does NOT exercise this path at all -- it is
+-- why every test written before this review passed on the broken guard.
+-- After the cardinality()-based fix, this must refuse with the SAME
+-- membership message the flat form gets, since cardinality() and unnest()
+-- now agree on "every element, regardless of dimension".
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
+  do $$
+  declare v_ok boolean := false;
+  begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+
+    begin
+      -- A genuine 1x2 nested array, NOT array[array[...]] written out long-
+      -- hand -- the literal-string form is what a raw '{{...}}' payload
+      -- over PostgREST actually deserializes to, and is the exact shape
+      -- array_length(...,1) miscounted.
+      perform set_budget('rent', '2026-09-01', 999901,
+        '{{5e7b0000-0000-0000-0000-000000000002,5e7b0000-0000-0000-0000-000000000001}}'::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'not a member of every account in that set',
+        format('wrong error for nested-array partial membership: %s', sqlerrm);
+    end;
+    assert not v_ok,
+      'C1 CRITICAL: bob, a member of only ONE wallet, created (or updated) a budget over a NESTED wallet array covering the other -- array_length(...,1) undercounts a nested array while unnest()/ANY do not';
+  end $$;
+commit;
+
+do $$ begin
+  assert (select count(*) from public.budgets where amount_minor = 999901) = 0,
+    'C1 CRITICAL: a trace of bob''s rejected nested-array cross-membership attempt survived';
 end $$;
 
 -- Empty array and mixed-currency guards, re-proven here under a genuinely
@@ -2803,7 +2880,12 @@ begin;
       array['5e7b0000-0000-0000-0000-000000000001']::uuid[]);
     assert v_id1 = v_id2,
       'IDEMPOTENCY BROKEN: repeat call for the same set/category/month returned a different budget id';
-    select count(*) into v_rows from public.budgets where id = v_id1;
+    -- REVIEW FINDING (I2): count by category_key/period_start, NOT `and id
+    -- = v_id1` (an earlier draft did) -- filtering by primary key makes the
+    -- count structurally 0 or 1 regardless of whether a duplicate landed,
+    -- which is exactly the failure this count exists to catch.
+    select count(*) into v_rows from public.budgets
+      where category_key = 'subscriptions' and period_start = '2026-09-01';
     assert v_rows = 1, format('IDEMPOTENCY BROKEN: expected exactly 1 row, found %s', v_rows);
     assert (select amount_minor from public.budgets where id = v_id1) = 3500,
       'IDEMPOTENCY BROKEN: row should carry the second call''s amount';

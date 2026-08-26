@@ -470,6 +470,35 @@ begin;
     assert not v_ok, 'GUARD BROKEN: set_budget accepted a wallet alice is not a member of';
   end $$;
 
+  -- REJECT 3b (REVIEW FINDING C1, CRITICAL): the SAME denial as REJECT 3,
+  -- submitted as a doubly-nested array literal instead of a flat one.
+  -- array_length(p_wallet_ids, 1) measures only the array's first
+  -- dimension, so a '{{...}}' literal (one row of two columns, not two
+  -- rows) made the OLD membership guard undercount -- while `= any(...)`
+  -- and unnest() both still traverse every element regardless of
+  -- dimensionality. This was proven, before the fix, to reach set_budget
+  -- over real PostgREST with an ordinary authenticated JWT in three
+  -- independent encodings (nested JSON array, raw '{{...}}' literal, and
+  -- Prefer: params=single-object) and let a partial member both INSERT and
+  -- silently UPDATE a budget over a wallet set she did not fully belong to.
+  -- REJECT 3 alone (the flat form) does NOT exercise this path -- it is
+  -- exactly why every test written before this review passed against the
+  -- broken guard.
+  do $$
+  declare v_ok boolean := false;
+  begin
+    begin
+      perform set_budget('groceries', '2026-11-01', 50000,
+        '{{cccccccc-0000-0000-0000-0000000000b1,cccccccc-0000-0000-0000-0000000000b4}}'::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'not a member of every account in that set',
+        format('wrong error for nested-array non-member wallet: %s', sqlerrm);
+    end;
+    assert not v_ok,
+      'C1 CRITICAL: set_budget accepted a NESTED array containing a wallet alice is not a member of';
+  end $$;
+
   -- ACCEPT + REJECT 4: calling set_budget twice for the SAME category, set
   -- and month must leave exactly ONE row, carrying the SECOND amount. Row
   -- count is asserted, not only the amount, since "updated" and "inserted a
@@ -485,9 +514,15 @@ begin;
     assert v_id1 = v_id2,
       format('IDEMPOTENCY BROKEN: second call for the same set/category/month returned a different id (%s vs %s)', v_id1, v_id2);
 
+    -- REVIEW FINDING (I2): filtering this count by `and id = v_id1` (an
+    -- earlier draft did) makes it structurally 0 or 1 no matter what --
+    -- primary-key equality can never observe a genuine duplicate row, which
+    -- is exactly the failure mode this count exists to catch. Filtering by
+    -- category_key/period_start only, over the WHOLE table, is what
+    -- actually distinguishes "updated in place" (1 row) from "inserted a
+    -- second budget" (2 rows).
     select count(*) into v_rows from public.budgets
-      where category_key = 'dining' and period_start = '2026-12-01'
-        and id = v_id1;
+      where category_key = 'dining' and period_start = '2026-12-01';
     assert v_rows = 1,
       format('IDEMPOTENCY BROKEN: expected exactly 1 row for the repeated set/category/month, found %s', v_rows);
 
