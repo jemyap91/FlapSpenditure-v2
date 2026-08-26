@@ -124,6 +124,18 @@ describe("setBudget", () => {
     expect(fromTables).toEqual([]);
   });
 
+  it("rejects a malformed wallet id before touching the database", async () => {
+    // budgetInput validates each wallet id as z.uuid() (src/lib/validation/
+    // budget.ts) — this must be refused by the schema itself, before any
+    // Supabase client is constructed, not left to surface later as a
+    // generic "could not save" from set_budget's own uuid[] cast.
+    const result = await setBudget(CATEGORY_KEY, {}, budgetForm("600", ["not-a-uuid"]));
+
+    expect(result).toEqual({ error: "Invalid UUID" });
+    expect(rpcCalls).toEqual([]);
+    expect(fromTables).toEqual([]);
+  });
+
   it("refuses a non-member set with a readable message", async () => {
     membershipRows.length = 0;
     membershipRows.push({ wallet_id: WALLET_ID_1 }); // caller is not in WALLET_ID_2
@@ -170,13 +182,20 @@ describe("setBudget", () => {
         },
       },
     ]);
-    // The array must be flat, not nested — a nested array defeated the
-    // membership guard in set_budget until it was fixed at the SQL layer
-    // (0013's C1 finding). This asserts the JS side never reintroduces
-    // that shape.
+    // The array must be FLAT, not nested — a nested array (`{{w1,w2}}`)
+    // once defeated set_budget's own membership guard at the SQL layer,
+    // because `array_length(x, 1)` counts only the first dimension while
+    // `unnest` counts every element (0013's C1 finding, closed in SQL).
+    // This asserts the JS side never reintroduces that shape: the array
+    // reaching the RPC must be the EXACT SAME shape `formData.getAll()`
+    // produced — same length, same elements, same order, no element
+    // itself an array.
     const sentArgs = rpcCalls[0]!.args as { p_wallet_ids: unknown };
+    const expectedFlat = budgetForm("600", [WALLET_ID_1, WALLET_ID_2]).getAll("walletIds");
+    expect(sentArgs.p_wallet_ids).toEqual(expectedFlat);
     expect(Array.isArray(sentArgs.p_wallet_ids)).toBe(true);
     expect((sentArgs.p_wallet_ids as unknown[]).every((v) => typeof v === "string")).toBe(true);
+    expect((sentArgs.p_wallet_ids as unknown[]).some((v) => Array.isArray(v))).toBe(false);
   });
 
   it("uses the wallet's own currency's minor unit, not a hardcoded 2", async () => {

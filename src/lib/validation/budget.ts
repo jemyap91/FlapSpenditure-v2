@@ -19,16 +19,16 @@ export const budgetInput = z.object({
   // set_budget itself, and ignored by get_budget_status. Three layers
   // because it fails OPEN.
   //
-  // Elements are validated as non-empty strings, not `z.uuid()`: the task
-  // brief's own step-1 test asserts `walletIds: ["a"]` parses successfully,
-  // which a `z.uuid()` element schema would reject, making that test
-  // permanently red rather than a red-then-green TDD cycle. Format
-  // validation is left to the database: a malformed id reaches `set_budget`
-  // as a `uuid[]` argument, Postgres rejects the cast, and the action below
-  // maps that failure to the same generic app-authored copy every other
-  // `set_budget` refusal gets — so a bad id still can never reach a write,
-  // it just fails one layer later than a `z.uuid()` element check would.
-  walletIds: z.array(z.string().min(1)).min(1, "Choose at least one account"),
+  // Elements are validated as `z.uuid()`, matching the convention
+  // src/server/actions/categories.ts's own `idSchema` already established
+  // (its comment records a prior review fix for exactly this: an untyped-
+  // but-assumed-uuid id parameter left unvalidated). A malformed id is
+  // caught HERE, before any Supabase client is constructed or any table is
+  // touched — not left to surface one layer later as a generic
+  // "could not save" after a round trip through set_budget's own `uuid[]`
+  // cast. That later layer still exists in set_budget itself (defense in
+  // depth), but this is the precise, pre-DB-call rejection.
+  walletIds: z.array(z.uuid()).min(1, "Choose at least one account"),
 });
 
 export type BudgetInput = z.infer<typeof budgetInput>;
