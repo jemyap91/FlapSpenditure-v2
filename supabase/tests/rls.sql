@@ -1758,3 +1758,159 @@ begin;
   end $$;
 commit;
 
+
+-- =====================================================================
+-- Budgets (0013): TRUNCATE must not have leaked in via default privileges.
+-- I7 fix round: restores the coverage the old 0012 section had for
+-- `budgets` (the first table created after 0004_rls.sql's default-privilege
+-- revoke was written) and extends it to `budget_wallets`, the second table
+-- 0013 adds. TRUNCATE is table-level and is not filtered by RLS at all, so
+-- if the default-privilege revoke did not take, one signed-in user could
+-- wipe every user's budgets. No impersonation needed: has_table_privilege
+-- reads the grant catalog for that role directly, regardless of the
+-- session's own current_user.
+-- =====================================================================
+do $$ begin
+  assert not has_table_privilege('authenticated', 'public.budgets', 'TRUNCATE'),
+    'authenticated must not hold TRUNCATE on budgets';
+  assert not has_table_privilege('anon', 'public.budgets', 'TRUNCATE'),
+    'anon must not hold TRUNCATE on budgets';
+  assert not has_table_privilege('authenticated', 'public.budget_wallets', 'TRUNCATE'),
+    'authenticated must not hold TRUNCATE on budget_wallets';
+  assert not has_table_privilege('anon', 'public.budget_wallets', 'TRUNCATE'),
+    'anon must not hold TRUNCATE on budget_wallets';
+end $$;
+
+-- =====================================================================
+-- Budgets (0013): C1 fix round. This is the test that would have caught
+-- the review finding: budgets_visible's original inline-subquery form read
+-- budget_wallets directly, but budget_wallets carries its own RLS
+-- (budget_wallets_member), and Postgres applies a REFERENCED table's RLS
+-- when evaluating a query inside another table's policy expression -- the
+-- same mechanism 0004_rls.sql documents from the other side for
+-- is_wallet_member. The inner scan only ever saw rows the caller already
+-- had access to, so `not is_wallet_member(...)` was false for every row it
+-- could see, the subquery always returned zero rows, and `not exists` was
+-- always TRUE: budgets_visible degenerated to `true` for everyone. The fix
+-- hoists the predicate behind budget_visible(), a SECURITY DEFINER
+-- function that bypasses budget_wallets' RLS the same way is_wallet_member
+-- bypasses wallet_members'.
+--
+-- Alice creates a budget over her own wallet (cccccccc-003, from section 1)
+-- -- fixed ids (not `limit 1`-derived), for the same reason the deleted
+-- 0012 section gave: several actors below must target the SAME row.
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select current_user) = 'authenticated', 'role switch did not take effect';
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'wrong impersonated user';
+
+    -- budgets INSERT is granted to authenticated, and budgets_visible's
+    -- WITH CHECK passes vacuously here (no budget_wallets row references
+    -- this id yet, so `not exists` is trivially true) -- a real exercise of
+    -- the policy, not a bypass.
+    insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+    values ('b0000000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+            'USD', null, '2026-08-01', 100000);
+  end $$;
+commit;
+
+-- Attaching a wallet to the budget is done here as the table-owning
+-- superuser, deliberately outside any role impersonation: I2 (below)
+-- revokes INSERT/DELETE on budget_wallets from authenticated entirely --
+-- composing a budget's wallet set is meant to go through set_budget
+-- (Task 3), which does not exist yet. This fixture step stands in for that
+-- future function call; it is setup, not the thing under test -- the
+-- assertions immediately below are what actually exercises RLS.
+insert into public.budget_wallets (budget_id, wallet_id)
+values ('b0000000-0000-0000-0000-000000000001', 'cccccccc-0000-0000-0000-000000000003');
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'wrong impersonated user';
+    -- Positive control, paired with Carol's LEAK check immediately below: a
+    -- genuine member of every wallet in the set sees the budget. Without
+    -- this, a wholly broken grants/RLS setup (nobody can see anything)
+    -- would make the LEAK check pass for the wrong reason.
+    assert (select count(*) from public.budgets where id = 'b0000000-0000-0000-0000-000000000001') = 1,
+      'PERMISSION BROKEN: a member cannot read her own budget';
+  end $$;
+commit;
+
+-- Carol (a total stranger to cccccccc-003, per the grep-confirmed absence of
+-- any membership grant to her anywhere in this file) must see nothing of
+-- Alice's budget. THIS is the assertion that failed under the broken
+-- inline-subquery policy -- see this task's report for the watch-it-fail
+-- transcript proving it.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"cccccccc-0000-0000-0000-000000000009","email":"carol@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'cccccccc-0000-0000-0000-000000000009'::uuid, 'impersonation failed';
+    assert (select count(*) from public.budgets where id = 'b0000000-0000-0000-0000-000000000001') = 0,
+      'LEAK: a non-member can read a budget whose only wallet she does not belong to';
+  end $$;
+commit;
+
+-- =====================================================================
+-- Budgets (0013): I2 fix round. budget_wallets grants INSERT/DELETE to
+-- nobody: foreign key checks bypass RLS entirely, so a row inserted
+-- straight into budget_wallets could legally reference a budget the
+-- inserting user cannot fully see or control the wallet SET of, even
+-- though budget_wallets_member's own RLS predicate (is_wallet_member on
+-- the NEW row's wallet alone) would happily allow it. Alice is a genuine
+-- member of cccccccc-003 -- exactly the wallet named in both attempts
+-- below -- so if this were an RLS gap rather than a privilege one, both
+-- would silently succeed. Positive control (SELECT) proves reads still
+-- work, so a wholesale-revoked table (which would also block SELECT)
+-- cannot make the two denials below pass for the wrong reason.
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+
+    -- Positive control: SELECT is still granted and RLS lets a member read
+    -- the join row for a budget/wallet pair she belongs to.
+    assert (select count(*) from public.budget_wallets where budget_id = 'b0000000-0000-0000-0000-000000000001') = 1,
+      'PERMISSION BROKEN: a member cannot read budget_wallets for her own budget';
+
+    -- A second, wallet-less budget of Alice's own (INSERT on budgets is
+    -- still granted), so the INSERT attempt below cannot be masked by a
+    -- primary-key collision with the row already in place above.
+    insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+    values ('b0000000-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001',
+            'USD', null, '2026-09-01', 50000);
+
+    -- I2: INSERT must be blocked at the PRIVILEGE boundary (grant revoked),
+    -- not merely by RLS -- a member of the wallet named in the new row
+    -- would satisfy budget_wallets_member's predicate, so only the missing
+    -- grant stops her composing her own budget's wallet set outside
+    -- set_budget (and, by the same mechanism, another user's).
+    begin
+      insert into public.budget_wallets (budget_id, wallet_id)
+      values ('b0000000-0000-0000-0000-000000000002', 'cccccccc-0000-0000-0000-000000000003');
+      raise exception 'LEAK: a member could INSERT into budget_wallets directly';
+    exception when insufficient_privilege then null;
+    end;
+
+    -- I2: DELETE likewise, against the row seeded above and already proved
+    -- readable.
+    begin
+      delete from public.budget_wallets where budget_id = 'b0000000-0000-0000-0000-000000000001';
+      raise exception 'LEAK: a member could DELETE from budget_wallets directly';
+    exception when insufficient_privilege then null;
+    end;
+
+    -- Confirms the denied DELETE truly did nothing (a caught exception
+    -- from PL/pgSQL rolls back to an implicit savepoint, but this is the
+    -- assertion that PROVES it, rather than assuming it).
+    assert (select count(*) from public.budget_wallets where budget_id = 'b0000000-0000-0000-0000-000000000001') = 1,
+      'PERMISSION BROKEN: budget_wallets row disappeared despite DELETE being denied';
+  end $$;
+commit;

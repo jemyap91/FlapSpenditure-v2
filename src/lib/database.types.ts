@@ -92,7 +92,15 @@ export type Database = {
           id?: string
           period_start?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "budgets_currency_code_fkey"
+            columns: ["currency_code"]
+            isOneToOne: false
+            referencedRelation: "currencies"
+            referencedColumns: ["code"]
+          },
+        ]
       }
       categories: {
         Row: {
@@ -394,6 +402,7 @@ export type Database = {
     }
     Functions: {
       accept_wallet_invite: { Args: { invite: string }; Returns: undefined }
+      budget_visible: { Args: { b: string }; Returns: boolean }
       create_transfer: {
         Args: {
           amount_in: number

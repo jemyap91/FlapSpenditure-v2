@@ -219,10 +219,15 @@ begin
 end $$;
 
 -- Budgets (0013). 0012's budgets/get_budget_status tests are gone with the
--- table: get_budget_status was CASCADE-dropped along with budgets (0013's
--- own comment), and 0012's category_id/wallet_id-keyed rows no longer match
--- this shape. Task 2 recreates get_budget_status and its coverage; this
--- file only proves the CHECK/FK invariants 0013 itself adds, per this
+-- table. NOTE the direction of that fact, corrected after an earlier draft
+-- of this comment got it backwards: get_budget_status was NOT reached by
+-- `drop table budgets cascade` -- Postgres does not track a dependency on a
+-- table referenced only inside a PL/pgSQL function body, so CASCADE alone
+-- left it (and set_budget) present and silently broken against the new
+-- columns. 0013 drops both explicitly, for exactly that reason (see its own
+-- comment). 0012's category_id/wallet_id-keyed rows no longer match this
+-- shape either way. Task 2 recreates get_budget_status and its coverage;
+-- this file only proves the CHECK/FK invariants 0013 itself adds, per this
 -- file's own header (table-owning superuser, RLS bypassed by design -- the
 -- membership boundary is rls.sql's job, not this file's).
 --
@@ -250,26 +255,36 @@ begin
   end;
 end $$;
 
--- amount_minor must be positive: zero and negative
+-- amount_minor must be positive: zero and negative. m8 fix round: name-blind
+-- `then null` catches were load-bearing today but silent if a second CHECK
+-- were ever added to the column -- assert the specific constraint name, the
+-- same discipline guard 1 above and this file's own header both require.
 do $$
+declare v_constraint text;
 begin
   begin
     insert into public.budgets (created_by, currency_code, category_key, period_start, amount_minor)
     values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', 'groceries', '2026-11-01', 0);
     raise exception 'CONSTRAINT BROKEN: budgets accepted a zero amount';
-  exception when check_violation then null;
+  exception when check_violation then
+    get stacked diagnostics v_constraint = constraint_name;
+    assert v_constraint = 'budgets_amount_minor_check',
+      format('wrong constraint fired (zero): %s', v_constraint);
   end;
   begin
     insert into public.budgets (created_by, currency_code, category_key, period_start, amount_minor)
     values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', 'groceries', '2026-11-01', -100);
     raise exception 'CONSTRAINT BROKEN: budgets accepted a negative amount';
-  exception when check_violation then null;
+  exception when check_violation then
+    get stacked diagnostics v_constraint = constraint_name;
+    assert v_constraint = 'budgets_amount_minor_check',
+      format('wrong constraint fired (negative): %s', v_constraint);
   end;
 end $$;
 
 -- budget_wallets rejects a wallet that does not exist, and cascades on delete
 do $$
-declare v_budget uuid; v_rows int;
+declare v_budget uuid; v_rows int; v_constraint text;
 begin
   insert into public.budgets (created_by, currency_code, category_key, period_start, amount_minor)
   values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', 'groceries', '2026-11-01', 50000)
@@ -279,7 +294,14 @@ begin
     insert into public.budget_wallets (budget_id, wallet_id)
     values (v_budget, '00000000-0000-0000-0000-0000000000ff');
     raise exception 'CONSTRAINT BROKEN: budget_wallets accepted a nonexistent wallet';
-  exception when foreign_key_violation then null;
+  exception when foreign_key_violation then
+    -- m8 fix round: name the constraint, not just the SQLSTATE class --
+    -- budget_wallets has two FKs (budget_id, wallet_id) and this insert
+    -- supplies a valid budget_id, so asserting the name confirms THIS is
+    -- the one that fired, not a coincidental failure on the other.
+    get stacked diagnostics v_constraint = constraint_name;
+    assert v_constraint = 'budget_wallets_wallet_id_fkey',
+      format('wrong constraint fired: %s', v_constraint);
   end;
 
   insert into public.budget_wallets (budget_id, wallet_id)
@@ -288,4 +310,61 @@ begin
   delete from public.budgets where id = v_budget;
   select count(*) into v_rows from public.budget_wallets where budget_id = v_budget;
   assert v_rows = 0, 'CASCADE BROKEN: budget_wallets rows survived their budget';
+end $$;
+
+-- budgets_currency_code_fkey (I4 fix round): a budget may not carry a
+-- currency no wallet could ever have. Matches the ACCEPT/REJECT pairing this
+-- file uses throughout -- the REJECT alone would not prove the FK is scoped
+-- to exactly the currency column, so a legitimate currency is proven
+-- separately (every other block in this file already inserts with 'SGD').
+do $$
+declare v_constraint text;
+begin
+  begin
+    insert into public.budgets (created_by, currency_code, category_key, period_start, amount_minor)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', 'ZZZ', 'groceries', '2026-11-01', 50000);
+    raise exception 'CONSTRAINT BROKEN: budgets accepted a currency_code with no matching currency';
+  exception when foreign_key_violation then
+    get stacked diagnostics v_constraint = constraint_name;
+    assert v_constraint = 'budgets_currency_code_fkey',
+      format('wrong constraint fired: %s', v_constraint);
+  end;
+end $$;
+
+-- budgets_category_key_check (I6 fix round): the comment on the column
+-- promises `lower(btrim(name))`, or NULL for the overall cap. A CHECK is
+-- satisfied by NULL -- proven here, not assumed -- and a value that isn't
+-- already normalised (leading/trailing space, wrong case) or is empty must
+-- be rejected, or the next task's join against categories.name would miss
+-- rows silently instead of failing loudly.
+do $$
+declare v_constraint text; v_id uuid;
+begin
+  -- ACCEPT: NULL (the overall cap) must not trip the CHECK.
+  insert into public.budgets (created_by, currency_code, category_key, period_start, amount_minor)
+  values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', null, '2026-12-01', 50000)
+  returning id into v_id;
+  assert v_id is not null, 'CONSTRAINT BROKEN: budgets_category_key_check rejected a NULL category_key (the overall cap)';
+
+  -- REJECT: not already lower(btrim(...)) -- mixed case and untrimmed space.
+  begin
+    insert into public.budgets (created_by, currency_code, category_key, period_start, amount_minor)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', ' Groceries ', '2026-12-01', 50000);
+    raise exception 'CONSTRAINT BROKEN: budgets accepted a non-normalised category_key';
+  exception when check_violation then
+    get stacked diagnostics v_constraint = constraint_name;
+    assert v_constraint = 'budgets_category_key_check',
+      format('wrong constraint fired (non-normalised): %s', v_constraint);
+  end;
+
+  -- REJECT: the empty string, distinct from NULL but equally meaningless.
+  begin
+    insert into public.budgets (created_by, currency_code, category_key, period_start, amount_minor)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', '', '2026-12-01', 50000);
+    raise exception 'CONSTRAINT BROKEN: budgets accepted an empty-string category_key';
+  exception when check_violation then
+    get stacked diagnostics v_constraint = constraint_name;
+    assert v_constraint = 'budgets_category_key_check',
+      format('wrong constraint fired (empty string): %s', v_constraint);
+  end;
 end $$;
