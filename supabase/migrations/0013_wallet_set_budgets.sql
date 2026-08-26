@@ -62,14 +62,30 @@ alter table budget_wallets enable row level security;
 -- personal. A budget covering a wallet you are not in is unrepresentable, so
 -- it cannot surface figures derived from spending you cannot see.
 --
--- HAZARD: `not exists` over zero rows is TRUE, so a budget with NO wallets
--- would be visible to everyone. set_budget (Task 3) refuses to create one and
--- get_budget_status (Task 2) ignores any that exists. This is the single
--- fails-open case in an otherwise fails-closed design. UNTESTED as of this
--- task: rls.sql does not yet assert the empty-set case (grep confirms no
--- such assertion exists), and the fix round that restored budget coverage
--- here did not add one either -- a later task's job, not a claim of
--- present coverage.
+-- HAZARD: `not exists` over zero rows is TRUE, so budget_visible(b) returns
+-- TRUE for a budget with NO budget_wallets rows -- it would be visible to
+-- everyone if visibility were decided by budget_visible() alone. set_budget
+-- (Task 3) refuses to create one. get_budget_status (Task 2) is where a
+-- wallet-less budget's spending would otherwise leak, and structurally it
+-- cannot: its `keyed` CTE does `join public.budget_wallets bw on
+-- bw.budget_id = v.id`, a plain INNER join, which produces zero rows for
+-- any budget_id absent from budget_wallets no matter what `vis` lets
+-- through. `vis` also carries its own
+-- `exists (select 1 from budget_wallets bw where bw.budget_id = b.id)`
+-- check -- but that check is REDUNDANT for this function's output, not the
+-- operative protection: removing it and re-running the empty-set assertion
+-- below still returned zero rows for the wallet-less budget, because
+-- `keyed`'s INNER JOIN excludes it regardless (watched and confirmed; see
+-- task-2-report.md for the transcript). It is left in place anyway as
+-- defense-in-depth against `keyed`'s join ever being loosened to a LEFT
+-- JOIN, and because budget_visible() itself is used elsewhere (the
+-- budgets_visible RLS policy above) where no such join exists to fall back
+-- on -- but a future reader should not mistake `vis`'s exists() clause for
+-- what actually closes this hazard in get_budget_status; `keyed`'s INNER
+-- JOIN is. Tested in rls.sql: the "Budgets (0013): get_budget_status"
+-- section's empty-set block reuses the wallet-less budget the I2 fixture
+-- above already leaves in the database and asserts an ordinary member gets
+-- zero rows for it from get_budget_status.
 --
 -- SECURITY DEFINER wrapper is REQUIRED, not stylistic, and for the exact
 -- reason 0004_rls.sql's opening comment gives for is_wallet_member: Postgres
@@ -151,3 +167,115 @@ grant update (amount_minor) on budgets to authenticated;
 -- sentence (0004 spells this out for transactions.wallet_id; this comment
 -- is that sentence for budget_wallets).
 grant select on budget_wallets to authenticated;
+
+-- One row per visible budget, plus one row per category with spending that no
+-- visible budget covers. Self-scoping: no wallet-ids parameter, so there is no
+-- caller-supplied filter to tamper with.
+create function get_budget_status(from_date date, to_date date)
+  returns table (
+    budget_id uuid, category_key text, category_label text,
+    currency_code char(3), wallet_names text[], wallet_count int,
+    spent_minor bigint, budget_minor bigint, budget_period_start date
+  )
+  language plpgsql stable security definer set search_path = '' as $$
+begin
+  return query
+  with mine as (
+    select w.id, w.name, w.currency_code
+    from public.wallets w
+    where public.is_wallet_member(w.id) and w.archived_at is null
+  ),
+  -- Visible AND non-empty. The membership half is delegated to
+  -- budget_visible(id) rather than re-inlined here: this function is
+  -- itself SECURITY DEFINER and so bypasses budget_wallets' RLS today, but
+  -- routing through budget_visible keeps the membership rule in one
+  -- auditable place instead of two definitions that could silently drift
+  -- apart. The `exists (...)` non-empty test guards against
+  -- budget_visible's own `not exists`-over-zero-rows-is-TRUE hazard (see
+  -- this migration's HAZARD comment above `budget_visible`'s definition)
+  -- as belt-and-braces, but is NOT what actually keeps a wallet-less
+  -- budget out of this function's output: `keyed` below INNER JOINs to
+  -- budget_wallets, which structurally excludes any budget_id with zero
+  -- rows there regardless of what `vis` contains. Confirmed empirically --
+  -- removing this `exists (...)` clause alone did not surface the
+  -- wallet-less fixture in rls.sql's empty-set assertion (see
+  -- task-2-report.md).
+  vis as (
+    select b.*
+    from public.budgets b
+    where exists (select 1 from public.budget_wallets bw where bw.budget_id = b.id)
+      and public.budget_visible(b.id)
+  ),
+  -- Canonical identity for a wallet SET, so carry-forward can ask "the most
+  -- recent budget for THIS set and category" without a set-valued join key.
+  keyed as (
+    select v.id, v.category_key, v.period_start, v.amount_minor, v.currency_code,
+           string_agg(bw.wallet_id::text, ',' order by bw.wallet_id) as set_key
+    from vis v
+    join public.budget_wallets bw on bw.budget_id = v.id
+    where v.period_start <= from_date
+    group by v.id, v.category_key, v.period_start, v.amount_minor, v.currency_code
+  ),
+  -- Carry-forward: the most recent row at or before the month, per set and
+  -- category. A budget set in September governs October until another exists.
+  eff as (
+    select distinct on (k.set_key, k.category_key) k.*
+    from keyed k
+    order by k.set_key, k.category_key, k.period_start desc
+  ),
+  -- Every predicate lives in the ON clause, none in a WHERE. Filtering the
+  -- right-hand side of a LEFT JOIN in WHERE would discard the whole budget
+  -- when nothing matches (a NULL comparison is not true), so a budget with no
+  -- spending yet would VANISH instead of reporting 0 -- the disappearing-row
+  -- dead end this redesign exists to remove. `coalesce` then turns the
+  -- no-match case into a genuine zero.
+  spend as (
+    select e.id as budget_id, coalesce(sum(-t.amount_minor), 0)::bigint as spent
+    from eff e
+    join public.budget_wallets bw on bw.budget_id = e.id
+    left join public.transactions t
+      on t.wallet_id = bw.wallet_id
+     and t.kind = 'expense'
+     and t.deleted_at is null
+     and t.occurred_on between from_date and to_date
+    left join public.categories c
+      on c.id = t.category_id
+     and (e.category_key is null or lower(btrim(c.name)) = e.category_key)
+    -- Drop transactions that matched a wallet but not this budget's category,
+    -- without dropping budgets that matched nothing at all.
+    where t.id is null or c.id is not null or e.category_key is null
+    group by e.id
+  ),
+  scope as (
+    select bw.budget_id, array_agg(m.name order by m.name) as names, count(*)::int as n
+    from public.budget_wallets bw join mine m on m.id = bw.wallet_id
+    group by bw.budget_id
+  ),
+  -- Spending in my wallets whose category no visible budget covers.
+  uncovered as (
+    select lower(btrim(c.name)) as key, min(c.name) as label,
+           m.currency_code, sum(-t.amount_minor)::bigint as spent
+    from public.transactions t
+    join mine m on m.id = t.wallet_id
+    join public.categories c on c.id = t.category_id
+    where t.kind = 'expense' and t.deleted_at is null
+      and t.occurred_on between from_date and to_date
+      and not exists (select 1 from eff e where e.category_key = lower(btrim(c.name)))
+    group by 1, 3
+  )
+  select e.id, e.category_key,
+         coalesce((select min(c.name) from public.categories c
+                   where lower(btrim(c.name)) = e.category_key), e.category_key),
+         e.currency_code, s.names, s.n,
+         sp.spent, e.amount_minor, e.period_start
+  from eff e
+  join spend sp on sp.budget_id = e.id
+  join scope s on s.budget_id = e.id
+  union all
+  select null::uuid, u.key, u.label, u.currency_code, null::text[], null::int,
+         u.spent, null::bigint, null::date
+  from uncovered u;
+end $$;
+
+revoke all on function get_budget_status(date, date) from public, anon;
+grant execute on function get_budget_status(date, date) to authenticated;

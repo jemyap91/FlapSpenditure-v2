@@ -415,6 +415,20 @@ export type Database = {
         Returns: string
       }
       decline_wallet_invite: { Args: { invite: string }; Returns: undefined }
+      get_budget_status: {
+        Args: { from_date: string; to_date: string }
+        Returns: {
+          budget_id: string
+          budget_minor: number
+          budget_period_start: string
+          category_key: string
+          category_label: string
+          currency_code: string
+          spent_minor: number
+          wallet_count: number
+          wallet_names: string[]
+        }[]
+      }
       get_cash_flow: {
         Args: {
           bucket?: string
