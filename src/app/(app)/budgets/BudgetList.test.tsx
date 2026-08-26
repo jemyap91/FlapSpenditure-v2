@@ -1,15 +1,21 @@
 // src/app/(app)/budgets/BudgetList.test.tsx
 //
-// `BudgetStatusRow` is imported from "@/lib/budget-status", NOT redefined
-// or re-exported here — see that file's own doc comment: it is the
-// nullability-corrected shape of `get_budget_status`'s (0012) generated
-// row type, added specifically so this UI cannot dereference a null
-// `category_id`/`category_name`/`color_slot`/`icon`/`budget_minor`/
-// `budget_id`/`budget_period_start`. Redefining it locally (as an earlier
-// draft of this task's brief showed) would silently reintroduce the exact
-// bug that type exists to prevent.
+// Rewritten for the wallet-SET budget model (task-6-brief.md +
+// CONTROLLER ADDENDUM). `BudgetStatusRow` is imported from
+// "@/lib/budget-status", never redefined here — see that file's own doc
+// comment on why: it is the nullability-corrected shape of
+// `get_budget_status`'s (0013) generated row type, and defining a local
+// shadow of it is exactly the mistake that shipped an `undefined 2026`
+// heading on the previous branch.
+//
+// Two row "kinds" arrive in the same `rows` array (controller addendum §1):
+// - a BUDGET row: `budget_id`, `category_key`/`category_label` (null only
+//   for the overall cap), `wallet_names`, `wallet_count`, `budget_minor`,
+//   `budget_period_start` all non-null.
+// - an UNCOVERED-spending row: all five of those are null; `budget_minor`
+//   null means "no target", never zero.
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BudgetList } from "./BudgetList";
 import { removeBudget, setBudget } from "@/server/actions/budgets";
@@ -17,184 +23,184 @@ import type { BudgetStatusRow } from "@/lib/budget-status";
 
 vi.mock("@/server/actions/budgets", () => ({ setBudget: vi.fn(), removeBudget: vi.fn() }));
 
-const row = (over: Partial<BudgetStatusRow>): BudgetStatusRow => ({
-  wallet_id: "w1", wallet_name: "Test", currency_code: "SGD",
-  category_id: "c1", category_name: "Groceries", color_slot: 1, icon: "shopping-basket",
-  spent_minor: 0, budget_minor: null, budget_id: null, budget_period_start: null, ...over,
+/** A BUDGETED row (overall cap or category), matching the "budget row" shape. */
+const row = (over: Partial<BudgetStatusRow> = {}): BudgetStatusRow => ({
+  budget_id: "b1",
+  category_key: "groceries",
+  category_label: "Groceries",
+  currency_code: "SGD",
+  wallet_names: ["Everyday"],
+  wallet_count: 1,
+  spent_minor: 0,
+  budget_minor: 60000,
+  budget_period_start: "2026-08-01",
+  ...over,
+});
+
+/** An UNCOVERED-spending row — no budget covers this category for this wallet. */
+const uncoveredRow = (over: Partial<BudgetStatusRow> = {}): BudgetStatusRow => ({
+  budget_id: null,
+  category_key: "dining",
+  category_label: "Dining",
+  currency_code: "SGD",
+  wallet_names: null,
+  wallet_count: null,
+  spent_minor: 0,
+  budget_minor: null,
+  budget_period_start: null,
+  ...over,
 });
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(removeBudget).mockResolvedValue({});
+  vi.mocked(setBudget).mockResolvedValue({});
 });
 
-describe("BudgetList", () => {
-  it("shows spending against its budget in figures, not only a bar", () => {
-    const { container } = render(<BudgetList rows={[row({ spent_minor: 41200, budget_minor: 60000 })]} />);
-    expect(screen.getByText(/SGD 412\.00/)).toBeInTheDocument();
-    expect(screen.getByText(/SGD 600\.00/)).toBeInTheDocument();
-    expect(screen.getByText(/69%/)).toBeInTheDocument();
-    // Positive control for the null-budget test's `.h-2` absence assertion
-    // below: without this, a rename of the bar's height class (e.g.
-    // `h-2` -> `h-1.5`) would make that selector match nothing anywhere in
-    // this file, and the absence assertion would pass vacuously forever
-    // instead of catching the drift.
-    expect(container.querySelector(".h-2")).toBeInTheDocument();
-  });
-
-  it("states an overrun in words, never by colour alone", () => {
-    render(<BudgetList rows={[row({ spent_minor: 24500, budget_minor: 20000 })]} />);
-    // A screen reader user and a sighted user must get the same information.
-    expect(screen.getByText(/over by SGD 45\.00/i)).toBeInTheDocument();
-  });
-
-  it("shows an unbudgeted category as untracked, not as 100% over — no percent, no bar", () => {
-    const { container } = render(<BudgetList rows={[row({ spent_minor: 9000, budget_minor: null })]} />);
-    expect(screen.getByText(/no budget set/i)).toBeInTheDocument();
-    expect(screen.queryByText(/over by/i)).not.toBeInTheDocument();
-    // Step 3 requires BOTH "no percent" and "no bar" for a null budget —
-    // an absence-only check on "over by" alone would still pass a
-    // regression that folded a null budget into `budget_minor ?? 0`
-    // (budgetProgress treats any non-positive budget as untracked too, so
-    // that specific regression happens to still read "no budget set", but
-    // it would also start rendering a 0%-wide bar and "0%" text, which
-    // these two assertions catch).
-    expect(screen.queryByText(/\d+%/)).not.toBeInTheDocument();
-    // The bar has no accessible role (deliberately `aria-hidden` — the
-    // paragraph above already carries the meaning), so it can only be
-    // checked via the DOM directly. CategoryBreakdown.test.tsx's own mini-
-    // bar assertion (`table.querySelector("td div div")`) is the same
-    // "query the container directly for a decorative node" precedent.
-    expect(container.querySelector(".h-2")).not.toBeInTheDocument();
-  });
-
-  it("orders category rows per spec regardless of the order the DB returns them in", () => {
-    // Spec §5: "The wallet's overall cap, then each budgeted category, then
-    // any unbudgeted category that has spending this month." get_budget_status
-    // (0012_budgets.sql) has no ORDER BY at all, so this deliberately supplies
-    // rows in an order that satisfies NEITHER "budgeted before unbudgeted"
-    // NOR alphabetical -- an unbudgeted category first, then two budgeted
-    // categories out of alphabetical order -- so the assertion below can
-    // only pass if BudgetList itself imposes the order, not by accident of
-    // input order.
-    const { container } = render(
+describe("BudgetList — rendering a budgeted row", () => {
+  it("renders spending against its cap with a percent and its scope label", () => {
+    render(
       <BudgetList
-        rows={[
-          row({ category_id: "c-apple", category_name: "Apple", spent_minor: 100, budget_minor: null }),
-          row({ category_id: "c-zebra", category_name: "Zebra", spent_minor: 500, budget_minor: 5000 }),
-          row({ category_id: "c-mango", category_name: "Mango", spent_minor: 300, budget_minor: 3000 }),
-        ]}
+        rows={[row({ spent_minor: 41200, budget_minor: 60000, wallet_names: ["Everyday"], wallet_count: 1 })]}
       />,
     );
-    const labels = Array.from(container.querySelectorAll("li span.font-medium")).map(
-      (el) => el.textContent,
-    );
-    expect(labels).toEqual(["Mango", "Zebra", "Apple"]);
+    expect(screen.getByText(/SGD 412\.00 of SGD 600\.00 · 69%/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Groceries · Everyday" })).toBeInTheDocument();
+    // Positive control for the null-budget test's `.h-2` absence assertion
+    // below: without this, a rename of the bar's class would make that
+    // absence assertion pass vacuously forever instead of catching drift.
+    expect(document.querySelector(".h-2")).toBeInTheDocument();
   });
 
-  it("labels the wallet-wide cap distinctly from a category", () => {
-    render(<BudgetList rows={[row({ category_id: null, category_name: null, spent_minor: 74500, budget_minor: 95000 })]} />);
-    expect(screen.getByText(/All spending/i)).toBeInTheDocument();
+  it("states an overrun in words, never by colour alone, in its own paragraph", () => {
+    render(<BudgetList rows={[row({ spent_minor: 24500, budget_minor: 20000 })]} />);
+    const overPara = screen.getByText(/over by SGD 45\.00/i);
+    expect(overPara.tagName).toBe("P");
   });
+});
 
-  it("groups rows under their wallet, so two wallets never blur together, under level-2 headings", () => {
+describe("BudgetList — an uncovered category", () => {
+  it("renders untracked spending with no percent and no bar", () => {
+    render(<BudgetList rows={[uncoveredRow({ spent_minor: 9000, category_label: "Dining" })]} />);
+    expect(screen.getByText(/SGD 90\.00 spent · No budget set/)).toBeInTheDocument();
+    expect(screen.queryByText(/over by/i)).not.toBeInTheDocument();
+    // Step 3 requires BOTH "no percent" and "no bar" — an absence-only check
+    // on "over by" would still pass a regression that folded a null budget
+    // into `budget_minor ?? 0` (budgetProgress already guards that case, but
+    // that regression would ALSO start rendering a 0%-wide bar and "0%"
+    // text, which these two assertions catch).
+    expect(screen.queryByText(/\d+%/)).not.toBeInTheDocument();
+    expect(document.querySelector(".h-2")).not.toBeInTheDocument();
+  });
+});
+
+describe("BudgetList — two budgets, same category, different scopes", () => {
+  it("renders both as their own rows, each with its own scope label", () => {
     render(
       <BudgetList
         rows={[
-          row({ wallet_id: "w1", wallet_name: "Test", category_name: "Groceries" }),
-          row({ wallet_id: "w2", wallet_name: "Citi", category_id: "c2", category_name: "Transport" }),
+          row({ budget_id: "b1", wallet_names: ["Everyday"], wallet_count: 1 }),
+          row({ budget_id: "b2", wallet_names: ["Savings"], wallet_count: 1 }),
         ]}
       />,
     );
-    // `level: 2` pinned explicitly — `getByRole("heading")` alone matches
-    // h1-h6, so an h2 -> h3 regression would pass silently otherwise, and
-    // the controller addendum pins this as an <h2> specifically.
-    expect(screen.getByRole("heading", { level: 2, name: "Test" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: "Citi" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Groceries · Everyday" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Groceries · Savings" })).toBeInTheDocument();
+  });
+});
+
+describe("BudgetList — heading semantics", () => {
+  it("is an h2 (level 2), not merely something styled to look like one", () => {
+    render(<BudgetList rows={[row()]} />);
+    const heading = screen.getByRole("heading", { name: "Groceries · Everyday" });
+    expect(heading.tagName).toBe("H2");
+  });
+
+  it("labels the overall cap distinctly from a category, still as an h2", () => {
+    render(
+      <BudgetList
+        rows={[
+          row({
+            budget_id: "b-overall",
+            category_key: null,
+            category_label: null,
+            wallet_names: ["Everyday", "Savings"],
+            wallet_count: 2,
+          }),
+        ]}
+        totalInCurrency={2}
+      />,
+    );
+    expect(
+      screen.getByRole("heading", { level: 2, name: "Overall budget · All accounts" }),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("BudgetList — grouping and order", () => {
+  it("orders overall caps first, then budgeted categories alphabetically, then uncovered spending — regardless of input order", () => {
+    render(
+      <BudgetList
+        rows={[
+          uncoveredRow({ category_key: "dining", category_label: "Dining", spent_minor: 100 }),
+          row({ budget_id: "b-zebra", category_key: "zebra", category_label: "Zebra" }),
+          row({ budget_id: "b-overall", category_key: null, category_label: null }),
+          row({ budget_id: "b-mango", category_key: "mango", category_label: "Mango" }),
+        ]}
+      />,
+    );
+    const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+    // "Add a budget" is the always-mounted new-budget section's own h2
+    // (matching (app)/wallets/page.tsx's "Add an account" heading, also an
+    // h2 alongside its list) — trailing here rather than absent, since
+    // every OTHER heading assertion in this file targets one by its exact
+    // pinned name and would not otherwise notice it moved.
+    expect(headings).toEqual([
+      "Overall budget · Everyday",
+      "Mango · Everyday",
+      "Zebra · Everyday",
+      "Uncovered spending",
+      "Add a budget",
+    ]);
+    expect(screen.getByText(/Dining/)).toBeInTheDocument();
+  });
+});
+
+describe("BudgetList — never sums rows into a total", () => {
+  it("does not render any combined total across an overall cap and a category row that double-counts the same spending", () => {
+    // The overall cap's own spent_minor (74500) already includes the
+    // Groceries spending reported a second time as its own budgeted-category
+    // row (41200) — this is correct per the controller addendum, and the
+    // component must show each row's own figure, never spentA + spentB.
+    render(
+      <BudgetList
+        rows={[
+          row({ budget_id: "b-overall", category_key: null, category_label: null, spent_minor: 74500, budget_minor: 95000 }),
+          row({ budget_id: "b-groceries", category_key: "groceries", category_label: "Groceries", spent_minor: 41200, budget_minor: 60000 }),
+        ]}
+      />,
+    );
+    expect(screen.getByText(/SGD 745\.00 of SGD 950\.00/)).toBeInTheDocument();
+    expect(screen.getByText(/SGD 412\.00 of SGD 600\.00/)).toBeInTheDocument();
+    // 745 + 412 = 1157 — must never appear anywhere as a combined figure.
+    expect(screen.queryByText(/1,157|1157\.00/)).not.toBeInTheDocument();
   });
 });
 
 describe("BudgetList — Remove", () => {
-  it("offers Remove, pinned by name, on a category budget with a resolvable id", () => {
-    render(
-      <BudgetList
-        rows={[row({ category_name: "Groceries", budget_minor: 30000, budget_id: "b1", budget_period_start: "2026-08-01" })]}
-        currentPeriodStart="2026-08-01"
-      />,
-    );
+  it("offers Remove, pinned by name, on a category budget", () => {
+    render(<BudgetList rows={[row({ category_label: "Groceries", budget_id: "b1" })]} />);
     expect(screen.getByRole("button", { name: "Remove budget for Groceries" })).toBeInTheDocument();
   });
 
-  it("offers Remove, pinned by name, on the overall cap with a resolvable id", () => {
-    render(
-      <BudgetList
-        rows={[row({ category_id: null, category_name: null, budget_minor: 30000, budget_id: "b1", budget_period_start: "2026-08-01" })]}
-        currentPeriodStart="2026-08-01"
-      />,
-    );
+  it("offers Remove, pinned by name, on the overall cap", () => {
+    render(<BudgetList rows={[row({ category_key: null, category_label: null, budget_id: "b1" })]} />);
     expect(screen.getByRole("button", { name: "Remove overall budget" })).toBeInTheDocument();
-  });
-
-  it("never renders Remove for a row with no resolvable budget id", () => {
-    render(<BudgetList rows={[row({ budget_minor: null, budget_id: null })]} />);
-    expect(screen.queryByRole("button", { name: /^Remove/ })).not.toBeInTheDocument();
-  });
-
-  it("discloses a budget carried forward from an earlier month in the VISIBLE text, keeping the aria-label pinned", () => {
-    render(
-      <BudgetList
-        rows={[row({ category_name: "Groceries", budget_minor: 30000, budget_id: "b1", budget_period_start: "2026-06-01" })]}
-        currentPeriodStart="2026-08-01"
-      />,
-    );
-    const button = screen.getByRole("button", { name: "Remove budget for Groceries" });
-    // The aria-label (queried above) is the pinned string, byte-identical.
-    // The VISIBLE text is what carries the disclosure — a screen reader
-    // user gets the label either way, since it's not a stated requirement
-    // there; a sighted user gets the qualifier before clicking.
-    expect(button).toHaveTextContent("Remove (set Jun)");
-    // Same calendar year as `currentPeriodStart` — no year digits, so this
-    // also locks the OMISSION half of fix round 2's item 2 (a regression
-    // that always appended the year would still pass the assertion above
-    // via toHaveTextContent's substring match, but not this one).
-    expect(button).not.toHaveTextContent(/\d{4}/);
-  });
-
-  it("includes the year in the qualifier when the budget was set in an EARLIER calendar year", () => {
-    // Fix round 2, item 2: month-only ("Remove (set Aug)") reads as August
-    // THIS year regardless of which year the budget was actually set in —
-    // a false claim, which is worse than the silence it replaced. August
-    // 2025, read in August 2026, must say so.
-    render(
-      <BudgetList
-        rows={[row({ category_name: "Groceries", budget_minor: 30000, budget_id: "b1", budget_period_start: "2025-08-01" })]}
-        currentPeriodStart="2026-08-01"
-      />,
-    );
-    const button = screen.getByRole("button", { name: "Remove budget for Groceries" });
-    expect(button).toHaveTextContent("Remove (set Aug 2025)");
-  });
-
-  it("does not disclose a past-month qualifier for a budget set THIS month", () => {
-    render(
-      <BudgetList
-        rows={[row({ category_name: "Groceries", budget_minor: 30000, budget_id: "b1", budget_period_start: "2026-08-01" })]}
-        currentPeriodStart="2026-08-01"
-      />,
-    );
-    const button = screen.getByRole("button", { name: "Remove budget for Groceries" });
-    expect(button).toHaveTextContent("Remove");
-    expect(button).not.toHaveTextContent(/\(set/);
   });
 
   it("clicking Remove calls removeBudget with the row's real budget id", async () => {
     const user = userEvent.setup();
-    render(
-      <BudgetList
-        rows={[row({ category_name: "Groceries", budget_minor: 30000, budget_id: "b1", budget_period_start: "2026-08-01" })]}
-        currentPeriodStart="2026-08-01"
-      />,
-    );
+    render(<BudgetList rows={[row({ category_label: "Groceries", budget_id: "b1" })]} />);
     await user.click(screen.getByRole("button", { name: "Remove budget for Groceries" }));
     expect(removeBudget).toHaveBeenCalledExactlyOnceWith("b1");
   });
@@ -202,12 +208,7 @@ describe("BudgetList — Remove", () => {
   it("surfaces a Remove failure in its OWN row's alert, named for that row", async () => {
     vi.mocked(removeBudget).mockResolvedValue({ error: "Could not remove that budget. Please try again." });
     const user = userEvent.setup();
-    render(
-      <BudgetList
-        rows={[row({ category_name: "Groceries", budget_minor: 30000, budget_id: "b1", budget_period_start: "2026-08-01" })]}
-        currentPeriodStart="2026-08-01"
-      />,
-    );
+    render(<BudgetList rows={[row({ category_label: "Groceries", budget_id: "b1" })]} />);
     await user.click(screen.getByRole("button", { name: "Remove budget for Groceries" }));
     expect(await screen.findByRole("alert", { name: "Error for Groceries" })).toHaveTextContent(
       "Could not remove that budget. Please try again.",
@@ -215,50 +216,138 @@ describe("BudgetList — Remove", () => {
   });
 });
 
+describe("BudgetList — an existing row resubmits its OWN wallet set, not the picker's", () => {
+  it("includes the row's resolved wallet ids as hidden fields when saving its amount", async () => {
+    // Row-scoped: "Budget amount"/"Save budget" render once per row (the
+    // controller addendum's own pinned-names note) — this row's own AND the
+    // always-mounted new-budget form's — so an unscoped screen.getByLabelText
+    // here would ambiguously match both.
+    const user = userEvent.setup();
+    render(
+      <BudgetList
+        rows={[row({ budget_id: "b1", category_label: "Groceries", wallet_names: ["Everyday"], wallet_count: 1 })]}
+        walletIdsByBudget={{ b1: ["w-everyday"] }}
+      />,
+    );
+    const rowSection = screen.getByRole("heading", { level: 2, name: "Groceries · Everyday" }).closest("section")!;
+    await user.type(within(rowSection).getByLabelText("Budget amount"), "600");
+    await user.click(within(rowSection).getByRole("button", { name: "Save budget" }));
+    expect(setBudget).toHaveBeenCalled();
+    const formData = vi.mocked(setBudget).mock.calls[0]![2] as FormData;
+    expect(formData.getAll("walletIds")).toEqual(["w-everyday"]);
+    expect(vi.mocked(setBudget).mock.calls[0]![0]).toBe("groceries");
+  });
+});
+
 describe("BudgetList — save error accessibility", () => {
   it("associates a save error with the amount input via a describedby target that carries no competing aria-label", async () => {
-    // Fix round 2, item 1: the status paragraph carries
-    // `aria-label="Status for Groceries"` (fix round 1, item 4). Per the
-    // WAI-ARIA Accessible Name and Description Computation, an aria-label
-    // on a node wins over that node's own content when something else
-    // points at it via aria-describedby — so pointing `aria-describedby`
-    // straight at that paragraph would describe the input as "Status for
-    // Groceries" in real assistive tech, never the actual error text, even
-    // though the paragraph's rendered TEXT is the error message.
-    //
-    // `toHaveAccessibleDescription` (jest-dom, via dom-accessibility-api)
-    // is asserted below too, but on its own it is NOT a reliable regression
-    // guard for this exact bug: a standalone probe against this project's
-    // installed dom-accessibility-api version, run while writing this
-    // test, showed it computes the description from the referenced node's
-    // TEXT CONTENT even when that node also carries an aria-label — i.e.
-    // it does not reproduce the divergence real browsers/AT are documented
-    // to have here, so it would pass identically against the OLD (buggy)
-    // markup too. The STRUCTURAL assertions below are what actually
-    // discriminate pre-fix from post-fix: they fail against the old markup
-    // (single <p> carrying both the id AND the aria-label) and pass only
-    // once the id lives on an unlabelled child <span>, per the fix's own
-    // "a span whose text alternative is unambiguously just the message
-    // needs no argument about traversal rules" reasoning.
+    // Same reasoning as the previous branch's fix round 2, item 1: an
+    // aria-label on the describedby TARGET wins over that node's own text
+    // content per the WAI-ARIA Accessible Name and Description Computation,
+    // so the label must live on an unlabelled child, never the referenced
+    // node itself.
     vi.mocked(setBudget).mockResolvedValue({ error: "Enter an amount like 600 or 600.50" });
     const user = userEvent.setup();
-    render(<BudgetList rows={[row({ category_name: "Groceries" })]} />);
+    render(<BudgetList rows={[row({ category_label: "Groceries" })]} />);
 
-    const input = screen.getByLabelText("Budget amount");
+    const rowSection = screen.getByRole("heading", { level: 2, name: "Groceries · Everyday" }).closest("section")!;
+    const input = within(rowSection).getByLabelText("Budget amount");
     await user.type(input, "abc");
-    await user.click(screen.getByRole("button", { name: "Save budget" }));
-    await screen.findByText("Enter an amount like 600 or 600.50");
+    await user.click(within(rowSection).getByRole("button", { name: "Save budget" }));
+    await within(rowSection).findByText("Enter an amount like 600 or 600.50");
 
     expect(input).toHaveAccessibleDescription("Enter an amount like 600 or 600.50");
 
     const describedbyId = input.getAttribute("aria-describedby");
     expect(describedbyId).toBeTruthy();
-    // Verifying the describedby TARGET's own attributes/structure directly
-    // — there is no Testing Library query for "the node referenced by
-    // another node's aria-describedby"; same reasoning as this file's
-    // existing `container.querySelector` use for the decorative bar.
     const target = document.getElementById(describedbyId!);
     expect(target).toHaveTextContent("Enter an amount like 600 or 600.50");
     expect(target).not.toHaveAttribute("aria-label");
+  });
+});
+
+describe("BudgetList — adding a new budget", () => {
+  const wallets = [
+    { id: "w1", name: "Everyday", currency_code: "SGD" },
+    { id: "w2", name: "Savings", currency_code: "SGD" },
+  ];
+  const categories = [{ key: "groceries", label: "Groceries" }];
+
+  it("offers a Category picker and a wallet picker, pinned by name", () => {
+    render(<BudgetList rows={[]} wallets={wallets} primaryCurrency="SGD" categories={categories} />);
+    expect(screen.getByLabelText("Category")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Accounts this budget covers" })).toBeInTheDocument();
+  });
+
+  it("defaults the wallet picker to every account in the primary currency, all checked", () => {
+    render(<BudgetList rows={[]} wallets={wallets} primaryCurrency="SGD" categories={categories} />);
+    const everyday = screen.getByRole("checkbox", { name: "Everyday" });
+    const savings = screen.getByRole("checkbox", { name: "Savings" });
+    expect(everyday).toBeChecked();
+    expect(savings).toBeChecked();
+  });
+
+  it("submits the chosen category as an explicit null for the overall option, never an empty string", async () => {
+    const user = userEvent.setup();
+    render(<BudgetList rows={[]} wallets={wallets} primaryCurrency="SGD" categories={categories} />);
+    await user.type(screen.getByLabelText("Budget amount"), "600");
+    await user.click(screen.getByRole("button", { name: "Save budget" }));
+    expect(setBudget).toHaveBeenCalled();
+    expect(vi.mocked(setBudget).mock.calls[0]![0]).toBeNull();
+  });
+
+  it("submits the selected category and the checked accounts when creating a category budget", async () => {
+    const user = userEvent.setup();
+    render(<BudgetList rows={[]} wallets={wallets} primaryCurrency="SGD" categories={categories} />);
+    await user.selectOptions(screen.getByLabelText("Category"), "groceries");
+    await user.click(screen.getByRole("checkbox", { name: "Savings" })); // uncheck Savings
+    await user.type(screen.getByLabelText("Budget amount"), "600");
+    await user.click(screen.getByRole("button", { name: "Save budget" }));
+    expect(setBudget).toHaveBeenCalled();
+    expect(vi.mocked(setBudget).mock.calls[0]![0]).toBe("groceries");
+    const formData = vi.mocked(setBudget).mock.calls[0]![2] as FormData;
+    expect(formData.getAll("walletIds")).toEqual(["w1"]);
+  });
+});
+
+describe("BudgetList — coverage disclosures", () => {
+  it("discloses, in text, when a budget does not cover every account in its own currency", () => {
+    render(
+      <BudgetList
+        rows={[row({ wallet_names: ["Everyday"], wallet_count: 1 })]}
+        wallets={[
+          { id: "w1", name: "Everyday", currency_code: "SGD" },
+          { id: "w2", name: "Savings", currency_code: "SGD" },
+        ]}
+        primaryCurrency="SGD"
+        totalInCurrency={2}
+      />,
+    );
+    // Not a bare /Savings/ match: the always-mounted new-budget wallet
+    // picker below also renders a "Savings" checkbox label, which would
+    // make an unscoped match ambiguous.
+    expect(screen.getByText(/Doesn.t cover Savings/)).toBeInTheDocument();
+  });
+
+  it("discloses, in text, when accounts in another currency are excluded entirely", () => {
+    render(
+      <BudgetList
+        rows={[row({ wallet_names: ["Everyday"], wallet_count: 1 })]}
+        wallets={[
+          { id: "w1", name: "Everyday", currency_code: "SGD" },
+          { id: "w3", name: "Yen account", currency_code: "JPY" },
+        ]}
+        primaryCurrency="SGD"
+        totalInCurrency={1}
+      />,
+    );
+    expect(screen.getByText(/JPY/)).toBeInTheDocument();
+  });
+});
+
+describe("BudgetList — empty state", () => {
+  it("says so when there is nothing to show", () => {
+    render(<BudgetList rows={[]} />);
+    expect(screen.getByText(/no spending or budgets recorded/i)).toBeInTheDocument();
   });
 });
