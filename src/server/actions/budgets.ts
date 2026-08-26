@@ -14,13 +14,10 @@ export type BudgetState = { error?: string; notice?: string };
 // `idSchema` (~:9-18): a Server Function is reachable via direct POST with
 // any string, not just a real uuid a `<button onClick>` would ever
 // produce, and this file's own doc comment already commits to
-// "re-validate rather than trust the caller's static type" — untyped-but-
-// assumed-uuid `walletId`/`categoryId`/`id` parameters were the one place
-// that promise wasn't kept here. `categoryId` is additionally nullable:
-// null is the legitimate "overall cap" value (see setBudget below), not a
-// missing/invalid one.
+// "re-validate rather than trust the caller's static type" — an untyped-
+// but-assumed-uuid `id` parameter is the one place that promise wasn't
+// kept here.
 const idSchema = z.uuid();
-const nullableIdSchema = z.uuid().nullable();
 
 /**
  * Server Functions are reachable by direct POST, not only through this app's
@@ -31,49 +28,46 @@ const nullableIdSchema = z.uuid().nullable();
  */
 
 export async function setBudget(
-  walletId: string,
-  categoryId: string | null,
+  categoryKey: string | null,
   _prev: BudgetState,
   formData: FormData,
 ): Promise<BudgetState> {
-  const parsed = budgetInput.safeParse(Object.fromEntries(formData));
+  // `Object.fromEntries(formData)` would silently keep only the LAST
+  // "walletIds" entry for a repeated form field — `getAll` is required to
+  // see the whole set. This also means the empty-set refusal below runs
+  // before any Supabase client is even constructed.
+  const parsed = budgetInput.safeParse({
+    amount: formData.get("amount"),
+    walletIds: formData.getAll("walletIds"),
+  });
   if (!parsed.success) return { error: parsed.error.issues[0]!.message };
-
-  // Same "not distinguishable from a real id you don't have access to"
-  // reasoning as categories.ts's archiveCategory: a malformed walletId
-  // gets the exact message a real-but-inaccessible one gets below, not a
-  // separate "invalid id" — there's no reason to give an adversarial
-  // caller a way to tell those apart, and it means this check can run
-  // before any query touches the database.
-  if (!idSchema.safeParse(walletId).success) {
-    return { error: "You do not have access to that account." };
-  }
-  // A malformed (non-uuid, non-null) categoryId can never resolve to a
-  // real category, so it can never produce anything but a failed write —
-  // reusing that write-failure message rather than inventing a new one.
-  if (!nullableIdSchema.safeParse(categoryId).success) {
-    return { error: "Could not save that budget. Please try again." };
-  }
 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { error: "Not signed in" };
 
-  // Membership, not ownership: members are equal on money, matching what
-  // budgets_member permits. Checked here so a non-member gets a readable
-  // message rather than a policy violation. set_budget re-checks it too.
-  const { data: membership } = await supabase
+  // Membership over the WHOLE submitted set, not just one wallet: members
+  // are equal on money, matching what budgets_member permits. Checked here
+  // so a non-member (of even one wallet in the set) gets a readable message
+  // rather than a policy violation or set_budget's own internal text.
+  // set_budget re-checks this too — this is belt-and-braces, the same
+  // structure the previous single-wallet action used.
+  const { data: memberships } = await supabase
     .from("wallet_members")
     .select("wallet_id")
-    .eq("wallet_id", walletId)
     .eq("user_id", user.id)
-    .maybeSingle();
-  if (!membership) return { error: "You do not have access to that account." };
+    .in("wallet_id", parsed.data.walletIds);
+  const memberWalletIds = new Set((memberships ?? []).map((m) => m.wallet_id));
+  const isFullyMember = parsed.data.walletIds.every((id) => memberWalletIds.has(id));
+  if (!isFullyMember) return { error: "You do not have access to one or more of those accounts." };
 
-  // The budget is in the wallet's own currency, so its minor unit comes from
-  // the wallet — not from the profile, and never from the client.
+  // The budget is in the set's own currency, so its minor unit comes from
+  // one of its wallets — never from the profile, and never from the
+  // client. set_budget itself requires every wallet in the set to share a
+  // currency, so any member of the set is representative; the first is as
+  // good as any.
   const { data: wallet } = await supabase
-    .from("wallets").select("currency_code").eq("id", walletId).maybeSingle();
+    .from("wallets").select("currency_code").eq("id", parsed.data.walletIds[0]!).maybeSingle();
   if (!wallet) return { error: "Account not found." };
 
   let amountMinor: number;
@@ -84,44 +78,63 @@ export async function setBudget(
   }
   if (amountMinor <= 0) return { error: "Enter an amount greater than zero." };
 
-  // Written through set_budget rather than a PostgREST upsert: uniqueness here
-  // rests on PARTIAL indexes, which ON CONFLICT can only infer when the
-  // statement repeats the index predicate — something `onConflict` cannot
-  // express. See the function's own comment in 0012.
+  // Written through set_budget rather than a PostgREST upsert: `insert` is
+  // revoked on both `budgets` and `budget_wallets` (0013) — set_budget,
+  // SECURITY DEFINER, is the only path that can create or edit one, and it
+  // re-checks everything above itself (membership, currency, archived
+  // status, duplicate ids) before writing.
   //
-  // set_budget's `p_category_id` is a plain (non-defaulted) `uuid` param,
+  // set_budget's `p_category_key` is a plain (non-defaulted) `text` param,
   // which accepts NULL at the SQL level -- the overall-cap branch of the
-  // function depends on that. Supabase's codegen has no way to see that
-  // from information_schema (a parameter's own nullability isn't exposed
-  // the way a column's is), so the generated Args type is the bare
-  // `string`, not `string | null`. Unlike `create_transfer`'s `note`
-  // (src/server/actions/transactions.ts) -- an OPTIONAL, defaulted param
-  // where omitting the key is equivalent to null -- this one is required
-  // with no default, so it cannot be left out; the value itself must be
-  // null.
+  // function depends on that (an explicit NULL is a deliberate caller
+  // choice; '' or whitespace is refused rather than silently normalised to
+  // NULL, so a blank form field can never accidentally edit the household's
+  // wallet-wide cap). Supabase's codegen has no way to see that from
+  // information_schema (a parameter's own nullability isn't exposed the way
+  // a column's is), so the generated Args type is the bare `string`, not
+  // `string | null`.
   //
   // The relaxation is confined to that one field via `satisfies`, rather
-  // than casting the whole args object (or just `categoryId`) to `string`:
-  // a bare `p_category_id: categoryId as string` would equally silence a
-  // future type error if that expression became a number or undefined.
-  // Building the object against `SetBudgetArgsRelaxed` means every OTHER
-  // field is still checked against the real generated `Args` type, so a
-  // typo or a signature change elsewhere in `set_budget` still fails
-  // typecheck here.
+  // than casting the whole args object to `string`: a bare
+  // `p_category_key: categoryKey as string` would equally silence a future
+  // type error if that expression became a number or undefined. Building
+  // the object against `SetBudgetArgsRelaxed` means every OTHER field is
+  // still checked against the real generated `Args` type, so a typo or a
+  // signature change elsewhere in `set_budget` still fails typecheck here.
+  //
+  // `categoryKey` is passed through UNCHANGED — never `categoryKey ?? null`
+  // or `categoryKey || null` — so an accidental empty string from a caller
+  // reaches set_budget as `''`, which it refuses with its own message
+  // (mapped to generic app copy below), rather than being silently
+  // reinterpreted here as the overall cap.
   type SetBudgetArgs = Database["public"]["Functions"]["set_budget"]["Args"];
-  type SetBudgetArgsRelaxed = Omit<SetBudgetArgs, "p_category_id"> & { p_category_id: string | null };
+  type SetBudgetArgsRelaxed = Omit<SetBudgetArgs, "p_category_key"> & { p_category_key: string | null };
 
   const args = {
-    p_wallet_id: walletId,
-    p_category_id: categoryId,
+    p_category_key: categoryKey,
     p_period_start: monthRange().from,
     p_amount_minor: amountMinor,
+    // A flat array of strings, exactly as `formData.getAll` produced it via
+    // `budgetInput`. Never wrap or nest this: a nested array
+    // (`{{w1,w2}}`) once defeated set_budget's membership guard because
+    // `array_length(x, 1)` counts only the first dimension while `unnest`
+    // counts every element — fixed at the SQL layer (0013's C1 finding),
+    // but there is no reason to hand it a shape that relies on that fix.
+    p_wallet_ids: parsed.data.walletIds,
   } satisfies SetBudgetArgsRelaxed;
 
   const { error } = await supabase.rpc("set_budget", args as SetBudgetArgs);
+  // set_budget raises readable internal messages (e.g. "not a member of
+  // every account in that set", "every account in a budget must use the
+  // same currency") — never forwarded verbatim, since they are meant for
+  // this file's own reviewers, not end users.
   if (error) return { error: "Could not save that budget. Please try again." };
 
   revalidatePath("/budgets");
+  // The dashboard also shows budgets (a later task), so a stale dashboard
+  // beside a fresh budgets screen would be worse than either being stale
+  // alone.
+  revalidatePath("/");
   // A `notice`, not `{}`: the always-mounted `role="status"` paragraph
   // BudgetList.tsx renders this state through is otherwise silent on
   // success — the amount just changes on screen, with nothing said aloud.
@@ -151,5 +164,8 @@ export async function removeBudget(id: string): Promise<BudgetState> {
   if (!data || data.length === 0) return { error: "That budget no longer exists." };
 
   revalidatePath("/budgets");
+  // The dashboard also shows budgets (a later task) — same reasoning as
+  // setBudget's revalidation above.
+  revalidatePath("/");
   return {};
 }

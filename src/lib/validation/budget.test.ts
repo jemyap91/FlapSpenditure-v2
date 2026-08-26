@@ -3,19 +3,19 @@ import { describe, expect, it } from "vitest";
 import { budgetInput } from "@/lib/validation/budget";
 
 describe("budgetInput", () => {
-  it("accepts a plain amount", () => {
-    expect(budgetInput.safeParse({ amount: "600" }).success).toBe(true);
+  it("accepts an amount with at least one account", () => {
+    expect(budgetInput.safeParse({ amount: "600", walletIds: ["a"] }).success).toBe(true);
   });
 
-  it("rejects an empty amount rather than treating it as zero", () => {
-    expect(budgetInput.safeParse({ amount: "" }).success).toBe(false);
+  it("rejects an empty account set — it would be visible to everyone", () => {
+    expect(budgetInput.safeParse({ amount: "600", walletIds: [] }).success).toBe(false);
   });
 
-  it("rejects a negative amount — a budget is a cap, not a balance", () => {
-    expect(budgetInput.safeParse({ amount: "-50" }).success).toBe(false);
+  it("rejects a negative amount", () => {
+    expect(budgetInput.safeParse({ amount: "-50", walletIds: ["a"] }).success).toBe(false);
   });
 
-  it("rejects letters rather than passing them to parseAmountInput", () => {
-    expect(budgetInput.safeParse({ amount: "six hundred" }).success).toBe(false);
+  it("rejects letters", () => {
+    expect(budgetInput.safeParse({ amount: "six", walletIds: ["a"] }).success).toBe(false);
   });
 });

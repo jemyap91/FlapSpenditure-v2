@@ -14,8 +14,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { setBudget, removeBudget } from "./budgets";
 
 const USER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const WALLET_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
-const CATEGORY_ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+const WALLET_ID_1 = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const WALLET_ID_2 = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const CATEGORY_KEY = "groceries";
 const BUDGET_ID = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 
 /**
@@ -24,7 +25,7 @@ const BUDGET_ID = "ffffffff-ffff-4fff-8fff-ffffffffffff";
  */
 const {
   getUser,
-  membershipLookup,
+  membershipRows,
   walletLookup,
   budgetsDelete,
   budgetsEqCalls,
@@ -34,7 +35,7 @@ const {
   revalidatePath,
 } = vi.hoisted(() => ({
   getUser: vi.fn(),
-  membershipLookup: { data: null as { wallet_id: string } | null, error: null as unknown },
+  membershipRows: [] as { wallet_id: string }[],
   walletLookup: { data: null as { currency_code: string } | null, error: null as unknown },
   budgetsDelete: { data: [] as { id: string }[] | null, error: null as unknown },
   budgetsEqCalls: [] as unknown[][],
@@ -59,7 +60,8 @@ vi.mock("@/lib/supabase/server", () => ({
         const builder = {
           select: () => builder,
           eq: () => builder,
-          maybeSingle: async () => membershipLookup,
+          in: () => ({ then: (resolve: (v: { data: typeof membershipRows; error: null }) => void) =>
+            resolve({ data: membershipRows, error: null }) }),
         };
         return builder;
       }
@@ -91,9 +93,10 @@ vi.mock("@/lib/supabase/server", () => ({
   }),
 }));
 
-const budgetForm = (amount: string) => {
+const budgetForm = (amount: string, walletIds: string[]) => {
   const fd = new FormData();
   fd.set("amount", amount);
+  for (const id of walletIds) fd.append("walletIds", id);
   return fd;
 };
 
@@ -102,8 +105,8 @@ beforeEach(() => {
   budgetsEqCalls.length = 0;
   rpcCalls.length = 0;
   fromTables.length = 0;
-  membershipLookup.data = { wallet_id: WALLET_ID };
-  membershipLookup.error = null;
+  membershipRows.length = 0;
+  membershipRows.push({ wallet_id: WALLET_ID_1 }, { wallet_id: WALLET_ID_2 });
   walletLookup.data = { currency_code: "USD" };
   walletLookup.error = null;
   budgetsDelete.data = [{ id: BUDGET_ID }];
@@ -113,59 +116,67 @@ beforeEach(() => {
 });
 
 describe("setBudget", () => {
-  it("refuses a non-member with a readable message", async () => {
-    membershipLookup.data = null;
+  it("refuses an empty wallet set before any RPC or table lookup", async () => {
+    const result = await setBudget(CATEGORY_KEY, {}, budgetForm("600", []));
 
-    const result = await setBudget(WALLET_ID, CATEGORY_ID, {}, budgetForm("600"));
+    expect(result).toEqual({ error: "Choose at least one account" });
+    expect(rpcCalls).toEqual([]);
+    expect(fromTables).toEqual([]);
+  });
 
-    expect(result).toEqual({ error: "You do not have access to that account." });
+  it("refuses a non-member set with a readable message", async () => {
+    membershipRows.length = 0;
+    membershipRows.push({ wallet_id: WALLET_ID_1 }); // caller is not in WALLET_ID_2
+
+    const result = await setBudget(CATEGORY_KEY, {}, budgetForm("600", [WALLET_ID_1, WALLET_ID_2]));
+
+    expect(result).toEqual({ error: "You do not have access to one or more of those accounts." });
     expect(rpcCalls).toEqual([]);
   });
 
   it("returns an error, never throws, when set_budget is refused", async () => {
-    rpcResult.error = { message: 'new row violates row-level security policy for table "budgets"' };
+    rpcResult.error = { message: "not a member of every account in that set" };
 
-    const result = await setBudget(WALLET_ID, CATEGORY_ID, {}, budgetForm("600"));
+    const result = await setBudget(CATEGORY_KEY, {}, budgetForm("600", [WALLET_ID_1, WALLET_ID_2]));
 
-    // App-authored text. The raw provider string above names the table and
-    // the policy; forwarding it is the leak this codebase's convention
-    // exists to prevent.
+    // App-authored text. The raw provider string above is set_budget's own
+    // internal message; forwarding it is the leak this codebase's
+    // convention exists to prevent.
     expect(result).toEqual({ error: "Could not save that budget. Please try again." });
-    expect(JSON.stringify(result)).not.toContain("row-level security");
+    expect(JSON.stringify(result)).not.toContain("member of every account");
   });
 
   it("rejects a zero amount", async () => {
-    const result = await setBudget(WALLET_ID, CATEGORY_ID, {}, budgetForm("0"));
+    const result = await setBudget(CATEGORY_KEY, {}, budgetForm("0", [WALLET_ID_1]));
 
     expect(result).toEqual({ error: "Enter an amount greater than zero." });
     expect(rpcCalls).toEqual([]);
   });
 
-  it("calls set_budget with the first of the current month", async () => {
+  it("calls set_budget with the first of the current month and the exact flat wallet array", async () => {
     const { monthRange } = await import("@/lib/month-range");
 
-    const result = await setBudget(WALLET_ID, CATEGORY_ID, {}, budgetForm("600"));
+    const result = await setBudget(CATEGORY_KEY, {}, budgetForm("600", [WALLET_ID_1, WALLET_ID_2]));
 
     expect(result).toEqual({ notice: "Budget saved." });
     expect(rpcCalls).toEqual([
       {
         fn: "set_budget",
         args: {
-          p_wallet_id: WALLET_ID,
-          p_category_id: CATEGORY_ID,
+          p_category_key: CATEGORY_KEY,
           p_period_start: monthRange().from,
           p_amount_minor: 60000,
+          p_wallet_ids: [WALLET_ID_1, WALLET_ID_2],
         },
       },
     ]);
-    // Positive control for the `expect(fromTables).toEqual([])` assertion
-    // in "rejects malformed input before touching the database" below: if
-    // the mock's `.from()` recorder silently stopped recording, that
-    // absence check would pass vacuously (an empty array either way).
-    // Asserting a real, non-empty recording on this happy path is what
-    // makes the empty one elsewhere mean "this action touched no table",
-    // not "nothing is being recorded".
-    expect(fromTables).toEqual(["wallet_members", "wallets"]);
+    // The array must be flat, not nested — a nested array defeated the
+    // membership guard in set_budget until it was fixed at the SQL layer
+    // (0013's C1 finding). This asserts the JS side never reintroduces
+    // that shape.
+    const sentArgs = rpcCalls[0]!.args as { p_wallet_ids: unknown };
+    expect(Array.isArray(sentArgs.p_wallet_ids)).toBe(true);
+    expect((sentArgs.p_wallet_ids as unknown[]).every((v) => typeof v === "string")).toBe(true);
   });
 
   it("uses the wallet's own currency's minor unit, not a hardcoded 2", async () => {
@@ -176,7 +187,7 @@ describe("setBudget", () => {
     // a zero-decimal currency is 600 minor units, not 60000.
     walletLookup.data = { currency_code: "JPY" };
 
-    const result = await setBudget(WALLET_ID, CATEGORY_ID, {}, budgetForm("600"));
+    const result = await setBudget(CATEGORY_KEY, {}, budgetForm("600", [WALLET_ID_1]));
 
     expect(result).toEqual({ notice: "Budget saved." });
     expect(rpcCalls).toEqual([
@@ -184,52 +195,51 @@ describe("setBudget", () => {
     ]);
   });
 
-  it("reports the wallet not found when the wallet lookup returns null", async () => {
+  it("reports the account not found when the wallet lookup returns null", async () => {
     walletLookup.data = null;
 
-    const result = await setBudget(WALLET_ID, CATEGORY_ID, {}, budgetForm("600"));
+    const result = await setBudget(CATEGORY_KEY, {}, budgetForm("600", [WALLET_ID_1]));
 
     expect(result).toEqual({ error: "Account not found." });
     expect(rpcCalls).toEqual([]);
   });
 
-  it("passes a null category through for the overall cap", async () => {
-    const result = await setBudget(WALLET_ID, null, {}, budgetForm("600"));
+  it("passes a null category key through as a real null for the overall cap", async () => {
+    const result = await setBudget(null, {}, budgetForm("600", [WALLET_ID_1]));
 
     expect(result).toEqual({ notice: "Budget saved." });
     expect(rpcCalls).toEqual([
-      expect.objectContaining({ fn: "set_budget", args: expect.objectContaining({ p_category_id: null }) }),
+      expect.objectContaining({ fn: "set_budget", args: expect.objectContaining({ p_category_key: null }) }),
     ]);
+    // Not `undefined`, not `""` — an explicit `null` reaches the RPC. The
+    // args object must actually contain the key with value null, not omit
+    // it (which JSON.stringify would render identically to `undefined`).
+    const sentArgs = rpcCalls[0]!.args as Record<string, unknown>;
+    expect("p_category_key" in sentArgs).toBe(true);
+    expect(sentArgs.p_category_key).toBeNull();
   });
 
   it("returns an error when there is no session", async () => {
     getUser.mockResolvedValue({ data: { user: null } });
 
-    const result = await setBudget(WALLET_ID, CATEGORY_ID, {}, budgetForm("600"));
+    const result = await setBudget(CATEGORY_KEY, {}, budgetForm("600", [WALLET_ID_1]));
 
     expect(result).toEqual({ error: "Not signed in" });
     expect(rpcCalls).toEqual([]);
   });
 
   it("rejects malformed input before touching the database", async () => {
-    const result = await setBudget(WALLET_ID, CATEGORY_ID, {}, budgetForm("six hundred"));
+    const result = await setBudget(CATEGORY_KEY, {}, budgetForm("six hundred", [WALLET_ID_1]));
 
     expect(result).toEqual({ error: "Enter an amount like 600 or 600.50" });
     expect(fromTables).toEqual([]);
   });
 
-  it("rejects a malformed walletId with the same no-access message a real-but-inaccessible one gets", async () => {
-    const result = await setBudget("not-a-uuid", CATEGORY_ID, {}, budgetForm("600"));
+  it("revalidates both /budgets and / on success", async () => {
+    await setBudget(CATEGORY_KEY, {}, budgetForm("600", [WALLET_ID_1]));
 
-    expect(result).toEqual({ error: "You do not have access to that account." });
-    expect(fromTables).toEqual([]);
-  });
-
-  it("rejects a malformed categoryId before touching the database", async () => {
-    const result = await setBudget(WALLET_ID, "not-a-uuid", {}, budgetForm("600"));
-
-    expect(result).toEqual({ error: "Could not save that budget. Please try again." });
-    expect(fromTables).toEqual([]);
+    expect(revalidatePath).toHaveBeenCalledWith("/budgets");
+    expect(revalidatePath).toHaveBeenCalledWith("/");
   });
 });
 
@@ -243,15 +253,16 @@ describe("removeBudget", () => {
     expect(revalidatePath).not.toHaveBeenCalled();
   });
 
-  it("revalidates /budgets on success", async () => {
+  it("revalidates both /budgets and / on success", async () => {
     const result = await removeBudget(BUDGET_ID);
 
     expect(result).toEqual({});
     expect(revalidatePath).toHaveBeenCalledWith("/budgets");
+    expect(revalidatePath).toHaveBeenCalledWith("/");
     // Positive control for the `expect(budgetsEqCalls).toEqual([])`
     // assertion in "returns an error when there is no session" below —
-    // same reasoning as the fromTables positive control above: a silently
-    // non-recording mock would make that absence check pass vacuously.
+    // a silently non-recording mock would make that absence check pass
+    // vacuously.
     expect(budgetsEqCalls).toEqual([["eq", "id", BUDGET_ID]]);
   });
 
