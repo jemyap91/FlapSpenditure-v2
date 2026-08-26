@@ -386,18 +386,21 @@ end $$;
 -- REAL member/non-member distinction using genuine wallet_members rows and
 -- impersonated callers.
 --
--- Fixtures: a second user (Carol) and three wallets -- two of Alice's
--- sharing one currency (for the positive/duplicate/overlap cases) and one
+-- Fixtures: a second user (Carol) and five wallets -- two of Alice's
+-- sharing one currency (for the positive/duplicate/overlap cases), one
 -- more of Alice's in a different currency (for the mixed-currency REJECT),
--- plus one wallet Alice does NOT belong to (Carol's) for the membership
--- REJECT.
+-- one wallet Alice does NOT belong to (Carol's, for the membership
+-- REJECT), and a fifth of Alice's that is ARCHIVED after creation (fix
+-- round 2, item 1 -- the archived-wallet REJECT below).
 insert into auth.users (id, email) values
   ('bbbbbbbb-0000-0000-0000-0000000000c1', 'carol@x.io');
 insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon) values
   ('cccccccc-0000-0000-0000-0000000000b1', 'aaaaaaaa-0000-0000-0000-000000000001', 'SB Wallet A', 'bank', 'SGD', 1, 'landmark'),
   ('cccccccc-0000-0000-0000-0000000000b2', 'aaaaaaaa-0000-0000-0000-000000000001', 'SB Wallet B', 'bank', 'SGD', 2, 'wallet'),
   ('cccccccc-0000-0000-0000-0000000000b3', 'aaaaaaaa-0000-0000-0000-000000000001', 'SB Wallet EUR', 'bank', 'EUR', 3, 'euro'),
-  ('cccccccc-0000-0000-0000-0000000000b4', 'bbbbbbbb-0000-0000-0000-0000000000c1', 'Carol Wallet', 'bank', 'SGD', 1, 'landmark');
+  ('cccccccc-0000-0000-0000-0000000000b4', 'bbbbbbbb-0000-0000-0000-0000000000c1', 'Carol Wallet', 'bank', 'SGD', 1, 'landmark'),
+  ('cccccccc-0000-0000-0000-0000000000b5', 'aaaaaaaa-0000-0000-0000-000000000001', 'SB Wallet Archived', 'bank', 'SGD', 4, 'landmark');
+update wallets set archived_at = now() where id = 'cccccccc-0000-0000-0000-0000000000b5';
 
 begin;
   set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
@@ -497,6 +500,123 @@ begin;
     end;
     assert not v_ok,
       'C1 CRITICAL: set_budget accepted a NESTED array containing a wallet alice is not a member of';
+  end $$;
+
+  -- FIX ROUND 2, ITEM 1a: a budget may not cover an archived wallet (guard
+  -- M5, placed after the membership check in 0013 since only wallets
+  -- already proven to be alice's own may be probed for archived status).
+  -- cccccccc-...-b5 was archived immediately after creation, above.
+  do $$
+  declare v_ok boolean := false;
+  begin
+    begin
+      perform set_budget('groceries', '2026-11-01', 50000,
+        array['cccccccc-0000-0000-0000-0000000000b5']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'an archived account cannot be part of a budget',
+        format('wrong error for archived wallet: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: set_budget accepted a budget over an archived wallet';
+  end $$;
+
+  -- FIX ROUND 2, ITEM 1b: p_period_start must be the first of a month.
+  do $$
+  declare v_ok boolean := false;
+  begin
+    begin
+      perform set_budget('groceries', '2026-11-15', 50000,
+        array['cccccccc-0000-0000-0000-0000000000b1']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'a budget period must start on the first of a month',
+        format('wrong error for non-month-start period_start: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: set_budget accepted a period_start that is not the first of a month';
+  end $$;
+
+  -- FIX ROUND 2, ITEM 1c: p_category_key normalisation (lower(btrim(...))).
+  -- A category submitted with mixed case and surrounding whitespace must be
+  -- stored canonically, so that a later call differing only in case/
+  -- whitespace matches this same budget rather than silently creating a
+  -- second one.
+  do $$
+  declare v_id uuid; v_key text;
+  begin
+    v_id := set_budget('  GroCERies  ', '2026-11-01', 50000,
+      array['cccccccc-0000-0000-0000-0000000000b1']::uuid[]);
+    select category_key into v_key from public.budgets where id = v_id;
+    assert v_key = 'groceries',
+      format('NORMALISATION BROKEN: expected category_key ''groceries'', found %L', v_key);
+  end $$;
+
+  -- FIX ROUND 2, ITEM 2: an explicit NULL category_key must still mean
+  -- "this set's overall cap" -- the deliberate case, which must keep
+  -- working even after blank-string input is refused (below).
+  do $$
+  declare v_id uuid; v_key text;
+  begin
+    v_id := set_budget(null, '2026-11-01', 50000,
+      array['cccccccc-0000-0000-0000-0000000000b2']::uuid[]);
+    select category_key into v_key from public.budgets where id = v_id;
+    assert v_key is null,
+      format('OVERALL CAP BROKEN: an explicit NULL category_key should stay NULL, found %L', v_key);
+  end $$;
+
+  -- FIX ROUND 2, ITEM 2 (REJECT): an empty-string category must be
+  -- refused, not silently reinterpreted as the overall cap. Before this
+  -- fix, `nullif(lower(btrim(p_category_key)), '')` turned '' into NULL,
+  -- so a blank client form field would silently create/edit the
+  -- household's overall budget instead of erroring.
+  do $$
+  declare v_ok boolean := false;
+  begin
+    begin
+      perform set_budget('', '2026-11-01', 50000,
+        array['cccccccc-0000-0000-0000-0000000000b2']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'a category budget needs a category',
+        format('wrong error for empty-string category: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: set_budget silently treated an empty-string category as the overall cap';
+  end $$;
+
+  -- FIX ROUND 2, ITEM 2 (REJECT): same, for a whitespace-only string --
+  -- btrim('   ') = '', which must be caught the same way as ''  itself.
+  do $$
+  declare v_ok boolean := false;
+  begin
+    begin
+      perform set_budget('   ', '2026-11-01', 50000,
+        array['cccccccc-0000-0000-0000-0000000000b2']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'a category budget needs a category',
+        format('wrong error for whitespace-only category: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: set_budget silently treated a whitespace-only category as the overall cap';
+  end $$;
+
+  -- FIX ROUND 2, ITEM 4: a duplicate wallet id in the submitted array, where
+  -- the caller genuinely IS a member of the repeated wallet, must be
+  -- refused with an accurate message -- not "not a member of every account
+  -- in that set" (false: alice IS a member of b1). This is a pre-check,
+  -- asserted separately from REJECT 3/3b above (which cover a genuine
+  -- non-member) so the two error messages are never confused for one
+  -- another.
+  do $$
+  declare v_ok boolean := false;
+  begin
+    begin
+      perform set_budget('groceries', '2026-11-01', 50000,
+        array['cccccccc-0000-0000-0000-0000000000b1', 'cccccccc-0000-0000-0000-0000000000b1']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'the same account is listed twice in that set',
+        format('wrong error for duplicate wallet id: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: set_budget accepted (or mis-messaged) a wallet set with a duplicate id';
   end $$;
 
   -- ACCEPT + REJECT 4: calling set_budget twice for the SAME category, set

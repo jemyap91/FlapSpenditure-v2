@@ -439,9 +439,21 @@ begin
   -- pre-normalise client-side, and a non-normalised value would surface as
   -- a raw budgets_category_key_check violation -- exactly the "rely on a
   -- constraint to catch what a guard should" pattern this task's addendum
-  -- warned against. nullif(..., '') keeps the NULL meaning ("this set's
-  -- overall cap") intact rather than turning it into the empty string.
-  p_category_key := nullif(lower(btrim(p_category_key)), '');
+  -- warned against.
+  --
+  -- FIX ROUND 2 (M-blank-category): an EXPLICIT NULL still means "this
+  -- set's overall cap" and passes through untouched below -- that is a
+  -- deliberate caller choice and stays supported. But '' or a
+  -- whitespace-only string used to collapse to NULL via
+  -- `nullif(lower(btrim(...)), '')`, which silently reinterpreted a blank
+  -- client form field as "create/EDIT the household's overall budget"
+  -- instead of erroring. An overall cap must be a choice, never an
+  -- accident of a blank input, so a non-NULL-but-blank value is refused
+  -- here instead of normalised.
+  if p_category_key is not null and btrim(p_category_key) = '' then
+    raise exception 'a category budget needs a category';
+  end if;
+  p_category_key := lower(btrim(p_category_key));
 
   -- REVIEW FINDING (I3): likewise for period_start -- budgets_period_start_check
   -- exists to catch a bug that reaches the table directly (e.g. a future
@@ -481,6 +493,22 @@ begin
     raise exception 'a budget must cover at least one account';
   end if;
 
+  -- FIX ROUND 2 (M4 message accuracy): a duplicate id (e.g. [w1, w1], where
+  -- the caller genuinely IS a member of w1) used to fall through to the
+  -- membership guard below and be refused with "not a member of every
+  -- account in that set" -- false, since she IS a member; it fails closed,
+  -- so this was an accuracy bug, not a security one. Caught here, before
+  -- membership is even checked, with a message that states the real
+  -- problem. Deliberately a SEPARATE check, not a dedupe-then-continue: the
+  -- membership count comparison below is still load-bearing for MORE than
+  -- membership -- it is also what keeps v_key (further down) canonical, since
+  -- a submitted duplicate that reached that point would produce a v_key like
+  -- "w1,w1" instead of the true canonical "w1". Silently deduping here would
+  -- remove the only thing enforcing that, so both checks stay.
+  if cardinality(p_wallet_ids) <> (select count(distinct x) from unnest(p_wallet_ids) x) then
+    raise exception 'the same account is listed twice in that set';
+  end if;
+
   -- EVERY wallet in the set, not any: budget_visible's second conjunct
   -- (documented above as fails-open under RLS degradation) is exactly the
   -- property this guard exists to enforce unconditionally, since this
@@ -488,16 +516,12 @@ begin
   -- RLS is ever consulted. A caller who shares only some of the submitted
   -- wallets must not be able to plant a budget over the rest.
   --
-  -- Also the guard that keeps v_key (below) canonical: `= any(p_wallet_ids)`
-  -- matches each DISTINCT wallet id in wallets at most once, so a caller
-  -- who submits the same wallet id twice (e.g. [w1, w1]) gets v_count = 1
-  -- against cardinality() = 2 and is refused here too -- with a misleading
-  -- message ("not a member of every account"), since the real problem is a
-  -- duplicate, not a stranger's wallet (see M4 in task-3-report.md). Left
-  -- deliberately unfixed for message accuracy: deduping here would let a
-  -- submitted duplicate silently produce a non-canonical v_key downstream,
-  -- and this count check is the ONLY thing preventing that, not merely the
-  -- membership check it reads as.
+  -- Also still the guard that keeps v_key (below) canonical against a
+  -- duplicate: `= any(p_wallet_ids)` matches each DISTINCT wallet id in
+  -- wallets at most once, so even though the duplicate-id check above now
+  -- catches [w1, w1] with an accurate message before this runs, this count
+  -- comparison remains the thing that would catch it if that earlier check
+  -- were ever removed -- see the comment above it.
   select count(*) into v_count from public.wallets w
    where w.id = any(p_wallet_ids) and public.is_wallet_member(w.id);
   if v_count <> cardinality(p_wallet_ids) then
