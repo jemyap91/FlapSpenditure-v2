@@ -1916,14 +1916,19 @@ begin;
 commit;
 
 -- =====================================================================
--- Budgets (0013): the actual multi-wallet semantics (re-review, item 1).
--- Every budget test above uses a ONE-wallet set, so the rule this whole
--- redesign exists to implement -- "visible to exactly those who are
--- members of EVERY wallet in the set" -- was untested: the C1 pair proves
--- a boundary exists, but a much simpler (and wrong) `created_by =
--- auth.uid()` policy, or one checking ANY membership instead of EVERY,
--- would have passed it just as happily. This is the test that
--- discriminates the two.
+-- Budgets (0013): the actual multi-wallet semantics (re-review, item 1),
+-- corrected (re-review round 2) to separate CREATOR from MEMBER. The first
+-- draft of this block had budgets.created_by = alice, who was also the
+-- dual-wallet member -- so a wrong `created_by = auth.uid()` policy would
+-- have passed every assertion in it too (alice sees it because she made
+-- it; bob doesn't because he didn't), and the inline comment claiming this
+-- block "discriminates" the two was false. Fixed by making BOB the
+-- creator while ALICE remains the dual-wallet member: created_by is
+-- provenance only in this schema (0013's own comment: "who can see this
+-- budget is decided entirely by its wallet set ... never by created_by"),
+-- so this inversion is exactly what should make a `created_by`-based
+-- policy fail and the real one pass. This single block now closes both
+-- axes: EVERY-vs-ANY wallet membership, and membership-vs-creation.
 --
 -- Alice creates a SECOND wallet, deliberately a FRESH one rather than
 -- reusing an earlier wallet from this 1900+ line file: bob's membership
@@ -1933,7 +1938,9 @@ commit;
 -- earlier comment, written before that section ran, claimed he wasn't in.
 -- A fresh wallet's membership history is exactly one row: the
 -- owner-membership trigger (0002) adds alice, and nothing else ever
--- touches it.
+-- touches it. d0000000-...-001 is created strictly AFTER the Invitations
+-- section's lookup already ran, so bob provably cannot hold membership in
+-- it via that unordered select either.
 -- =====================================================================
 begin;
   set local role authenticated;
@@ -1946,10 +1953,23 @@ begin;
               'Alice Solo', 'card', 'USD', 3, 'credit-card');
     assert is_wallet_member('d0000000-0000-0000-0000-000000000001'::uuid) = true,
       'test setup broken: alice should be an owner-member of her own new wallet';
+  end $$;
+commit;
 
-    -- A budget whose set will span BOTH wallets alice is in.
+-- Bob -- not alice -- creates the budget. budgets INSERT is granted to
+-- authenticated unconditionally (created_by carries no permission, per
+-- 0013's own comment), and budgets_visible's WITH CHECK passes vacuously
+-- here: no budget_wallets row references this id yet, so `not exists` is
+-- trivially true (the documented empty-set HAZARD, exercised harmlessly
+-- as a mid-transaction intermediate state, not left in that shape).
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+
     insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
-    values ('b0000000-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001',
+    values ('b0000000-0000-0000-0000-000000000003', 'bbbbbbbb-0000-0000-0000-000000000002',
             'USD', null, '2026-10-01', 75000);
   end $$;
 commit;
@@ -1962,8 +1982,10 @@ insert into public.budget_wallets (budget_id, wallet_id) values
   ('b0000000-0000-0000-0000-000000000003', 'cccccccc-0000-0000-0000-000000000003'),
   ('b0000000-0000-0000-0000-000000000003', 'd0000000-0000-0000-0000-000000000001');
 
--- Positive control: alice is a member of BOTH wallets in the set, so she
--- sees exactly one row -- paired with bob's denial immediately below.
+-- Positive control: alice is a member of BOTH wallets in the set -- and is
+-- NOT the creator -- so she sees exactly one row. Paired with bob's denial
+-- immediately below: under a wrong `created_by = auth.uid()` policy this
+-- assertion would fail (alice made nothing here), which is the point.
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
@@ -1974,12 +1996,14 @@ begin;
   end $$;
 commit;
 
--- THE core semantics assertion. Bob is a member of exactly ONE of the
--- set's two wallets (cccccccc-003, made a genuine member in the
--- membership section above and never revoked) but not the other
--- (d0000000-...-001, created moments ago and never shared with him).
--- "Visible to members of EVERY wallet" must deny him -- a policy that
--- only checked ANY membership would let him through instead.
+-- THE core semantics assertion, now on two axes at once. Bob is the
+-- budget's CREATOR, but a member of only ONE of the set's two wallets
+-- (cccccccc-003, made a genuine member in the membership section above and
+-- never revoked) and not the other (d0000000-...-001, alice's, never
+-- shared with him). Visibility here tracks membership of every wallet in
+-- the set, NOT creation: "visible to members of EVERY wallet" must deny
+-- him despite his authorship, and a policy that only checked ANY
+-- membership would let him through regardless of who made the row.
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
@@ -1990,6 +2014,6 @@ begin;
     assert is_wallet_member('d0000000-0000-0000-0000-000000000001'::uuid) = false,
       'test setup broken: bob should not be a member of alice''s new solo wallet';
     assert (select count(*) from public.budgets where id = 'b0000000-0000-0000-0000-000000000003') = 0,
-      'LEAK: a member of only ONE wallet in a multi-wallet budget set can read it -- the policy is checking ANY membership, not EVERY';
+      'LEAK: the creator of a multi-wallet budget, a member of only ONE wallet in its set, can still read it -- the policy is checking ANY membership (or authorship), not EVERY-wallet membership';
   end $$;
 commit;
