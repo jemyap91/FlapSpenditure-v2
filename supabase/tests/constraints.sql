@@ -218,399 +218,74 @@ begin
     format('CONSTRAINT BROKEN: a transfer leg with category_id null was not accepted (%s row(s) landed)', n);
 end $$;
 
--- get_budget_status counts EXPENSES ONLY (spec, Global Constraints). A wallet
--- holding one expense, one income and one transfer must report only the
--- expense. This runs as the table owner, so it tests the FILTER, not RLS --
--- the RLS half lives in rls.sql.
-insert into auth.users (id, email) values ('aaaa3333-0000-4000-8000-000000000003','b3@x.io');
-insert into public.wallets (id, owner_id, name, kind, currency_code, starting_balance_minor, color_slot, icon)
-values ('bbbb3333-0000-4000-8000-000000000003','aaaa3333-0000-4000-8000-000000000003','Kinds','bank','USD',0,1,'landmark'),
-       ('bbbb4444-0000-4000-8000-000000000004','aaaa3333-0000-4000-8000-000000000003','Other','bank','USD',0,2,'landmark');
-
--- create_transfer and get_budget_status both resolve wallet membership via
--- public.is_wallet_member(), which reads auth.uid() -- itself derived from
--- the request.jwt.claim(s) GUCs. This file runs as the table-owning
--- superuser and deliberately bypasses RLS (see this file's header), but
--- that bypass is orthogonal to these two functions: they are SECURITY
--- DEFINER and consult auth.uid() directly, not RLS, so with no JWT claims
--- set auth.uid() is NULL and both would see zero membership regardless of
--- the bypass. SET LOCAL requires an explicit transaction (the same rule
--- rls.sql's header documents) so both calls below are wrapped in one.
-begin;
-  set local request.jwt.claims = '{"sub":"aaaa3333-0000-4000-8000-000000000003"}';
-  do $$
-  declare exp_cat uuid; inc_cat uuid; total bigint;
-  begin
-    assert (select auth.uid()) = 'aaaa3333-0000-4000-8000-000000000003'::uuid,
-      'test setup broken: auth.uid() did not resolve to the wallet owner';
-
-    select id into exp_cat from public.categories
-     where wallet_id = 'bbbb3333-0000-4000-8000-000000000003' and kind = 'expense' limit 1;
-    select id into inc_cat from public.categories
-     where wallet_id = 'bbbb3333-0000-4000-8000-000000000003' and kind = 'income' limit 1;
-
-    insert into public.transactions (wallet_id, kind, amount_minor, currency_code, category_id, occurred_on)
-    values ('bbbb3333-0000-4000-8000-000000000003','expense',-5000,'USD',exp_cat,'2026-08-10'),
-           ('bbbb3333-0000-4000-8000-000000000003','income',  90000,'USD',inc_cat,'2026-08-11');
-
-    -- A real transfer pair, so the transfer branch is genuinely exercised
-    -- rather than assumed absent.
-    perform public.create_transfer(
-      'bbbb3333-0000-4000-8000-000000000003',
-      'bbbb4444-0000-4000-8000-000000000004',
-      2500, 2500, '2026-08-12', null);
-
-    select coalesce(sum(spent_minor), 0) into total
-    from public.get_budget_status('2026-08-01','2026-08-31')
-    where wallet_id = 'bbbb3333-0000-4000-8000-000000000003' and category_id is not null;
-
-    if total <> 5000 then
-      raise exception 'expenses-only broken: expected 5000, got %', total;
-    end if;
-  end $$;
-commit;
-
--- ROUND-1 FIX (Important/Minor pairing, review round 1): carry-forward.
--- "The effective budget for a month is the most recent row at or BEFORE
--- it" is one of the spec's four headline decisions (get_budget_status's own
--- header comment: "one row set in September governs October onward, and
--- raising the amount in October leaves September measured against
--- September's row"). The SQL (order by period_start desc, filtered to
--- period_start <= from_date, DISTINCT ON (wallet_id, category_id)) was
--- correct by inspection but had no assertion proving it -- a refactor could
--- silently break this user-facing promise with nothing to catch it. Placed
--- in constraints.sql, not rls.sql: this is a functional/business-logic
--- property of get_budget_status's query, the same category the
--- expenses-only block immediately above already tests in this file, not an
--- RLS access-boundary property (that suite lives in rls.sql). A fresh
--- wallet/user fixture is used so this is not entangled with any other
--- block's budget rows.
-insert into auth.users (id, email) values ('aaaa6666-0000-4000-8000-000000000006','b6@x.io');
-insert into public.wallets (id, owner_id, name, kind, currency_code, starting_balance_minor, color_slot, icon)
-values ('bbbb6666-0000-4000-8000-000000000006','aaaa6666-0000-4000-8000-000000000006','Carry Forward','bank','USD',0,3,'landmark');
-
-begin;
-  -- Same reason as the expenses-only block above: get_budget_status resolves
-  -- membership via auth.uid(), which needs an explicit transaction for
-  -- SET LOCAL to take effect.
-  set local request.jwt.claims = '{"sub":"aaaa6666-0000-4000-8000-000000000006"}';
-  do $$
-  declare v bigint;
-  begin
-    assert (select auth.uid()) = 'aaaa6666-0000-4000-8000-000000000006'::uuid,
-      'test setup broken: auth.uid() did not resolve to the carry-forward wallet''s owner';
-
-    -- September's own budget: 500.00.
-    insert into public.budgets (wallet_id, period_start, amount_minor)
-    values ('bbbb6666-0000-4000-8000-000000000006', '2026-09-01', 50000);
-    -- October's RAISED budget: 800.00. A different amount for a later month.
-    insert into public.budgets (wallet_id, period_start, amount_minor)
-    values ('bbbb6666-0000-4000-8000-000000000006', '2026-10-01', 80000);
-
-    -- The whole behaviour in one pair of assertions: September must still
-    -- report September's OWN amount, unaffected by October's later raise;
-    -- October must report the raised amount.
-    select budget_minor into v from public.get_budget_status('2026-09-01','2026-09-30')
-     where wallet_id = 'bbbb6666-0000-4000-8000-000000000006' and category_id is null;
-    assert v = 50000,
-      format('CARRY-FORWARD BROKEN: September must be measured against its own row (50000), got %s', v);
-
-    select budget_minor into v from public.get_budget_status('2026-10-01','2026-10-31')
-     where wallet_id = 'bbbb6666-0000-4000-8000-000000000006' and category_id is null;
-    assert v = 80000,
-      format('CARRY-FORWARD BROKEN: October must report its own raised amount (80000), got %s', v);
-
-    -- Bonus coverage for the other half of the same header comment: a month
-    -- with NO row of its own (November) must carry forward the most recent
-    -- prior row (October's 80000), not October's superseded September value
-    -- and not "no budget".
-    select budget_minor into v from public.get_budget_status('2026-11-01','2026-11-30')
-     where wallet_id = 'bbbb6666-0000-4000-8000-000000000006' and category_id is null;
-    assert v = 80000,
-      format('CARRY-FORWARD BROKEN: November (no row of its own) must carry forward October''s 80000, got %s', v);
-
-    -- And a month BEFORE any budget existed (August) must show no budget
-    -- row at all -- there is nothing at or before August for the eff CTE
-    -- to find, so this wallet must not appear in the overall-cap branch.
-    assert not exists (
-      select 1 from public.get_budget_status('2026-08-01','2026-08-31')
-       where wallet_id = 'bbbb6666-0000-4000-8000-000000000006' and category_id is null
-    ), 'CARRY-FORWARD BROKEN: a month before any budget existed must not report one';
-  end $$;
-commit;
-
--- ADDITIONAL SCOPE (task-2 ruling, beyond the brief): budgets_category_period
--- must reject a second budget for the same (wallet, category, month) -- the
--- CATEGORY partial index's own bad case. Task 1's verification exercised
--- budgets_overall_period (the wallet-wide cap) but never this one; a
--- reviewer confirmed ad-hoc that budgets_category_period does reject a
--- duplicate, but left no permanent guard. This is that guard. Reuses wallet
--- 'bbbb3333-...-003' (Kinds) from the expenses-only block above, which
--- already has a seeded expense category to budget against.
-do $$
-declare
-  exp_cat uuid;
-  v_sqlstate   text;
-  v_constraint text;
-begin
-  select id into exp_cat from public.categories
-   where wallet_id = 'bbbb3333-0000-4000-8000-000000000003' and kind = 'expense' limit 1;
-  assert exp_cat is not null, 'test setup broken: wallet Kinds has no seeded expense category';
-
-  -- ACCEPT: the first budget for this (wallet, category, month) must succeed.
-  insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
-  values ('bbbb3333-0000-4000-8000-000000000003', exp_cat, '2026-08-01', 10000);
-
-  -- REJECT: a second budget for the SAME (wallet, category, month) -> budgets_category_period.
-  begin
-    insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
-    values ('bbbb3333-0000-4000-8000-000000000003', exp_cat, '2026-08-01', 20000);
-    raise exception 'CONSTRAINT BROKEN: budgets_category_period did not reject a second budget for the same (wallet, category, month)';
-  exception
-    when unique_violation then
-      get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
-      assert v_sqlstate = '23505' and v_constraint = 'budgets_category_period',
-        format('expected unique_violation (23505) from budgets_category_period, got SQLSTATE %s (constraint %s): %s',
-               v_sqlstate, v_constraint, sqlerrm);
-  end;
-
-  -- POSITIVE control, paired with the denial above: a DIFFERENT month for
-  -- the same wallet+category is unaffected by the index and must succeed.
-  insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
-  values ('bbbb3333-0000-4000-8000-000000000003', exp_cat, '2026-09-01', 10000);
-  assert (select count(*) from public.budgets
-            where wallet_id = 'bbbb3333-0000-4000-8000-000000000003' and category_id = exp_cat) = 2,
-    'CONSTRAINT BROKEN: budgets_category_period rejected a legitimate different-month budget for the same wallet+category';
-end $$;
-
--- set_budget (0012): proves the ON CONFLICT upsert this function performs
--- actually infers the two PARTIAL indexes (budgets_category_period,
--- budgets_overall_period) rather than silently duplicating rows. This is
--- the exact bug class the brief's CORRECTION describes: a bare
--- `on conflict (wallet_id, category_id, period_start)` (no predicate)
--- cannot infer a partial index and fails at the database with "there is no
--- unique or exclusion constraint matching the ON CONFLICT specification" --
--- see the "watch it fail" step below, deliberately reproduced and then
--- reverted.
+-- Budgets (0013). 0012's budgets/get_budget_status tests are gone with the
+-- table: get_budget_status was CASCADE-dropped along with budgets (0013's
+-- own comment), and 0012's category_id/wallet_id-keyed rows no longer match
+-- this shape. Task 2 recreates get_budget_status and its coverage; this
+-- file only proves the CHECK/FK invariants 0013 itself adds, per this
+-- file's own header (table-owning superuser, RLS bypassed by design -- the
+-- membership boundary is rls.sql's job, not this file's).
 --
--- Reuses wallet 'bbbb3333-...-003' (Kinds) and its owner
--- 'aaaa3333-...-003' from the expenses-only block above, and that block's
--- own begin/set local request.jwt.claims/commit wrapper: set_budget
--- resolves membership through auth.uid() (via is_wallet_member), which is
--- NULL in this superuser session with no JWT claims set.
-begin;
-  set local request.jwt.claims = '{"sub":"aaaa3333-0000-4000-8000-000000000003"}';
-  do $$
-  declare
-    exp_cat uuid;
-    v_id_first  uuid;
-    v_id_second uuid;
-    v_amount    bigint;
-    v_count     int;
-  begin
-    assert (select auth.uid()) = 'aaaa3333-0000-4000-8000-000000000003'::uuid,
-      'test setup broken: auth.uid() did not resolve to the wallet owner';
+-- Fixtures: Alice and one of her wallets, using the ids the other suites
+-- (rls.sql) already use for the same actor, so a reader cross-referencing
+-- fixture ids across files finds the same person and wallet in both.
+insert into auth.users (id, email) values
+  ('aaaaaaaa-0000-0000-0000-000000000001', 'alice@x.io');
+insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+  values ('cccccccc-0000-0000-0000-000000000003',
+          'aaaaaaaa-0000-0000-0000-000000000001', 'Alice Bank', 'bank', 'USD', 1, 'landmark');
 
-    select id into exp_cat from public.categories
-     where wallet_id = 'bbbb3333-0000-4000-8000-000000000003' and kind = 'expense' limit 1;
-    assert exp_cat is not null, 'test setup broken: wallet Kinds has no seeded expense category';
-
-    -- CATEGORY shape: first call with no existing row creates one.
-    select public.set_budget(
-      'bbbb3333-0000-4000-8000-000000000003', exp_cat, '2026-11-01', 10000
-    ) into v_id_first;
-    assert v_id_first is not null, 'set_budget (category) did not return an id on insert';
-
-    select amount_minor into v_amount from public.budgets where id = v_id_first;
-    assert v_amount = 10000,
-      format('set_budget (category) insert: expected amount 10000, got %s', v_amount);
-
-    -- CATEGORY shape: second call, same (wallet, category, month), different
-    -- amount, must leave EXACTLY ONE row carrying the new amount -- not a
-    -- second row. Row count, not just amount: "updated" and "inserted a
-    -- duplicate" both leave a row with the new amount, so amount alone
-    -- cannot distinguish them.
-    select public.set_budget(
-      'bbbb3333-0000-4000-8000-000000000003', exp_cat, '2026-11-01', 20000
-    ) into v_id_second;
-
-    select count(*) into v_count from public.budgets
-     where wallet_id = 'bbbb3333-0000-4000-8000-000000000003'
-       and category_id = exp_cat and period_start = '2026-11-01';
-    assert v_count = 1,
-      format('SET_BUDGET UPSERT BROKEN (category): expected exactly 1 row after re-calling set_budget, got %s', v_count);
-
-    select amount_minor into v_amount from public.budgets where id = v_id_second;
-    assert v_amount = 20000,
-      format('SET_BUDGET UPSERT BROKEN (category): expected updated amount 20000, got %s', v_amount);
-
-    -- OVERALL shape: p_category_id => null. First call with no existing row
-    -- creates one.
-    select public.set_budget(
-      'bbbb3333-0000-4000-8000-000000000003', null, '2026-11-01', 30000
-    ) into v_id_first;
-    assert v_id_first is not null, 'set_budget (overall) did not return an id on insert';
-
-    select amount_minor into v_amount from public.budgets where id = v_id_first;
-    assert v_amount = 30000,
-      format('set_budget (overall) insert: expected amount 30000, got %s', v_amount);
-
-    -- OVERALL shape: second call, same (wallet, month), different amount,
-    -- must again leave exactly one row.
-    select public.set_budget(
-      'bbbb3333-0000-4000-8000-000000000003', null, '2026-11-01', 40000
-    ) into v_id_second;
-
-    select count(*) into v_count from public.budgets
-     where wallet_id = 'bbbb3333-0000-4000-8000-000000000003'
-       and category_id is null and period_start = '2026-11-01';
-    assert v_count = 1,
-      format('SET_BUDGET UPSERT BROKEN (overall): expected exactly 1 row after re-calling set_budget, got %s', v_count);
-
-    select amount_minor into v_amount from public.budgets where id = v_id_second;
-    assert v_amount = 40000,
-      format('SET_BUDGET UPSERT BROKEN (overall): expected updated amount 40000, got %s', v_amount);
-  end $$;
-commit;
-
--- budgets_category_same_wallet (0012, item 4): spec §6 requires, verbatim,
--- "the composite FK rejects a cross-wallet category." The constraint was
--- declared correctly and verified live once during review, but no
--- committed test exercised it. Same pattern as
--- transactions_category_same_wallet above: a REJECT paired with a
--- SAME-wallet POSITIVE, so this proves the constraint and not a broken
--- insert path. Reuses wallets 'bbbb3333-...-003' (Kinds) and
--- 'bbbb4444-...-004' (Other) from the expenses-only block above.
+-- period_start must be the first of a month
 do $$
-declare foreign_cat uuid;
+declare v_constraint text;
 begin
-  select id into foreign_cat from public.categories
-   where wallet_id = 'bbbb4444-0000-4000-8000-000000000004' and kind = 'expense' limit 1;
-  assert foreign_cat is not null, 'test setup broken: wallet Other has no seeded expense category';
-
   begin
-    insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
-    values ('bbbb3333-0000-4000-8000-000000000003', foreign_cat, '2026-12-01', 10000);
-    raise exception 'CONSTRAINT BROKEN: budgets_category_same_wallet did not reject a cross-wallet category';
-  exception when foreign_key_violation then
-    null; -- correct
+    insert into public.budgets (created_by, currency_code, category_key, period_start, amount_minor)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', 'groceries', '2026-11-15', 50000);
+    raise exception 'CONSTRAINT BROKEN: budgets accepted a mid-month period_start';
+  exception when check_violation then
+    get stacked diagnostics v_constraint = constraint_name;
+    assert v_constraint = 'budgets_period_start_check',
+      format('wrong constraint fired: %s', v_constraint);
   end;
 end $$;
 
--- POSITIVE, paired with the REJECT above: the SAME wallet's own category is
--- accepted. Without this, a constraint (or insert path) that rejected
--- EVERY category_id would sail through the REJECT above.
+-- amount_minor must be positive: zero and negative
 do $$
-declare exp_cat uuid; n int;
-begin
-  select id into exp_cat from public.categories
-   where wallet_id = 'bbbb3333-0000-4000-8000-000000000003' and kind = 'expense' limit 1;
-  assert exp_cat is not null, 'test setup broken: wallet Kinds has no seeded expense category';
-
-  insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
-  values ('bbbb3333-0000-4000-8000-000000000003', exp_cat, '2026-12-01', 10000);
-
-  select count(*) into n from public.budgets
-   where wallet_id = 'bbbb3333-0000-4000-8000-000000000003'
-     and category_id = exp_cat and period_start = '2026-12-01';
-  assert n = 1,
-    format('CONSTRAINT BROKEN: budgets_category_same_wallet rejected a category from the budget''s OWN wallet (%s row(s) landed)', n);
-end $$;
-
--- budgets_period_start_check (0012, item 4): period_start must be the
--- first of a month (`extract(day from period_start) = 1`). No permanent
--- guard existed before this. REJECT paired with a same-wallet POSITIVE
--- (a genuine first-of-month row), the same shape as every other REJECT in
--- this file.
-do $$
-declare
-  v_sqlstate   text;
-  v_constraint text;
 begin
   begin
-    insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
-    values ('bbbb3333-0000-4000-8000-000000000003', null, '2026-10-15', 10000);
-    raise exception 'CONSTRAINT BROKEN: budgets_period_start_check did not reject a mid-month period_start';
-  exception
-    when others then
-      get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
-      assert v_sqlstate = '23514' and v_constraint = 'budgets_period_start_check',
-        format('expected check_violation (23514) from budgets_period_start_check, got SQLSTATE %s (constraint %s): %s',
-               v_sqlstate, v_constraint, sqlerrm);
+    insert into public.budgets (created_by, currency_code, category_key, period_start, amount_minor)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', 'groceries', '2026-11-01', 0);
+    raise exception 'CONSTRAINT BROKEN: budgets accepted a zero amount';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.budgets (created_by, currency_code, category_key, period_start, amount_minor)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', 'groceries', '2026-11-01', -100);
+    raise exception 'CONSTRAINT BROKEN: budgets accepted a negative amount';
+  exception when check_violation then null;
   end;
 end $$;
 
+-- budget_wallets rejects a wallet that does not exist, and cascades on delete
 do $$
-declare n int;
+declare v_budget uuid; v_rows int;
 begin
-  -- POSITIVE, paired with the REJECT above: a genuine first-of-month
-  -- period_start for the same wallet is accepted.
-  insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
-  values ('bbbb3333-0000-4000-8000-000000000003', null, '2026-10-01', 10000);
+  insert into public.budgets (created_by, currency_code, category_key, period_start, amount_minor)
+  values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', 'groceries', '2026-11-01', 50000)
+  returning id into v_budget;
 
-  select count(*) into n from public.budgets
-   where wallet_id = 'bbbb3333-0000-4000-8000-000000000003'
-     and category_id is null and period_start = '2026-10-01';
-  assert n = 1,
-    format('CONSTRAINT BROKEN: budgets_period_start_check rejected a legitimate first-of-month period_start (%s row(s) landed)', n);
-end $$;
-
--- budgets_amount_minor_check (0012, item 4): amount_minor must be strictly
--- positive -- "a zero budget is indistinguishable from no budget; deleting
--- the row is how a budget is removed" (0012's own comment). No permanent
--- guard existed before this. Both zero and negative are rejected; neither
--- REJECT lands a row, so both reuse the same fresh (wallet, month) --
--- 2027-01-01, not 2026-11-01: the set_budget block above already left a
--- REAL overall-cap row for this wallet at 2026-11-01 (amount 40000), and
--- reusing that period here would risk a unique-index conflict masking
--- which constraint actually fired.
-do $$
-declare
-  v_sqlstate   text;
-  v_constraint text;
-begin
   begin
-    insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
-    values ('bbbb3333-0000-4000-8000-000000000003', null, '2027-01-01', 0);
-    raise exception 'CONSTRAINT BROKEN: budgets_amount_minor_check did not reject a zero amount';
-  exception
-    when others then
-      get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
-      assert v_sqlstate = '23514' and v_constraint = 'budgets_amount_minor_check',
-        format('expected check_violation (23514) from budgets_amount_minor_check (zero), got SQLSTATE %s (constraint %s): %s',
-               v_sqlstate, v_constraint, sqlerrm);
+    insert into public.budget_wallets (budget_id, wallet_id)
+    values (v_budget, '00000000-0000-0000-0000-0000000000ff');
+    raise exception 'CONSTRAINT BROKEN: budget_wallets accepted a nonexistent wallet';
+  exception when foreign_key_violation then null;
   end;
-end $$;
 
-do $$
-declare
-  v_sqlstate   text;
-  v_constraint text;
-begin
-  begin
-    insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
-    values ('bbbb3333-0000-4000-8000-000000000003', null, '2027-01-01', -100);
-    raise exception 'CONSTRAINT BROKEN: budgets_amount_minor_check did not reject a negative amount';
-  exception
-    when others then
-      get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
-      assert v_sqlstate = '23514' and v_constraint = 'budgets_amount_minor_check',
-        format('expected check_violation (23514) from budgets_amount_minor_check (negative), got SQLSTATE %s (constraint %s): %s',
-               v_sqlstate, v_constraint, sqlerrm);
-  end;
-end $$;
+  insert into public.budget_wallets (budget_id, wallet_id)
+  values (v_budget, 'cccccccc-0000-0000-0000-000000000003');
 
-do $$
-declare n int;
-begin
-  -- POSITIVE, paired with both REJECTs above: a genuine positive amount for
-  -- the same wallet+month is accepted.
-  insert into public.budgets (wallet_id, category_id, period_start, amount_minor)
-  values ('bbbb3333-0000-4000-8000-000000000003', null, '2026-12-01', 100);
-
-  select count(*) into n from public.budgets
-   where wallet_id = 'bbbb3333-0000-4000-8000-000000000003'
-     and category_id is null and period_start = '2026-12-01';
-  assert n = 1,
-    format('CONSTRAINT BROKEN: budgets_amount_minor_check rejected a legitimate positive amount (%s row(s) landed)', n);
+  delete from public.budgets where id = v_budget;
+  select count(*) into v_rows from public.budget_wallets where budget_id = v_budget;
+  assert v_rows = 0, 'CASCADE BROKEN: budget_wallets rows survived their budget';
 end $$;

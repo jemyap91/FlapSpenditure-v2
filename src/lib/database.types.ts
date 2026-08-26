@@ -34,54 +34,65 @@ export type Database = {
   }
   public: {
     Tables: {
-      budgets: {
+      budget_wallets: {
         Row: {
-          amount_minor: number
-          category_id: string | null
-          created_at: string
-          id: string
-          period_start: string
+          budget_id: string
           wallet_id: string
         }
         Insert: {
-          amount_minor: number
-          category_id?: string | null
-          created_at?: string
-          id?: string
-          period_start: string
+          budget_id: string
           wallet_id: string
         }
         Update: {
-          amount_minor?: number
-          category_id?: string | null
-          created_at?: string
-          id?: string
-          period_start?: string
+          budget_id?: string
           wallet_id?: string
         }
         Relationships: [
           {
-            foreignKeyName: "budgets_category_id_fkey"
-            columns: ["category_id"]
+            foreignKeyName: "budget_wallets_budget_id_fkey"
+            columns: ["budget_id"]
             isOneToOne: false
-            referencedRelation: "categories"
+            referencedRelation: "budgets"
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "budgets_category_same_wallet"
-            columns: ["category_id", "wallet_id"]
-            isOneToOne: false
-            referencedRelation: "categories"
-            referencedColumns: ["id", "wallet_id"]
-          },
-          {
-            foreignKeyName: "budgets_wallet_id_fkey"
+            foreignKeyName: "budget_wallets_wallet_id_fkey"
             columns: ["wallet_id"]
             isOneToOne: false
             referencedRelation: "wallets"
             referencedColumns: ["id"]
           },
         ]
+      }
+      budgets: {
+        Row: {
+          amount_minor: number
+          category_key: string | null
+          created_at: string
+          created_by: string
+          currency_code: string
+          id: string
+          period_start: string
+        }
+        Insert: {
+          amount_minor: number
+          category_key?: string | null
+          created_at?: string
+          created_by: string
+          currency_code: string
+          id?: string
+          period_start: string
+        }
+        Update: {
+          amount_minor?: number
+          category_key?: string | null
+          created_at?: string
+          created_by?: string
+          currency_code?: string
+          id?: string
+          period_start?: string
+        }
+        Relationships: []
       }
       categories: {
         Row: {
@@ -395,22 +406,6 @@ export type Database = {
         Returns: string
       }
       decline_wallet_invite: { Args: { invite: string }; Returns: undefined }
-      get_budget_status: {
-        Args: { from_date: string; to_date: string }
-        Returns: {
-          budget_id: string
-          budget_minor: number
-          budget_period_start: string
-          category_id: string
-          category_name: string
-          color_slot: number
-          currency_code: string
-          icon: string
-          spent_minor: number
-          wallet_id: string
-          wallet_name: string
-        }[]
-      }
       get_cash_flow: {
         Args: {
           bucket?: string
@@ -461,15 +456,6 @@ export type Database = {
         }[]
       }
       is_wallet_member: { Args: { w: string }; Returns: boolean }
-      set_budget: {
-        Args: {
-          p_amount_minor: number
-          p_category_id: string
-          p_period_start: string
-          p_wallet_id: string
-        }
-        Returns: string
-      }
     }
     Enums: {
       category_kind: "expense" | "income"
