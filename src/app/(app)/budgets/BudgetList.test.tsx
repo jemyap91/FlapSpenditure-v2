@@ -107,6 +107,25 @@ describe("BudgetList — two budgets, same category, different scopes", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Groceries · Everyday" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: "Groceries · Savings" })).toBeInTheDocument();
   });
+
+  it("names each row's live regions distinctly — fix round I2, categoryLabel alone collided here", () => {
+    render(
+      <BudgetList
+        rows={[
+          row({ budget_id: "b1", wallet_names: ["Everyday"], wallet_count: 1 }),
+          row({ budget_id: "b2", wallet_names: ["Savings"], wallet_count: 1 }),
+        ]}
+      />,
+    );
+    // Both rows share `categoryLabel` ("Groceries") — before this fix both
+    // alerts (and both status regions) were named identically "Error for
+    // Groceries" / "Status for Groceries", making getByRole ambiguous for
+    // exactly the scenario this describe block renders.
+    expect(screen.getByRole("alert", { name: "Error for Groceries · Everyday" })).toBeInTheDocument();
+    expect(screen.getByRole("alert", { name: "Error for Groceries · Savings" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Status for Groceries · Everyday" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Status for Groceries · Savings" })).toBeInTheDocument();
+  });
 });
 
 describe("BudgetList — heading semantics", () => {
@@ -128,7 +147,10 @@ describe("BudgetList — heading semantics", () => {
             wallet_count: 2,
           }),
         ]}
-        totalInCurrency={2}
+        wallets={[
+          { id: "w1", name: "Everyday", currency_code: "SGD" },
+          { id: "w2", name: "Savings", currency_code: "SGD" },
+        ]}
       />,
     );
     expect(
@@ -210,9 +232,57 @@ describe("BudgetList — Remove", () => {
     const user = userEvent.setup();
     render(<BudgetList rows={[row({ category_label: "Groceries", budget_id: "b1" })]} />);
     await user.click(screen.getByRole("button", { name: "Remove budget for Groceries" }));
-    expect(await screen.findByRole("alert", { name: "Error for Groceries" })).toHaveTextContent(
+    // "Error for Groceries · Everyday", not just "Error for Groceries" — the
+    // default `row()` fixture's own scope, per fix round I2's naming fix.
+    expect(await screen.findByRole("alert", { name: "Error for Groceries · Everyday" })).toHaveTextContent(
       "Could not remove that budget. Please try again.",
     );
+  });
+});
+
+describe("BudgetList — Remove, a budget carried forward from an earlier month (fix round C1)", () => {
+  // Restored as a direct port of commit d8968fe's own three cases, after
+  // being dropped (along with the feature) in the initial wallet-set
+  // rewrite on the mistaken belief that carry-forward "doesn't map onto
+  // wallet sets" — it does, just keyed on (wallet set, category) now
+  // instead of (wallet, category). See `monthAbbrev`'s own doc comment in
+  // BudgetList.tsx.
+  it("discloses a budget carried forward from an earlier month in the VISIBLE text, keeping the aria-label pinned", () => {
+    render(
+      <BudgetList
+        rows={[row({ category_label: "Groceries", budget_id: "b1", budget_period_start: "2026-06-01" })]}
+        currentPeriodStart="2026-08-01"
+      />,
+    );
+    const button = screen.getByRole("button", { name: "Remove budget for Groceries" });
+    // The aria-label (queried above) is the pinned string, byte-identical.
+    // The VISIBLE text is what carries the disclosure.
+    expect(button).toHaveTextContent("Remove (set Jun)");
+    // Same calendar year as `currentPeriodStart` — no year digits.
+    expect(button).not.toHaveTextContent(/\d{4}/);
+  });
+
+  it("includes the year in the qualifier when the budget was set in an EARLIER calendar year", () => {
+    render(
+      <BudgetList
+        rows={[row({ category_label: "Groceries", budget_id: "b1", budget_period_start: "2025-08-01" })]}
+        currentPeriodStart="2026-08-01"
+      />,
+    );
+    const button = screen.getByRole("button", { name: "Remove budget for Groceries" });
+    expect(button).toHaveTextContent("Remove (set Aug 2025)");
+  });
+
+  it("does not disclose a past-month qualifier for a budget set THIS month", () => {
+    render(
+      <BudgetList
+        rows={[row({ category_label: "Groceries", budget_id: "b1", budget_period_start: "2026-08-01" })]}
+        currentPeriodStart="2026-08-01"
+      />,
+    );
+    const button = screen.getByRole("button", { name: "Remove budget for Groceries" });
+    expect(button).toHaveTextContent("Remove");
+    expect(button).not.toHaveTextContent(/\(set/);
   });
 });
 
@@ -248,7 +318,14 @@ describe("BudgetList — save error accessibility", () => {
     // node itself.
     vi.mocked(setBudget).mockResolvedValue({ error: "Enter an amount like 600 or 600.50" });
     const user = userEvent.setup();
-    render(<BudgetList rows={[row({ category_label: "Groceries" })]} />);
+    // `walletIdsByBudget` must match the default row's `wallet_count: 1` —
+    // fix round I5 disables Save whenever `walletIds.length !== wallet_count`
+    // (the archived-wallet-mismatch guard), and an unsupplied map defaults
+    // to `[]`, which would trip that guard here for an entirely unrelated
+    // reason and silently prevent the click below from ever submitting.
+    render(
+      <BudgetList rows={[row({ category_label: "Groceries", budget_id: "b1" })]} walletIdsByBudget={{ b1: ["w1"] }} />,
+    );
 
     const rowSection = screen.getByRole("heading", { level: 2, name: "Groceries · Everyday" }).closest("section")!;
     const input = within(rowSection).getByLabelText("Budget amount");
@@ -320,7 +397,6 @@ describe("BudgetList — coverage disclosures", () => {
           { id: "w2", name: "Savings", currency_code: "SGD" },
         ]}
         primaryCurrency="SGD"
-        totalInCurrency={2}
       />,
     );
     // Not a bare /Savings/ match: the always-mounted new-budget wallet
@@ -338,10 +414,14 @@ describe("BudgetList — coverage disclosures", () => {
           { id: "w3", name: "Yen account", currency_code: "JPY" },
         ]}
         primaryCurrency="SGD"
-        totalInCurrency={1}
       />,
     );
-    expect(screen.getByText(/JPY/)).toBeInTheDocument();
+    // Minor fix-round finding: pin the FULL sentence, not a bare /JPY/ — a
+    // bare match would pass under any rewording that merely mentions the
+    // currency code somewhere.
+    expect(
+      screen.getByText("Accounts in JPY aren’t covered by any budget here."),
+    ).toBeInTheDocument();
   });
 });
 

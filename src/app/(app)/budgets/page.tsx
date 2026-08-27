@@ -17,12 +17,17 @@ import type { BudgetStatusRow } from "@/lib/budget-status";
  * screen, for two independent reasons the controller addendum for this task
  * spells out:
  *
- * 1. `scopeLabel` needs `totalInCurrency` — the count of the caller's ACTIVE
- *    wallets in the PRIMARY currency — to decide whether a wallet set truly
+ * 1. `scopeLabel` needs, per BUDGET ROW, the count of the caller's ACTIVE
+ *    wallets in THAT ROW'S OWN currency, to decide whether a wallet set truly
  *    covers "All accounts" or merely used to (a set is materialised at
  *    creation, so a wallet added afterward is never covered). That number
  *    cannot come from `rows`, which describes only BUDGETED wallets, so a
- *    plain `wallets` read supplies it.
+ *    plain `wallets` read supplies it — passed down whole; `BudgetList`
+ *    itself indexes it by currency (fix round I3: an earlier version of this
+ *    page computed one flat "primary currency" count here, which produced a
+ *    false "All accounts" for any budget row in a DIFFERENT currency — e.g.
+ *    a wallet set shared with a co-member whose own wallets use a currency
+ *    other than this viewer's `base_currency`).
  * 2. `get_budget_status`'s own row carries `wallet_names` (display strings)
  *    and never wallet ids (see BudgetList.tsx's own doc comment on
  *    `walletIdsByBudget`). Resubmitting an EXISTING budget's amount through
@@ -70,8 +75,12 @@ export default async function BudgetsPage() {
 
   const rows = (rowsData ?? []) as BudgetStatusRow[];
   const wallets: BudgetWallet[] = walletsData ?? [];
+  // Only used for the categories query below now — `BudgetList` derives its
+  // own per-CURRENCY wallet counts from the full `wallets` list (fix round
+  // I3: a flat "primary currency only" count produced a false "All accounts"
+  // for a budget row in a different currency, reachable via a shared wallet
+  // whose set spans another member's own currency).
   const primaryWallets = wallets.filter((w) => w.currency_code === profile.base_currency);
-  const totalInCurrency = primaryWallets.length;
 
   const budgetIds = rows
     .map((r) => r.budget_id)
@@ -145,11 +154,11 @@ export default async function BudgetsPage() {
       </p>
       <BudgetList
         rows={rows}
-        totalInCurrency={totalInCurrency}
         wallets={wallets}
         primaryCurrency={profile.base_currency}
         categories={categories}
         walletIdsByBudget={walletIdsByBudget}
+        currentPeriodStart={from}
       />
     </div>
   );

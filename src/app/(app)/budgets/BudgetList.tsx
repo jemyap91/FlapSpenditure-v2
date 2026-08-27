@@ -4,9 +4,33 @@ import { useId, useState, useTransition, useActionState } from "react";
 import { setBudget, removeBudget, type BudgetState } from "@/server/actions/budgets";
 import { formatMoney } from "@/lib/money";
 import { budgetProgress, scopeLabel, type BudgetStatusRow } from "@/lib/budget-status";
+import { MONTH_ABBREV } from "@/lib/month-names";
 
 const FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+
+/**
+ * `Aug` for a budget set in the current calendar year, `Aug 2025` for one set
+ * in an earlier year — `currentPeriodStart` (this month's own "YYYY-MM-01")
+ * is what "current year" means here, not the viewer's clock. Ported
+ * byte-for-byte from the previous single-wallet screen (commit d8968fe) —
+ * fix round C1 restored this after it was dropped in the initial wallet-set
+ * rewrite, on the mistaken belief that carry-forward "doesn't map onto
+ * wallet sets". It does: `eff` (0013_wallet_set_budgets.sql) still carries
+ * forward the most recent row at or before the queried month, now keyed on
+ * (wallet set, category) instead of (wallet, category) — that changes WHICH
+ * row is carried, never whether hard-deleting it (removeBudget has no
+ * soft-delete and no undo) retroactively un-budgets every earlier month it
+ * was still in force for. Still pure string slicing, never `new Date(...)`,
+ * for the same timezone reason month-range.ts's own doc comment gives.
+ */
+function monthAbbrev(periodStart: string, currentPeriodStart: string): string {
+  const month = Number(periodStart.slice(5, 7));
+  const abbrev = MONTH_ABBREV[month - 1] ?? periodStart;
+  const year = periodStart.slice(0, 4);
+  const currentYear = currentPeriodStart.slice(0, 4);
+  return year === currentYear ? abbrev : `${abbrev} ${year}`;
+}
 
 /** Stand-in for the category half of the pinned heading format
  * (`<category label> · <scope label>`) on the overall-cap row, whose own
@@ -38,7 +62,13 @@ function groupRows(rows: readonly BudgetStatusRow[]): {
   const categoryBudgets = rows
     .filter((r) => r.budget_id !== null && r.category_key !== null)
     .sort((a, b) => (a.category_label ?? "").localeCompare(b.category_label ?? ""));
-  const uncovered = rows.filter((r) => r.budget_id === null);
+  // Sorted for the same reason `categoryBudgets` is above: `get_budget_status`
+  // has no ORDER BY, so an unsorted `uncovered` renders in Postgres heap
+  // order — the exact thing this function's own doc comment says it exists
+  // to prevent, and a Minor fix-round finding caught it being skipped here.
+  const uncovered = rows
+    .filter((r) => r.budget_id === null)
+    .sort((a, b) => (a.category_label ?? "").localeCompare(b.category_label ?? ""));
   return { overall, categoryBudgets, uncovered };
 }
 
@@ -54,23 +84,19 @@ function groupRows(rows: readonly BudgetStatusRow[]): {
  */
 export function BudgetList({
   rows,
-  /** Count of the caller's ACTIVE wallets in the primary currency —
-   *  `scopeLabel` needs this to decide whether a wallet set truly covers
-   *  every wallet in its currency ("All accounts") or merely used to.
-   *  page.tsx computes this from a real wallets read; it must never be
-   *  derived from `rows`, which describes only BUDGETED wallets (controller
-   *  addendum §3). Defaults to 0 so a caller supplying only `rows` (as most
-   *  of this file's own tests do) still renders every other scope branch
-   *  correctly — 0 can only ever equal a real wallet count when the row's
-   *  own `wallet_count` is also falsy, which `scopeLabel` already treats as
-   *  "no scope" before comparing counts at all. */
-  totalInCurrency = 0,
   /** Every ACTIVE wallet the caller belongs to, across every currency — not
-   *  just the primary one. Used for two purposes, both cosmetic text, never
-   *  for resubmission (see `walletIdsByBudget` below for why that needs a
-   *  different, id-accurate source): the new-budget picker's options
-   *  (filtered to `primaryCurrency`), and each existing row's "doesn't cover
-   *  ..." disclosure. */
+   *  just the primary one. This is now the ONLY source `scopeLabel`'s
+   *  per-row wallet count is derived from (see `walletCountByCurrency`
+   *  below) — a single flat `totalInCurrency` number was a fix-round I3
+   *  finding: it counted only PRIMARY-currency wallets, but a budget row can
+   *  legitimately carry a DIFFERENT currency (a shared wallet whose set
+   *  spans another member's own currency), and comparing that row's
+   *  `wallet_count` against the wrong currency's total produced a false
+   *  "All accounts" for a set that did not actually cover everyone. Indexing
+   *  by `row.currency_code` instead removes that whole class of mismatch.
+   *  Also backs the new-budget picker's options (filtered to
+   *  `primaryCurrency`) and each existing row's "doesn't cover ..."
+   *  disclosure. */
   wallets = [],
   /** The household's primary currency (`profile.base_currency`). Which of
    *  `wallets` the new-budget picker offers and defaults to, and which
@@ -101,15 +127,33 @@ export function BudgetList({
    *  the wrong id silently. A real id, fetched once in page.tsx, has no such
    *  failure mode. Name-based matching is still used for the cosmetic
    *  "doesn't cover ..." disclosure below, where a wrong guess is only ever
-   *  a wrong sentence, never a wrong wallet on a save. */
+   *  a wrong sentence, never a wrong wallet on a save.
+   *
+   *  Also the source of `walletCountMismatch` below: `budget_wallets` (this
+   *  map's source) has no archived-wallet filter, while `get_budget_status`'s
+   *  own `wallet_count` counts only ACTIVE wallets (its `scope` CTE inner-
+   *  joins `mine`). The two disagree exactly when a budget's set includes a
+   *  since-archived wallet — a fix-round I5 finding. */
   walletIdsByBudget = {},
+  /** This month's own `period_start` (`monthRange().from`) — page.tsx
+   *  computes it once and passes the same string down, rather than this
+   *  component calling `monthRange()` itself a second time and risking it
+   *  disagreeing with the value the page already queried `get_budget_status`
+   *  with. Optional: this file's own component tests never pass it, and
+   *  with no reference to compare against there is nothing honest to
+   *  disclose, so every row renders as if it were the current month's own —
+   *  never a FALSE "set in the past" claim, only a possibly missing true
+   *  one. Restored in fix round C1 after being dropped: see `monthAbbrev`'s
+   *  own doc comment for why dropping it was a real regression, not a
+   *  simplification. */
+  currentPeriodStart,
 }: {
   rows: BudgetStatusRow[];
-  totalInCurrency?: number;
   wallets?: BudgetWallet[];
   primaryCurrency?: string;
   categories?: BudgetCategoryOption[];
   walletIdsByBudget?: Record<string, string[]>;
+  currentPeriodStart?: string;
 }) {
   const { overall, categoryBudgets, uncovered } = groupRows(rows);
   const primaryWallets = primaryCurrency
@@ -122,6 +166,14 @@ export function BudgetList({
         .map((w) => w.currency_code),
     ),
   );
+
+  // Active wallet count PER CURRENCY, not just the primary one — see this
+  // prop's own doc comment above (fix round I3) for why a single flat
+  // number was wrong.
+  const walletCountByCurrency = new Map<string, number>();
+  for (const w of wallets) {
+    walletCountByCurrency.set(w.currency_code, (walletCountByCurrency.get(w.currency_code) ?? 0) + 1);
+  }
 
   const hasAnyRows = overall.length + categoryBudgets.length + uncovered.length > 0;
 
@@ -137,9 +189,10 @@ export function BudgetList({
         <BudgetRow
           key={row.budget_id!}
           row={row}
-          totalInCurrency={totalInCurrency}
+          totalInCurrency={walletCountByCurrency.get(row.currency_code) ?? 0}
           primaryWallets={primaryWallets}
           walletIds={walletIdsByBudget[row.budget_id!] ?? []}
+          currentPeriodStart={currentPeriodStart}
         />
       ))}
 
@@ -169,11 +222,13 @@ function BudgetRow({
   totalInCurrency,
   primaryWallets,
   walletIds,
+  currentPeriodStart,
 }: {
   row: BudgetStatusRow;
   totalInCurrency: number;
   primaryWallets: BudgetWallet[];
   walletIds: string[];
+  currentPeriodStart?: string;
 }) {
   const isOverall = row.category_key === null;
   const categoryLabel = row.category_label ?? OVERALL_LABEL;
@@ -201,6 +256,28 @@ function BudgetRow({
 
   const removeLabel = isOverall ? "Remove overall budget" : `Remove budget for ${categoryLabel}`;
 
+  // Fix round C1: a budget set in an EARLIER month and never touched since
+  // is still that earlier month's own row (carry-forward: "the effective
+  // budget for a month is the most recent row at or before it", now keyed on
+  // wallet SET + category). Clicking Remove here hard-deletes that row,
+  // retroactively un-budgeting every month it was carried forward into —
+  // with no undo (`removeBudget` is a plain `delete from budgets`). The
+  // `aria-label` above stays the pinned, byte-identical string either way;
+  // only the VISIBLE button text gains the qualifier, so a sighted user sees
+  // it without changing what a screen-reader user is told the control is
+  // named. See `monthAbbrev`'s own doc comment for the full history —
+  // dropped in the initial wallet-set rewrite on a mistaken "doesn't map
+  // onto sets" premise, restored here.
+  const isPastBudget =
+    row.budget_period_start !== null &&
+    currentPeriodStart !== undefined &&
+    row.budget_period_start !== currentPeriodStart;
+  const removeButtonText = removing
+    ? "Removing…"
+    : isPastBudget
+      ? `Remove (set ${monthAbbrev(row.budget_period_start!, currentPeriodStart!)})`
+      : "Remove";
+
   // Names present in `primaryWallets` (this budget's own currency, since the
   // picker never offers any other) that this row's own `wallet_names` does
   // NOT list. Cosmetic only — see `walletIdsByBudget`'s doc comment above
@@ -210,6 +287,18 @@ function BudgetRow({
   const uncoveredNames = primaryWallets
     .filter((w) => w.currency_code === row.currency_code && !covered.has(w.name))
     .map((w) => w.name);
+
+  // Fix round I5: `walletIds` (this row's REAL wallet ids, via a direct
+  // `budget_wallets` read — see `walletIdsByBudget`'s doc comment on
+  // `BudgetList`) carries every wallet in the set, archived or not.
+  // `row.wallet_count` (from `get_budget_status`'s `scope` CTE, which inner-
+  // joins `mine` — active wallets only) does not. The two disagree exactly
+  // when this budget's set includes a since-archived wallet, and resubmitting
+  // that full set through `set_budget` would hit its own archived-wallet
+  // refusal, surfacing only the generic "Could not save that budget." Caught
+  // and disclosed here instead, with Save disabled, rather than left to fail
+  // opaquely.
+  const walletCountMismatch = row.wallet_count !== null && walletIds.length !== row.wallet_count;
 
   // A budget row (as opposed to an uncovered-spending row) always carries a
   // non-null `budget_minor` per the controller addendum's own row-shape
@@ -232,13 +321,19 @@ function BudgetRow({
           className={`shrink-0 text-xs underline disabled:opacity-60 ${FOCUS_RING}`}
           style={{ color: "var(--ink-2)" }}
         >
-          {removing ? "Removing…" : "Remove"}
+          {removeButtonText}
         </button>
       </div>
 
       {uncoveredNames.length > 0 && (
         <p className="text-xs" style={{ color: "var(--ink-2)" }}>
           Doesn&rsquo;t cover {uncoveredNames.join(", ")}.
+        </p>
+      )}
+
+      {walletCountMismatch && (
+        <p className="text-xs" style={{ color: "var(--neg)" }}>
+          Covers an archived account, so its amount can&rsquo;t be edited here.
         </p>
       )}
 
@@ -269,12 +364,15 @@ function BudgetRow({
 
       {/* Always mounted, not conditionally rendered — a role="alert" node
           that appears and gets its text in the same instant is not
-          reliably announced. Per-row aria-label (derived from
-          `categoryLabel`): this page renders one of these per row, so an
-          unlabelled role="alert" would make every row's live region
-          indistinguishable from every other's, both to getByRole("alert")
-          and to a screen-reader user with more than one open. */}
-      <p role="alert" aria-label={`Error for ${categoryLabel}`} className="text-sm" style={{ color: "var(--neg)" }}>
+          reliably announced. Per-row aria-label, derived from `categoryLabel`
+          AND `scope` (fix round I2 — `categoryLabel` alone collides for two
+          budgets over the SAME category with different scopes, which this
+          file's own test suite renders and asserts distinct rows for): this
+          page renders one of these per row, so an ambiguously-named
+          role="alert" would make every such pair's live regions
+          indistinguishable, both to getByRole("alert") and to a screen-reader
+          user with more than one open. */}
+      <p role="alert" aria-label={`Error for ${categoryLabel} · ${scope}`} className="text-sm" style={{ color: "var(--neg)" }}>
         {removeError}
       </p>
 
@@ -303,7 +401,7 @@ function BudgetRow({
         </label>
         <button
           type="submit"
-          disabled={saving}
+          disabled={saving || walletCountMismatch}
           className={`shrink-0 rounded-md px-3 py-2 text-sm font-medium disabled:opacity-60 ${FOCUS_RING}`}
           style={{ background: "var(--cat-1)", color: "var(--surface)" }}
         >
@@ -313,9 +411,10 @@ function BudgetRow({
       {/* role="status", not role="alert": this row already has ONE
           always-mounted role="alert" above (the Remove error) — a second
           simultaneous role="alert" node makes getByRole("alert") ambiguous.
-          Per-row aria-label for the same reason the alert above has one.
-          Doubles as the save NOTICE on success so a save is announced
-          rather than silent.
+          Per-row aria-label, `categoryLabel` + `scope` for the same
+          same-category-different-scope collision reason the alert above has
+          (fix round I2). Doubles as the save NOTICE on success so a save is
+          announced rather than silent.
 
           The MESSAGE TEXT lives in a child <span id={amountStatusId}>, not
           on this <p> itself: an accessible DESCRIPTION is computed by
@@ -329,7 +428,7 @@ function BudgetRow({
           spoil the other. */}
       <p
         role="status"
-        aria-label={`Status for ${categoryLabel}`}
+        aria-label={`Status for ${categoryLabel} · ${scope}`}
         className="text-sm"
         style={{ color: formState.error ? "var(--neg)" : "var(--ink-2)" }}
       >
@@ -358,7 +457,11 @@ function UncoveredSection({ rows }: { rows: BudgetStatusRow[] }) {
       <ul className="flex flex-col gap-3">
         {rows.map((row) => (
           <li
-            key={row.category_key ?? row.category_label ?? "uncategorised"}
+            // `uncovered` (0013_wallet_set_budgets.sql) groups by category
+            // key AND currency — the same category can have uncovered
+            // spending in two different currencies at once, which a
+            // category-key-only key would collide on (fix round Minor).
+            key={`${row.category_key ?? row.category_label ?? "uncategorised"}-${row.currency_code}`}
             className="flex flex-col gap-1 rounded-lg border p-3"
             style={{ borderColor: "var(--grid)", background: "var(--surface)" }}
           >
@@ -396,6 +499,7 @@ function AddBudgetForm({
   // layer explicitly refuses (controller addendum §4).
   const [categoryKey, setCategoryKey] = useState<string | null>(null);
   const amountStatusId = useId();
+  const headingId = useId(); // fix round Minor: was a hardcoded id; every other heading in this file uses useId().
 
   const [formState, formAction, saving] = useActionState<BudgetState, FormData>(
     setBudget.bind(null, categoryKey),
@@ -403,9 +507,9 @@ function AddBudgetForm({
   );
 
   return (
-    <section aria-labelledby="add-budget-heading">
+    <section aria-labelledby={headingId}>
       <h2
-        id="add-budget-heading"
+        id={headingId}
         className="mb-3 text-sm font-medium uppercase tracking-wide"
         style={{ color: "var(--ink-2)" }}
       >
