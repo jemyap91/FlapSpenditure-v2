@@ -11,6 +11,28 @@ import { isPublicPath } from "@/lib/supabase/public-paths";
  * for why).
  */
 export async function updateSession(request: NextRequest) {
+  // The OAuth / magic-link callback is exempt entirely — not merely allowed
+  // through as a public path, but never touched.
+  //
+  // At that moment the browser holds a PKCE code verifier and NO session.
+  // Calling getUser() here fails (correctly — there is nothing to validate
+  // yet), and auth-js responds by clearing session cookies via
+  // _removeSession(). That sweep can take the verifier cookie with it, so the
+  // route handler then exchanges a code whose verifier no longer exists and
+  // the user is bounced to /login with "that sign-in link is invalid or has
+  // expired" — after a Google flow that succeeded perfectly.
+  //
+  // isPublicPath() already stops the REDIRECT, but the damage is done before
+  // that check: the cookie writes happen inside getUser(). The fix has to be
+  // an early return, before the client is constructed.
+  //
+  // There is nothing to lose by skipping: refreshing a session that does not
+  // exist yet is pointless, and the callback establishes one itself moments
+  // later. It also removes an auth-server round trip from the flow.
+  if (request.nextUrl.pathname.startsWith("/auth/")) {
+    return NextResponse.next({ request });
+  }
+
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient<Database>(supabaseUrl, supabaseAnonKey, {
