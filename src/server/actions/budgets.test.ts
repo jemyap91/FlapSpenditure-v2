@@ -136,6 +136,32 @@ describe("setBudget", () => {
     expect(fromTables).toEqual([]);
   });
 
+  it("rejects a blank categoryKey before touching the database (N3)", async () => {
+    // Never reachable through the real UI (AddBudgetForm's own translation
+    // sends an explicit `null` for the overall cap, never `""`), but this
+    // is a bound Server Function argument, reachable via direct POST with
+    // any string — same reasoning as `idSchema`'s own doc comment above.
+    const result = await setBudget("", {}, budgetForm("600", [WALLET_ID_1]));
+
+    expect(result).toEqual({ error: "That category is not valid." });
+    expect(rpcCalls).toEqual([]);
+    expect(fromTables).toEqual([]);
+  });
+
+  it("rejects a categoryKey over 60 characters before touching the database (N3)", async () => {
+    const result = await setBudget("a".repeat(61), {}, budgetForm("600", [WALLET_ID_1]));
+
+    expect(result).toEqual({ error: "That category is not valid." });
+    expect(rpcCalls).toEqual([]);
+  });
+
+  it("still accepts an explicit null categoryKey — the overall cap (N3)", async () => {
+    const result = await setBudget(null, {}, budgetForm("600", [WALLET_ID_1]));
+
+    expect(result).toEqual({ notice: "Budget saved." });
+    expect(rpcCalls).toEqual([{ fn: "set_budget", args: expect.objectContaining({ p_category_key: null }) }]);
+  });
+
   it("refuses a non-member set with a readable message", async () => {
     membershipRows.length = 0;
     membershipRows.push({ wallet_id: WALLET_ID_1 }); // caller is not in WALLET_ID_2
@@ -259,6 +285,14 @@ describe("setBudget", () => {
 
     expect(revalidatePath).toHaveBeenCalledWith("/budgets");
     expect(revalidatePath).toHaveBeenCalledWith("/");
+    // N7d (whole-branch review): positive control for the three
+    // `expect(fromTables).toEqual([])` assertions above (each proving a
+    // guard runs BEFORE any Supabase client is touched) — without this, a
+    // mock that silently stopped recording table names would make every one
+    // of those absence checks pass vacuously forever, the same class of gap
+    // `budgetsEqCalls`'s own positive control below (in `removeBudget`)
+    // already closes.
+    expect(fromTables).toEqual(["wallet_members", "wallets"]);
   });
 });
 

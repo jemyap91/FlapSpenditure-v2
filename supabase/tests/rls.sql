@@ -1782,6 +1782,33 @@ do $$ begin
 end $$;
 
 -- =====================================================================
+-- Budgets (0013): N1 fix round, whole-branch review. Same "absence of a
+-- grant is not the same as a revoke" reasoning as the TRUNCATE block just
+-- above, now for INSERT/UPDATE/DELETE specifically -- the exact privileges
+-- a legacy auto-exposed table would carry and that this section's own
+-- 0013 grants never explicitly closed off before this fix round.
+-- `has_table_privilege`'s privilege argument accepts a comma-separated
+-- list with OR semantics (true if ANY is held), so one assertion per
+-- (role, table) covers all three privileges in a single check without
+-- three near-duplicate lines. The two `budgets`/authenticated assertions
+-- would already be caught functionally by the direct-INSERT exercise
+-- elsewhere in this file (search "authenticated genuinely cannot INSERT
+-- into budgets") -- included here anyway so this section stays a complete,
+-- self-contained audit of every N1 revoke on its own, the same shape the
+-- TRUNCATE block above already has.
+-- =====================================================================
+do $$ begin
+  assert not has_table_privilege('authenticated', 'public.budget_wallets', 'INSERT, UPDATE, DELETE'),
+    'authenticated must not hold INSERT/UPDATE/DELETE on budget_wallets';
+  assert not has_table_privilege('anon', 'public.budget_wallets', 'INSERT, UPDATE, DELETE'),
+    'anon must not hold INSERT/UPDATE/DELETE on budget_wallets';
+  assert not has_table_privilege('authenticated', 'public.budgets', 'INSERT'),
+    'authenticated must not hold INSERT on budgets';
+  assert not has_table_privilege('anon', 'public.budgets', 'INSERT'),
+    'anon must not hold INSERT on budgets';
+end $$;
+
+-- =====================================================================
 -- Budgets (0013): C1 fix round. This is the test that would have caught
 -- the review finding: budgets_visible's original inline-subquery form read
 -- budget_wallets directly, but budget_wallets carries its own RLS

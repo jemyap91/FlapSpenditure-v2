@@ -254,7 +254,17 @@ function BudgetRow({
     });
   }
 
-  const removeLabel = isOverall ? "Remove overall budget" : `Remove budget for ${categoryLabel}`;
+  // N2 (whole-branch review): scoped with `· ${scope}`, same as the two
+  // live regions below (`Error for ${categoryLabel} · ${scope}`, `Status
+  // for ${categoryLabel} · ${scope}`) — a category can carry two budgets at
+  // once, over different wallet sets (e.g. "Groceries · All accounts" and
+  // "Groceries · Savings"), and this button is a DESTRUCTIVE, undoable
+  // control (`removeBudget` hard-deletes, no soft-delete, no undo). Before
+  // this fix both rows' Remove buttons shared the exact same accessible
+  // name, indistinguishable to a screen-reader user with more than one open
+  // — this branch's own e2e suite hits this collision directly (see
+  // budgetRow's doc comment in e2e/budgets.spec.ts).
+  const removeLabel = isOverall ? "Remove overall budget" : `Remove budget for ${categoryLabel} · ${scope}`;
 
   // Fix round C1: a budget set in an EARLIER month and never touched since
   // is still that earlier month's own row (carry-forward: "the effective

@@ -35,6 +35,12 @@ describe("BudgetSummary — scope filtering (all-accounts only)", () => {
     render(<BudgetSummary rows={[row({ spent_minor: 41200 })]} currencyCode="SGD" walletCount={2} />);
     expect(screen.getByText("Groceries")).toBeInTheDocument();
     expect(screen.getByText(/SGD 412\.00 of SGD 600\.00 · 69%/)).toBeInTheDocument();
+    // N7b (whole-branch review): positive control for the empty state's own
+    // `.h-2` ABSENCE assertion below — without this, a rename of the bar's
+    // class would make that absence check pass vacuously forever instead of
+    // catching drift, the exact bug already fixed in BudgetList.test.tsx's
+    // sibling assertion (see its own comment on the same pattern).
+    expect(document.querySelector(".h-2")).toBeInTheDocument();
   });
 
   it("hides a budget over only a SUBSET of accounts (a /budgets-only concern)", () => {

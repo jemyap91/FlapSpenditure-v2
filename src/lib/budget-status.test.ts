@@ -84,4 +84,8 @@ describe("scopeLabel", () => {
   it("falls back for an unbudgeted row, which has no scope", () => {
     expect(scopeLabel(null, null, 3)).toBe("");
   });
+
+  it("never renders the literal 'undefined' when names is shorter than count (D4, defensive only — unreachable through current SQL)", () => {
+    expect(scopeLabel(["A"], 2, 5)).toBe("2 accounts");
+  });
 });

@@ -222,6 +222,21 @@ grant update (amount_minor) on budgets to authenticated;
 -- structural impossibility it actually is.
 revoke insert on budgets from authenticated;
 
+-- N1 (whole-branch review): `anon` was never explicitly granted INSERT on
+-- `budgets` -- this table did not exist yet when 0004_rls.sql's own
+-- `revoke all on all tables in schema public from anon, authenticated`
+-- ran, so its write boundary here has rested on the ABSENCE of a grant,
+-- not a revoke, ever since this table was created. 0004's own comment
+-- states the precedent explicitly: revoke first, for a clean auditable
+-- baseline, rather than trusting an unknown starting state. If the hosted
+-- project carries any legacy auto-exposure of newly created public tables
+-- (a real, documented Supabase footgun on older projects), `budgets` would
+-- arrive INSERTable by `anon` -- unauthenticated -- and the C1 fix round
+-- above (which only ever revoked it from `authenticated`) would not have
+-- touched it at all. Explicit, not merely consistent with what the grants
+-- above already imply.
+revoke insert on budgets from anon;
+
 -- SELECT only. INSERT and DELETE are deliberately NOT granted here, even
 -- though budget_wallets_member's own RLS predicate (is_wallet_member) would
 -- otherwise allow a member to write a row: foreign key checks bypass RLS
@@ -242,6 +257,22 @@ revoke insert on budgets from authenticated;
 -- sentence (0004 spells this out for transactions.wallet_id; this comment
 -- is that sentence for budget_wallets).
 grant select on budget_wallets to authenticated;
+
+-- N1 (whole-branch review): the paragraph above never explicitly GRANTS
+-- INSERT/UPDATE/DELETE on `budget_wallets` to either role, so its write
+-- boundary has rested entirely on the ABSENCE of a grant, not a revoke --
+-- exactly the starting-state assumption 0004_rls.sql's own comment warns
+-- against ("a clean, auditable baseline instead of layering onto an
+-- unknown starting state"), and this table did not exist when that
+-- migration's blanket revoke ran, so it never benefited from it either. If
+-- the hosted project carries any legacy auto-exposure of newly created
+-- public tables to `anon`/`authenticated` (a real, documented Supabase
+-- footgun on older projects), `budget_wallets` would arrive writable and
+-- the whole HAZARD this table's own comments above describe -- a member of
+-- one wallet unilaterally expanding or shrinking a budget's wallet set
+-- without set_budget's membership re-check -- reopens silently, with
+-- nothing in this file's own grants to say so.
+revoke insert, update, delete on budget_wallets from anon, authenticated;
 
 -- One row per visible budget, plus one row per category with spending that no
 -- visible budget covers. Self-scoping: no wallet-ids parameter, so there is no

@@ -6,7 +6,7 @@ import type { Database } from "@/lib/database.types";
  * Supabase's codegen cannot express. `returns table` columns are typed
  * from the declared column type alone (e.g. `budget_id uuid`), with no way
  * to see that a specific SELECT branch inside the function body emits NULL
- * for it -- the same class of gap `set_budget`'s `p_category_id` argument
+ * for it -- the same class of gap `set_budget`'s `p_category_key` argument
  * has (src/server/actions/budgets.ts), just on the return side instead of
  * the argument side.
  *
@@ -106,6 +106,12 @@ export function scopeLabel(
   totalInCurrency: number,
 ): string {
   if (!names || !count) return "";
+  // Defensive only -- unreachable through the current SQL, where `names`
+  // and `count` are always produced together and agree in length (D4,
+  // whole-branch review). Guards the indexed reads below (`names[0]`,
+  // `names[1]`) against rendering the literal string "undefined" if a
+  // future caller ever passes a shorter `names` than its own `count`.
+  if (names.length < count) return `${count} accounts`;
   if (count === totalInCurrency) return "All accounts";
   if (count === 1) return names[0]!;
   if (count === 2) return `${names[0]} + ${names[1]}`;

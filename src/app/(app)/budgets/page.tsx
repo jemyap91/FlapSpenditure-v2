@@ -75,12 +75,27 @@ export default async function BudgetsPage() {
 
   const rows = (rowsData ?? []) as BudgetStatusRow[];
   const wallets: BudgetWallet[] = walletsData ?? [];
+  // Primary currency = the first-created active wallet's currency — the
+  // SAME rule (app)/page.tsx already uses (spec §4: the two screens MUST
+  // agree), never `profile.base_currency`. `profile.base_currency` is
+  // NEVER written away from its 'USD' default anywhere in this codebase
+  // (confirmed: no reference to it in onboarding-form.tsx or wallets.ts,
+  // same check (app)/page.tsx's own doc comment records) — using it here
+  // meant an SGD (or any non-USD) user's `primaryWallets` was ALWAYS empty,
+  // which skipped the categories query, rendered a wallet picker with zero
+  // checkboxes, and made every submit send `walletIds: []`, refused
+  // forever by budgetInput's `.min(1)` with no explanation on screen
+  // (B1, whole-branch review — the worst defect on this branch). `wallets`
+  // is already ordered by `created_at` and filtered to active, identical to
+  // the dashboard's own query, so this is the same computation, not a
+  // near-miss of it.
+  const primaryCurrency = wallets[0]?.currency_code ?? profile.base_currency;
   // Only used for the categories query below now — `BudgetList` derives its
   // own per-CURRENCY wallet counts from the full `wallets` list (fix round
   // I3: a flat "primary currency only" count produced a false "All accounts"
   // for a budget row in a different currency, reachable via a shared wallet
   // whose set spans another member's own currency).
-  const primaryWallets = wallets.filter((w) => w.currency_code === profile.base_currency);
+  const primaryWallets = wallets.filter((w) => w.currency_code === primaryCurrency);
 
   const budgetIds = rows
     .map((r) => r.budget_id)
@@ -97,10 +112,14 @@ export default async function BudgetsPage() {
     budgetIds.length > 0
       ? supabase.from("budget_wallets").select("budget_id, wallet_id").in("budget_id", budgetIds)
       : Promise.resolve({ data: [] as { budget_id: string; wallet_id: string }[], error: null }),
-    // Same "skip an empty .in()" guard as above, and for the same reason:
-    // `primaryWallets` is empty whenever no active wallet's currency matches
-    // `profile.base_currency` (a real, if unusual, edge case — e.g. the
-    // profile's base currency changed after every wallet in it was created).
+    // Same "skip an empty .in()" guard as above, and for the same reason.
+    // `primaryCurrency` is always `wallets[0]`'s own currency when there is
+    // at least one active wallet (see its derivation above), so
+    // `primaryWallets` is empty only when `wallets` itself is — the
+    // layout gate ahead of this route already redirects a zero-wallet
+    // account to /onboarding, so this branch exists for the same
+    // "error is not emptiness, but still not fatal" defensiveness every
+    // other guard on this page uses, not a reachable everyday case.
     primaryWallets.length > 0
       ? supabase
           .from("categories")
@@ -149,13 +168,21 @@ export default async function BudgetsPage() {
       <h1 className="mb-1 text-2xl font-semibold" style={{ color: "var(--ink)" }}>
         Budgets
       </h1>
-      <p className="mb-6 text-sm" style={{ color: "var(--ink-2)" }}>
+      <p className="mb-1 text-sm" style={{ color: "var(--ink-2)" }}>
         {monthLabel} · expenses only
+      </p>
+      {/* Spec §5 (bold) and §9: a UI that does not say budgets can overlap
+          reads as a bug, not a feature — the same expense can legitimately
+          appear under several rows at once (e.g. a category row AND the
+          overall cap both count it), and an overall cap does not suppress
+          the uncovered rows beneath it either. B3, whole-branch review. */}
+      <p className="mb-6 text-sm" style={{ color: "var(--ink-2)" }}>
+        Budgets can overlap — spending counted here can appear in more than one row.
       </p>
       <BudgetList
         rows={rows}
         wallets={wallets}
-        primaryCurrency={profile.base_currency}
+        primaryCurrency={primaryCurrency}
         categories={categories}
         walletIdsByBudget={walletIdsByBudget}
         currentPeriodStart={from}

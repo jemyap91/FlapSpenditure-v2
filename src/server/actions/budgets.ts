@@ -19,6 +19,23 @@ export type BudgetState = { error?: string; notice?: string };
 // kept here.
 const idSchema = z.uuid();
 
+// N3 (whole-branch review): `categoryKey` was the one server-action input
+// never re-validated with zod — `amount` and `walletIds` both go through
+// `budgetInput` above, but `categoryKey` (a bound Server Function argument,
+// so reachable with any string a direct POST cares to send, exactly like
+// `idSchema`'s own reasoning above) was passed straight to `set_budget`.
+// `.min(1)`: an empty string is refused HERE now, before any Supabase
+// client is constructed — `set_budget`'s own `btrim(p_category_key) = ''`
+// check (0013_wallet_set_budgets.sql) still exists and still refuses it too,
+// the same defense-in-depth relationship `budgetInput.walletIds`'s `z.uuid()`
+// already has with `set_budget`'s own `uuid[]` cast. `.max(60)`: no
+// reasonable category name approaches this; it exists only to give an
+// absurdly long string a readable rejection instead of an opaque round trip.
+// `.nullable()`: the overall cap's own explicit `null` must still pass
+// through untouched — see setBudget's own comment below on `categoryKey`
+// never being coalesced.
+const categoryKeySchema = z.string().trim().min(1).max(60).nullable();
+
 /**
  * Server Functions are reachable by direct POST, not only through this app's
  * forms, so each action below re-derives the caller from the session and
@@ -41,6 +58,13 @@ export async function setBudget(
     walletIds: formData.getAll("walletIds"),
   });
   if (!parsed.success) return { error: parsed.error.issues[0]!.message };
+
+  // N3: re-validate the bound `categoryKey` argument itself, same as every
+  // other input this action trusts nothing about. Before any Supabase
+  // client is constructed, matching every other pre-DB rejection above.
+  const categoryKeyParsed = categoryKeySchema.safeParse(categoryKey);
+  if (!categoryKeyParsed.success) return { error: "That category is not valid." };
+  categoryKey = categoryKeyParsed.data;
 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -102,11 +126,16 @@ export async function setBudget(
   // still checked against the real generated `Args` type, so a typo or a
   // signature change elsewhere in `set_budget` still fails typecheck here.
   //
-  // `categoryKey` is passed through UNCHANGED — never `categoryKey ?? null`
-  // or `categoryKey || null` — so an accidental empty string from a caller
-  // reaches set_budget as `''`, which it refuses with its own message
-  // (mapped to generic app copy below), rather than being silently
-  // reinterpreted here as the overall cap.
+  // `categoryKey` is never coalesced — never `categoryKey ?? null` or
+  // `categoryKey || null` — so an explicit `null` (the overall cap) is never
+  // silently reinterpreted as anything else. An accidental blank string no
+  // longer reaches `set_budget` at all (N3, whole-branch review):
+  // `categoryKeySchema`'s `.min(1)` above refuses it before any Supabase
+  // client is even constructed. `set_budget`'s own
+  // `btrim(p_category_key) = ''` refusal still exists and still fires for
+  // anyone who reaches it directly (e.g. a future non-zod caller) — belt
+  // and braces, the same relationship `budgetInput.walletIds`'s `z.uuid()`
+  // already has with `set_budget`'s own `uuid[]` cast.
   type SetBudgetArgs = Database["public"]["Functions"]["set_budget"]["Args"];
   type SetBudgetArgsRelaxed = Omit<SetBudgetArgs, "p_category_key"> & { p_category_key: string | null };
 

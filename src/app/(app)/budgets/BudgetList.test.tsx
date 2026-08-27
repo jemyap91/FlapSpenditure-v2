@@ -212,7 +212,7 @@ describe("BudgetList — never sums rows into a total", () => {
 describe("BudgetList — Remove", () => {
   it("offers Remove, pinned by name, on a category budget", () => {
     render(<BudgetList rows={[row({ category_label: "Groceries", budget_id: "b1" })]} />);
-    expect(screen.getByRole("button", { name: "Remove budget for Groceries" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove budget for Groceries · Everyday" })).toBeInTheDocument();
   });
 
   it("offers Remove, pinned by name, on the overall cap", () => {
@@ -223,7 +223,7 @@ describe("BudgetList — Remove", () => {
   it("clicking Remove calls removeBudget with the row's real budget id", async () => {
     const user = userEvent.setup();
     render(<BudgetList rows={[row({ category_label: "Groceries", budget_id: "b1" })]} />);
-    await user.click(screen.getByRole("button", { name: "Remove budget for Groceries" }));
+    await user.click(screen.getByRole("button", { name: "Remove budget for Groceries · Everyday" }));
     expect(removeBudget).toHaveBeenCalledExactlyOnceWith("b1");
   });
 
@@ -231,7 +231,7 @@ describe("BudgetList — Remove", () => {
     vi.mocked(removeBudget).mockResolvedValue({ error: "Could not remove that budget. Please try again." });
     const user = userEvent.setup();
     render(<BudgetList rows={[row({ category_label: "Groceries", budget_id: "b1" })]} />);
-    await user.click(screen.getByRole("button", { name: "Remove budget for Groceries" }));
+    await user.click(screen.getByRole("button", { name: "Remove budget for Groceries · Everyday" }));
     // "Error for Groceries · Everyday", not just "Error for Groceries" — the
     // default `row()` fixture's own scope, per fix round I2's naming fix.
     expect(await screen.findByRole("alert", { name: "Error for Groceries · Everyday" })).toHaveTextContent(
@@ -254,7 +254,7 @@ describe("BudgetList — Remove, a budget carried forward from an earlier month 
         currentPeriodStart="2026-08-01"
       />,
     );
-    const button = screen.getByRole("button", { name: "Remove budget for Groceries" });
+    const button = screen.getByRole("button", { name: "Remove budget for Groceries · Everyday" });
     // The aria-label (queried above) is the pinned string, byte-identical.
     // The VISIBLE text is what carries the disclosure.
     expect(button).toHaveTextContent("Remove (set Jun)");
@@ -269,7 +269,7 @@ describe("BudgetList — Remove, a budget carried forward from an earlier month 
         currentPeriodStart="2026-08-01"
       />,
     );
-    const button = screen.getByRole("button", { name: "Remove budget for Groceries" });
+    const button = screen.getByRole("button", { name: "Remove budget for Groceries · Everyday" });
     expect(button).toHaveTextContent("Remove (set Aug 2025)");
   });
 
@@ -280,7 +280,7 @@ describe("BudgetList — Remove, a budget carried forward from an earlier month 
         currentPeriodStart="2026-08-01"
       />,
     );
-    const button = screen.getByRole("button", { name: "Remove budget for Groceries" });
+    const button = screen.getByRole("button", { name: "Remove budget for Groceries · Everyday" });
     expect(button).toHaveTextContent("Remove");
     expect(button).not.toHaveTextContent(/\(set/);
   });
@@ -365,8 +365,16 @@ describe("BudgetList — adding a new budget", () => {
   });
 
   it("submits the chosen category as an explicit null for the overall option, never an empty string", async () => {
+    // N7a (whole-branch review): the Category select must actually be
+    // TOUCHED — selecting a real category, then selecting the overall
+    // option back — so this exercises the `"" -> null` translation
+    // (AddBudgetForm's own `onChange`) rather than merely reading the
+    // select's untouched initial state, which would pass just as well for
+    // a regression that submitted the bare (never-translated) empty string.
     const user = userEvent.setup();
     render(<BudgetList rows={[]} wallets={wallets} primaryCurrency="SGD" categories={categories} />);
+    await user.selectOptions(screen.getByLabelText("Category"), "groceries");
+    await user.selectOptions(screen.getByLabelText("Category"), "");
     await user.type(screen.getByLabelText("Budget amount"), "600");
     await user.click(screen.getByRole("button", { name: "Save budget" }));
     expect(setBudget).toHaveBeenCalled();
