@@ -1,8 +1,10 @@
 import { createClient } from "@/lib/supabase/server";
 import { CategoryBreakdown, type BreakdownRow } from "@/components/CategoryBreakdown";
 import { CashFlow, type FlowRow } from "@/components/CashFlow";
+import { BudgetSummary } from "@/components/BudgetSummary";
 import { formatMoney } from "@/lib/money";
 import { monthRange } from "@/lib/month-range";
+import type { BudgetStatusRow } from "@/lib/budget-status";
 
 /**
  * Task 21's dashboard — the first thing a returning user sees. Replaces
@@ -106,6 +108,22 @@ export default async function DashboardPage() {
   // the same explicit way as every other RPC call on this page.
   if (flowError) throw new Error("Failed to load cash flow");
 
+  // `get_budget_status` takes no `wallet_ids` -- unlike the two RPCs above,
+  // it is scoped entirely by RLS (`budget_visible`, 0013_wallet_set_budgets.sql)
+  // over every budget the caller can see, across EVERY currency, not just
+  // `currency`. `BudgetSummary` itself filters back down to `currency` and to
+  // budgets whose wallet set covers every active wallet in it (Task 7's
+  // controller addendum §2/§3) -- reusing this page's own already-resolved
+  // `currency`/`walletIds.length` rather than resolving a second, possibly-
+  // disagreeing notion of "primary currency" or "all accounts" inside that
+  // component. Same "error is not emptiness" split as `breakdownError`/
+  // `flowError` above.
+  const { data: budgetStatus, error: budgetStatusError } = await supabase.rpc("get_budget_status", {
+    from_date: from,
+    to_date: to,
+  });
+  if (budgetStatusError) throw new Error("Failed to load budget status");
+
   const rows: BreakdownRow[] = breakdown ?? [];
   // Same pattern as `rows` above: an explicit type annotation, not an
   // inline `as FlowRow[]` cast. `database.types.ts` already types
@@ -115,6 +133,7 @@ export default async function DashboardPage() {
   // ever drifted from `FlowRow` — the sibling `rows` line doesn't cast, and
   // review-caught (small) this shouldn't either.
   const flowRows: FlowRow[] = flow ?? [];
+  const budgetRows: BudgetStatusRow[] = budgetStatus ?? [];
   // REVIEW-CAUGHT (small): this used to be recomputed a second time inside
   // CategoryBreakdown from the same `rows` array — two independent sums of
   // the same data that could only ever agree by construction, never by a
@@ -163,6 +182,7 @@ export default async function DashboardPage() {
       </header>
       <CategoryBreakdown rows={rows} currencyCode={currency} total={spent} />
       <CashFlow rows={flowRows} currencyCode={currency} hasExcludedWallets={hasExcludedWallets} />
+      <BudgetSummary rows={budgetRows} currencyCode={currency} walletCount={walletIds.length} />
     </div>
   );
 }
