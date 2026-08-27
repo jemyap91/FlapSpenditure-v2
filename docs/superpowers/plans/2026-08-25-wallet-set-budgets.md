@@ -282,6 +282,12 @@ begin
     from keyed k
     order by k.set_key, k.category_key, k.period_start desc
   ),
+  -- Every predicate lives in the ON clause, none in a WHERE. Filtering the
+  -- right-hand side of a LEFT JOIN in WHERE would discard the whole budget
+  -- when nothing matches (a NULL comparison is not true), so a budget with no
+  -- spending yet would VANISH instead of reporting 0 — the disappearing-row
+  -- dead end this redesign exists to remove. `coalesce` then turns the
+  -- no-match case into a genuine zero.
   spend as (
     select e.id as budget_id, coalesce(sum(-t.amount_minor), 0)::bigint as spent
     from eff e
@@ -291,9 +297,12 @@ begin
      and t.kind = 'expense'
      and t.deleted_at is null
      and t.occurred_on between from_date and to_date
-    left join public.categories c on c.id = t.category_id
-    where e.category_key is null
-       or lower(btrim(c.name)) = e.category_key
+    left join public.categories c
+      on c.id = t.category_id
+     and (e.category_key is null or lower(btrim(c.name)) = e.category_key)
+    -- Drop transactions that matched a wallet but not this budget's category,
+    -- without dropping budgets that matched nothing at all.
+    where t.id is null or c.id is not null or e.category_key is null
     group by e.id
   ),
   scope as (
