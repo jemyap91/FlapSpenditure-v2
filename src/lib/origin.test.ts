@@ -55,8 +55,18 @@ describe("parseOrigin", () => {
     expect(parseOrigin(`wallet: ${UUID}`)).toBe("/transactions");
   });
 
-  it("refuses a second wallet: prefix used to smuggle a colon-bearing payload", () => {
+  it("refuses a second wallet: prefix (id fails uuid validation as a whole)", () => {
     expect(parseOrigin(`wallet:wallet:${UUID}`)).toBe("/transactions");
+  });
+
+  // This is the case that actually discriminates `rest.join(":")` from
+  // `rest[0]`: a buggy implementation using only the first colon-delimited
+  // segment would silently accept the valid uuid prefix and strip the
+  // trailing ":extra", returning a valid-looking wallet path. The correct
+  // implementation must treat everything after the first colon as the id
+  // and reject it as a whole.
+  it("refuses a valid uuid with trailing colon-delimited garbage", () => {
+    expect(parseOrigin(`wallet:${UUID}:extra`)).toBe("/transactions");
   });
 
   it("refuses an uppercase-cased kind (no case-insensitive match)", () => {
