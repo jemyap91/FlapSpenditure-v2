@@ -72,12 +72,12 @@ async function pressAmount(page: Page, amount: string) {
 async function addWallet(page: Page, name: string) {
   await page.goto("/wallets");
   await page.getByLabel("Name").fill(name);
-  await page.getByRole("button", { name: "Add account" }).click();
+  await page.getByRole("button", { name: "Add wallet" }).click();
   await expect(page.getByText(name)).toBeVisible();
 }
 
 /**
- * Records an expense. `walletName`, when given, switches the "Account"
+ * Records an expense. `walletName`, when given, switches the "Wallet"
  * <select> (TransactionForm.tsx) BEFORE entering the amount/category —
  * switching wallets resets both (`handleWalletChange` clears the category,
  * since a category belongs to the wallet it was created in per 0008, and
@@ -105,7 +105,7 @@ async function addExpense(
 ) {
   await page.goto("/transactions/new");
   if (walletName) {
-    await page.getByLabel("Account").selectOption({ label: walletName });
+    await page.getByLabel("Wallet").selectOption({ label: walletName });
   }
   await pressAmount(page, amount);
   await page.getByRole("button", { name: category, exact: true }).click();

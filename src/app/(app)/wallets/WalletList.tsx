@@ -57,8 +57,8 @@ export function WalletList({
    *
    * These previously lived in a separate block BELOW the whole list, which
    * detached them from their wallets: two wallets produced two identical
-   * "MEMBERS" headings in a row with nothing visible tying either to an
-   * account. Containment is what fixes that — a members list inside its
+   * "MEMBERS" headings in a row with nothing visible tying either to a
+   * wallet. Containment is what fixes that — a members list inside its
    * wallet's card cannot be misread as belonging to another.
    *
    * Passed as ReactNode rather than data because the page (a Server
@@ -91,12 +91,12 @@ export function WalletList({
   // owned wallet, and only learned it was refused after clicking.
   // Counted over EVERY wallet, never the filtered view: search is a view
   // concern, and hiding rows must not make the remaining one look like the
-  // only account someone owns.
+  // only wallet someone owns.
   const ownedCount = wallets.filter((w) => w.owner_id === currentUserId).length;
   const isLastWallet = ownedCount === 1;
 
   // The search box earns its space only once scanning gets hard. With two
-  // or three accounts the list IS the search result.
+  // or three wallets the list IS the search result.
   const showSearch = wallets.length > 3;
   const q = query.trim().toLowerCase();
   const visible = q ? wallets.filter((w) => w.name.toLowerCase().includes(q)) : wallets;
@@ -118,7 +118,7 @@ export function WalletList({
   if (!wallets.length) {
     return (
       <p className="py-8 text-sm" style={{ color: "var(--ink-2)" }}>
-        No accounts yet.
+        No wallets yet.
       </p>
     );
   }
@@ -137,12 +137,12 @@ export function WalletList({
       {showSearch && (
         <label className="mb-3 flex flex-col gap-1">
           <span className="text-sm" style={{ color: "var(--ink-2)" }}>
-            Search accounts
+            Search wallets
           </span>
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Account name"
+            placeholder="Wallet name"
             autoComplete="off"
             className={`rounded-md border px-3 py-2 ${FOCUS_RING}`}
             style={{ borderColor: "var(--ink-2)", background: "var(--surface)", color: "var(--ink)" }}
@@ -152,7 +152,7 @@ export function WalletList({
 
       {showSearch && visible.length === 0 && (
         <p className="py-6 text-sm" style={{ color: "var(--ink-2)" }}>
-          No accounts match “{query.trim()}”.
+          No wallets match “{query.trim()}”.
         </p>
       )}
 
@@ -274,7 +274,7 @@ export function WalletList({
 
       {isLastWallet && (
         <p className="text-xs" style={{ color: "var(--ink-2)" }}>
-          You need at least one account, so this one can’t be archived. Add another first.
+          You need at least one wallet, so this one can’t be archived. Add another first.
         </p>
       )}
     </div>

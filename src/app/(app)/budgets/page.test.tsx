@@ -1,7 +1,7 @@
 // src/app/(app)/budgets/page.test.tsx
 //
 // B1 (whole-branch review, blocking): /budgets could not save ANYTHING for a
-// user whose accounts are not in USD, and the screen gave no clue why. The
+// user whose wallets are not in USD, and the screen gave no clue why. The
 // page resolved its "primary currency" as `profile.base_currency` — but
 // nothing in this codebase ever writes that column away from its 'USD'
 // default (see (app)/page.tsx's own doc comment, which already states this

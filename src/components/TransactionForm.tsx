@@ -217,7 +217,7 @@ export function TransactionForm({
     // ever getting that far: a category chosen under the OLD wallet must
     // not silently carry over to the new one.
     setCategory(null);
-    // The account just changed currency (possibly to a different
+    // The wallet just changed currency (possibly to a different
     // `minorUnit`) — an amount already typed under the OLD currency's
     // precision can be over-precise for the new one (e.g. "1.505" typed
     // against KWD's 3 decimals is invalid for USD's 2). Clamp it, the same
@@ -440,14 +440,14 @@ export function TransactionForm({
         )}
         <label className="flex items-center gap-1 text-sm" style={{ color: "var(--ink-2)" }}>
           {/* VISIBLE for a transfer. These were sr-only, so a screen reader
-              announced "From account"/"To account" while a sighted user saw
+              announced "From wallet"/"To wallet" while a sighted user saw
               two identical dropdowns side by side with nothing to tell them
               apart — and on a transfer, choosing them the wrong way round
               sends money in the wrong direction. Left sr-only for a
               non-transfer, where there is only one select and no ambiguity
               to resolve. */}
           <span className={kind === "transfer" ? "text-sm" : "sr-only"} style={{ color: "var(--ink-2)" }}>
-            {kind === "transfer" ? "From" : "Account"}
+            {kind === "transfer" ? "From" : "Wallet"}
           </span>
           <select
             value={walletId}
@@ -567,7 +567,7 @@ export function TransactionForm({
         exact height TabBar reserves via `<main>`'s own `pb-20` in
         src/app/(app)/layout.tsx — so Save sits flush above TabBar, never
         under or over it) above the viewport bottom regardless of how tall
-        the category list grows, on this account or a future one with many
+        the category list grows, on this wallet or a future one with many
         more categories. `md:bottom-0`: no TabBar exists at that
         breakpoint, matching `pb-20 md:pb-0`'s own breakpoint exactly.
       */}

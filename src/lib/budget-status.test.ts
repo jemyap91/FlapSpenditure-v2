@@ -58,27 +58,27 @@ describe("budgetProgress", () => {
 });
 
 describe("scopeLabel", () => {
-  it("names a single account outright", () => {
+  it("names a single wallet outright", () => {
     expect(scopeLabel(["Everyday"], 1, 3)).toBe("Everyday");
   });
 
-  it("joins two accounts, because the names still fit", () => {
+  it("joins two wallets, because the names still fit", () => {
     expect(scopeLabel(["Everyday", "Savings"], 2, 3)).toBe("Everyday + Savings");
   });
 
   it("counts beyond two rather than listing them", () => {
-    expect(scopeLabel(["A", "B", "C"], 3, 5)).toBe("3 accounts");
+    expect(scopeLabel(["A", "B", "C"], 3, 5)).toBe("3 wallets");
   });
 
-  it("says All accounts only when it really covers all of them", () => {
-    expect(scopeLabel(["A", "B", "C"], 3, 3)).toBe("All accounts");
+  it("says All wallets only when it really covers all of them", () => {
+    expect(scopeLabel(["A", "B", "C"], 3, 3)).toBe("All wallets");
   });
 
-  it("does NOT say All accounts once a new account exists outside it", () => {
+  it("does NOT say All wallets once a new wallet exists outside it", () => {
     // The set is materialised at creation (spec §1), so a wallet added later
-    // is not covered. Claiming "All accounts" here would be a false statement,
+    // is not covered. Claiming "All wallets" here would be a false statement,
     // not merely a stale one.
-    expect(scopeLabel(["A", "B", "C"], 3, 4)).toBe("3 accounts");
+    expect(scopeLabel(["A", "B", "C"], 3, 4)).toBe("3 wallets");
   });
 
   it("falls back for an unbudgeted row, which has no scope", () => {
@@ -86,6 +86,6 @@ describe("scopeLabel", () => {
   });
 
   it("never renders the literal 'undefined' when names is shorter than count (D4, defensive only — unreachable through current SQL)", () => {
-    expect(scopeLabel(["A"], 2, 5)).toBe("2 accounts");
+    expect(scopeLabel(["A"], 2, 5)).toBe("2 wallets");
   });
 });

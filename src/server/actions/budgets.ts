@@ -83,7 +83,7 @@ export async function setBudget(
     .in("wallet_id", parsed.data.walletIds);
   const memberWalletIds = new Set((memberships ?? []).map((m) => m.wallet_id));
   const isFullyMember = parsed.data.walletIds.every((id) => memberWalletIds.has(id));
-  if (!isFullyMember) return { error: "You do not have access to one or more of those accounts." };
+  if (!isFullyMember) return { error: "You do not have access to one or more of those wallets." };
 
   // The budget is in the set's own currency, so its minor unit comes from
   // one of its wallets — never from the profile, and never from the
@@ -92,7 +92,7 @@ export async function setBudget(
   // good as any.
   const { data: wallet } = await supabase
     .from("wallets").select("currency_code").eq("id", parsed.data.walletIds[0]!).maybeSingle();
-  if (!wallet) return { error: "Account not found." };
+  if (!wallet) return { error: "Wallet not found." };
 
   let amountMinor: number;
   try {

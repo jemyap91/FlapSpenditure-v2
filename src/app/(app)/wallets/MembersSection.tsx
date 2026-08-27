@@ -9,7 +9,7 @@ const FOCUS_RING =
 export type Member = { user_id: string; display_name: string; role: "owner" | "member" };
 
 /**
- * The members half of a wallet's card on /wallets: who's in the account,
+ * The members half of a wallet's card on /wallets: who's in the wallet,
  * plus (owner-only) Remove and the invite form. A Client Component only
  * because both are interactive — the member list itself is fetched in
  * page.tsx (a Server Component) and passed down, the same split

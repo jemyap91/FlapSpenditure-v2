@@ -19,13 +19,13 @@ import type { BudgetStatusRow } from "@/lib/budget-status";
  *
  * 1. `scopeLabel` needs, per BUDGET ROW, the count of the caller's ACTIVE
  *    wallets in THAT ROW'S OWN currency, to decide whether a wallet set truly
- *    covers "All accounts" or merely used to (a set is materialised at
+ *    covers "All wallets" or merely used to (a set is materialised at
  *    creation, so a wallet added afterward is never covered). That number
  *    cannot come from `rows`, which describes only BUDGETED wallets, so a
  *    plain `wallets` read supplies it — passed down whole; `BudgetList`
  *    itself indexes it by currency (fix round I3: an earlier version of this
  *    page computed one flat "primary currency" count here, which produced a
- *    false "All accounts" for any budget row in a DIFFERENT currency — e.g.
+ *    false "All wallets" for any budget row in a DIFFERENT currency — e.g.
  *    a wallet set shared with a co-member whose own wallets use a currency
  *    other than this viewer's `base_currency`).
  * 2. `get_budget_status`'s own row carries `wallet_names` (display strings)
@@ -66,7 +66,7 @@ export default async function BudgetsPage() {
       .order("created_at"),
   ]);
 
-  // A query error is not "no budgets"/"no accounts" — data is null either
+  // A query error is not "no budgets"/"no wallets" — data is null either
   // way, so rendering an empty state here would present a transient failure
   // as "you have nothing budgeted". Thrown, matching every other Server
   // Component in this app.
@@ -92,7 +92,7 @@ export default async function BudgetsPage() {
   const primaryCurrency = wallets[0]?.currency_code ?? profile.base_currency;
   // Only used for the categories query below now — `BudgetList` derives its
   // own per-CURRENCY wallet counts from the full `wallets` list (fix round
-  // I3: a flat "primary currency only" count produced a false "All accounts"
+  // I3: a flat "primary currency only" count produced a false "All wallets"
   // for a budget row in a different currency, reachable via a shared wallet
   // whose set spans another member's own currency).
   const primaryWallets = wallets.filter((w) => w.currency_code === primaryCurrency);
@@ -131,7 +131,7 @@ export default async function BudgetsPage() {
       : Promise.resolve({ data: [] as { name: string; wallet_id: string }[], error: null }),
   ]);
 
-  if (budgetWalletsError) throw new Error("Failed to load budget accounts");
+  if (budgetWalletsError) throw new Error("Failed to load budget wallets");
   if (categoriesError) throw new Error("Failed to load categories");
 
   const walletIdsByBudget: Record<string, string[]> = {};

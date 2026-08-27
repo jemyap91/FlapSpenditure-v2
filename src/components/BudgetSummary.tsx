@@ -15,11 +15,11 @@ import { budgetProgress, scopeLabel, type BudgetStatusRow } from "@/lib/budget-s
 const OVERALL_LABEL = "Overall budget";
 
 /**
- * Dashboard's all-accounts budget block (task-7-brief.md + its CONTROLLER
+ * Dashboard's all-wallets budget block (task-7-brief.md + its CONTROLLER
  * ADDENDUM). Placed after the cash-flow block on `(app)/page.tsx`.
  *
  * Only budgets whose wallet set covers EVERY active wallet in `currencyCode`
- * belong here (addendum §2) -- a budget over a SUBSET of accounts is a
+ * belong here (addendum §2) -- a budget over a SUBSET of wallets is a
  * `/budgets`-only concern; showing it beside the dashboard's hero total
  * (which spans every primary-currency wallet) would put two figures with
  * different scopes next to each other with nothing explaining the
@@ -59,7 +59,7 @@ export function BudgetSummary({
   currencyCode: string;
   walletCount: number;
 }) {
-  const allAccountRows = rows.filter((r) => {
+  const allWalletRows = rows.filter((r) => {
     // An uncovered-spending row (controller addendum §4: `budget_id`,
     // `wallet_names`, `wallet_count`, `budget_minor`, `budget_period_start`
     // ALL null) never belongs on a budget-utilisation block -- there is no
@@ -67,17 +67,17 @@ export function BudgetSummary({
     // must never be mistaken for "matches by coincidence."
     if (r.budget_id === null) return false;
     if (r.currency_code !== currencyCode) return false;
-    return scopeLabel(r.wallet_names, r.wallet_count, walletCount) === "All accounts";
+    return scopeLabel(r.wallet_names, r.wallet_count, walletCount) === "All wallets";
   });
 
-  if (allAccountRows.length === 0) {
+  if (allWalletRows.length === 0) {
     // Same "single explanatory line, no heading, no empty chrome" precedent
     // `CategoryBreakdown`'s and `CashFlow`'s own empty states already set on
     // this page -- a fourth block that renders nothing when there are no
-    // all-accounts budgets is worse than one that says why (addendum §6).
+    // all-wallets budgets is worse than one that says why (addendum §6).
     return (
       <p className="text-sm" style={{ color: "var(--ink-2)" }}>
-        No budgets cover every account yet.
+        No budgets cover every wallet yet.
       </p>
     );
   }
@@ -91,7 +91,7 @@ export function BudgetSummary({
       >
         Budgets
       </h2>
-      {allAccountRows.map((row) => (
+      {allWalletRows.map((row) => (
         <BudgetSummaryRow key={row.budget_id!} row={row} />
       ))}
     </section>

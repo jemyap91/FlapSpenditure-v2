@@ -102,7 +102,7 @@ describe("archiveWallet", () => {
 
     const result = await archiveWallet(WALLET_ID);
 
-    expect(result).toEqual({ error: "Account not found" });
+    expect(result).toEqual({ error: "Wallet not found" });
     expect(revalidatePath).not.toHaveBeenCalled();
   });
 
@@ -112,7 +112,7 @@ describe("archiveWallet", () => {
     const result = await archiveWallet(WALLET_ID);
 
     expect(result).toEqual({
-      error: "You need at least one account. Add another before archiving this one.",
+      error: "You need at least one wallet. Add another before archiving this one.",
     });
   });
 

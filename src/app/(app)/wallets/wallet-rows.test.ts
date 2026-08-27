@@ -72,7 +72,7 @@ describe("mergeWalletBalances", () => {
 });
 
 describe("defaultCurrencyFor", () => {
-  it("uses the currency the person's existing accounts already use", () => {
+  it("uses the currency the person's existing wallets already use", () => {
     expect(defaultCurrencyFor([wallet("a", { currency_code: "SGD" })], "USD")).toBe("SGD");
   });
 
@@ -85,7 +85,7 @@ describe("defaultCurrencyFor", () => {
     expect(defaultCurrencyFor(rows, "USD")).toBe("SGD");
   });
 
-  it("falls back to the profile's base currency when there are no accounts yet", () => {
+  it("falls back to the profile's base currency when there are no wallets yet", () => {
     // The onboarding case: the first wallet has nothing to match.
     expect(defaultCurrencyFor([], "SGD")).toBe("SGD");
   });

@@ -74,7 +74,7 @@ async function signUpAndOnboard(page: Page, walletName = "Everyday"): Promise<st
 async function addWallet(page: Page, name: string) {
   await page.goto("/wallets");
   await page.getByLabel("Name").fill(name);
-  await page.getByRole("button", { name: "Add account" }).click();
+  await page.getByRole("button", { name: "Add wallet" }).click();
   await expect(page.getByText(name)).toBeVisible();
 }
 
@@ -105,7 +105,7 @@ async function pressAmount(page: Page, amount: string) {
  * does — only a NEW row appearing (income landing in an unbudgeted
  * category) can. See the row-count assertions below for the actual proof.
  *
- * `walletName`, when given, selects the transaction's "Account" — the
+ * `walletName`, when given, selects the transaction's "Wallet" — the
  * form defaults to the first wallet (`wallets[0]`, the onboarding wallet),
  * so this is only needed to file against the SECOND wallet.
  */
@@ -124,9 +124,9 @@ async function recordTransaction(
     await page.getByText("Income", { exact: true }).click();
   }
   if (walletName) {
-    // "Account" is sr-only for a non-transfer kind (TransactionForm.tsx)
+    // "Wallet" is sr-only for a non-transfer kind (TransactionForm.tsx)
     // but still the select's accessible name, so getByLabel still finds it.
-    await page.getByLabel("Account").selectOption({ label: walletName });
+    await page.getByLabel("Wallet").selectOption({ label: walletName });
   }
   await pressAmount(page, amount);
   await page.getByRole("button", { name: category }).click();
@@ -155,9 +155,9 @@ async function recordTransfer(page: Page, amount: string) {
  * a broader locator by text.
  *
  * A category can carry TWO budgets at once (different wallet sets, e.g.
- * "Groceries · All accounts" and "Groceries · Savings"). Their Remove
+ * "Groceries · All wallets" and "Groceries · Savings"). Their Remove
  * buttons' `aria-label`s are now scoped the same way (`Remove budget for
- * Groceries · All accounts` / `Remove budget for Groceries · Savings`, N2
+ * Groceries · All wallets` / `Remove budget for Groceries · Savings`, N2
  * fix round — before it, both shared the bare `Remove budget for
  * Groceries`, derived from the category label alone, and a bare
  * `page.getByRole("button", { name: "Remove budget for Groceries" })`
@@ -199,7 +199,7 @@ async function createBudget(
   await page.goto("/budgets");
   const form = addBudgetForm(page);
   await form.getByLabel("Category").selectOption({ label: category });
-  const walletGroup = form.getByRole("group", { name: "Accounts this budget covers" });
+  const walletGroup = form.getByRole("group", { name: "Wallets this budget covers" });
   for (const name of opts.uncheckWallets ?? []) {
     await walletGroup.getByLabel(name).uncheck();
   }
@@ -264,22 +264,22 @@ test("a budget counts expenses only, in its own wallet set, and ignores income a
   // look at rather than an empty state.
   await recordTransaction(page, "expense", "30", "Groceries");
 
-  // 1. An all-accounts Groceries budget, created with the wallet picker's
+  // 1. An all-wallets Groceries budget, created with the wallet picker's
   // all-checked default (both "Everyday" and "Savings"). ALSO an all-
-  // accounts overall cap ("Overall budget (all spending)", the picker's
+  // wallets overall cap ("Overall budget (all spending)", the picker's
   // own no-category option) AND a SECOND overall cap over Everyday ONLY
   // (uncheck "Savings" — set_budget keys on the wallet SET, so this is a
-  // distinct budget, not an edit of the all-accounts one, the same
+  // distinct budget, not an edit of the all-wallets one, the same
   // distinct-budgets-same-category pattern step 4 below uses for
-  // Groceries). The all-accounts overall cap exists for the INCOME half of
+  // Groceries). The all-wallets overall cap exists for the INCOME half of
   // step 2 below; the Everyday-only one exists for the TRANSFER half — see
   // that step's own comment for why the two need different wallet sets to
   // prove.
   await createBudget(page, "Groceries", "100");
   await createBudget(page, "Overall budget (all spending)", "1000");
   await createBudget(page, "Overall budget (all spending)", "1000", { uncheckWallets: ["Savings"] });
-  const groceriesAll = budgetRow(page, "Groceries · All accounts");
-  const overallAll = budgetRow(page, "Overall budget · All accounts");
+  const groceriesAll = budgetRow(page, "Groceries · All wallets");
+  const overallAll = budgetRow(page, "Overall budget · All wallets");
   const overallEveryday = budgetRow(page, "Overall budget · Everyday");
   await expect(groceriesAll.getByText("$30.00 of $100.00 · 30%")).toBeVisible();
   await expect(overallAll.getByText("$30.00 of $1,000.00 · 3%")).toBeVisible();
@@ -320,9 +320,9 @@ test("a budget counts expenses only, in its own wallet set, and ignores income a
   // Three more ARE real proof, each catching one of `get_budget_status`'s
   // two `t.kind = 'expense'` occurrences (0013's `spend` and `uncovered`
   // CTEs) — but NOT interchangeably, and an earlier version of this file
-  // claimed the all-accounts figure alone caught both income AND the
+  // claimed the all-wallets figure alone caught both income AND the
   // transfer, which is false for the transfer half:
-  //   - the ALL-ACCOUNTS OVERALL CAP figure catches INCOME (and only
+  //   - the ALL-WALLETS OVERALL CAP figure catches INCOME (and only
   //     income): income is blocked from Groceries by category matching,
   //     but the overall cap's `e.category_key IS NULL` branch sums
   //     spending regardless of category, so only the kind filter (spend
@@ -384,7 +384,7 @@ test("a budget counts expenses only, in its own wallet set, and ignores income a
   await expect(groceriesAll.getByText("$30.00 of $100.00 · 30%")).toBeVisible(); // untouched by the new row
 
   // 5. An expense in a wallet OUTSIDE the subset budget's set (Everyday,
-  // not in the Savings-only set) must move the all-accounts row — which
+  // not in the Savings-only set) must move the all-wallets row — which
   // covers every wallet — but not the Savings-only one, which does not
   // cover Everyday at all.
   await recordTransaction(page, "expense", "15", "Groceries"); // defaults to Everyday
@@ -395,18 +395,18 @@ test("a budget counts expenses only, in its own wallet set, and ignores income a
 
   // 6. Remove — the only destructive control on this screen. Targeted by
   // its pinned, now SCOPED aria-label (N2 fix round: "Remove budget for
-  // Groceries · All accounts", not the bare "Remove budget for Groceries"
+  // Groceries · All wallets", not the bare "Remove budget for Groceries"
   // both Groceries rows shared before — see budgetRow's own doc comment),
-  // scoped through the all-accounts row's own locator regardless.
+  // scoped through the all-wallets row's own locator regardless.
   //
-  // Removing the ALL-ACCOUNTS budget, while the Savings-only one still
+  // Removing the ALL-WALLETS budget, while the Savings-only one still
   // exists, is what makes this a genuine "falls back to uncovered" case
   // rather than a no-op: Everyday's $45 of Groceries spend loses its only
   // cover (the Savings-only budget never covered Everyday), so it must
   // reappear as bare uncovered spending, while the still-independent
   // Savings-only row — and the overall cap, whose total spend a removed
   // BUDGET can never change — are both untouched.
-  await groceriesAll.getByRole("button", { name: "Remove budget for Groceries · All accounts" }).click();
+  await groceriesAll.getByRole("button", { name: "Remove budget for Groceries · All wallets" }).click();
   await expect(groceriesAll).toHaveCount(0);
   const groceriesUncovered = page.getByRole("listitem").filter({ hasText: "Groceries" });
   await expect(groceriesUncovered.getByText("$45.00 spent · No budget set")).toBeVisible();

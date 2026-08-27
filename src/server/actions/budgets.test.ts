@@ -119,7 +119,7 @@ describe("setBudget", () => {
   it("refuses an empty wallet set before any RPC or table lookup", async () => {
     const result = await setBudget(CATEGORY_KEY, {}, budgetForm("600", []));
 
-    expect(result).toEqual({ error: "Choose at least one account" });
+    expect(result).toEqual({ error: "Choose at least one wallet" });
     expect(rpcCalls).toEqual([]);
     expect(fromTables).toEqual([]);
   });
@@ -168,7 +168,7 @@ describe("setBudget", () => {
 
     const result = await setBudget(CATEGORY_KEY, {}, budgetForm("600", [WALLET_ID_1, WALLET_ID_2]));
 
-    expect(result).toEqual({ error: "You do not have access to one or more of those accounts." });
+    expect(result).toEqual({ error: "You do not have access to one or more of those wallets." });
     expect(rpcCalls).toEqual([]);
   });
 
@@ -240,12 +240,12 @@ describe("setBudget", () => {
     ]);
   });
 
-  it("reports the account not found when the wallet lookup returns null", async () => {
+  it("reports the wallet not found when the wallet lookup returns null", async () => {
     walletLookup.data = null;
 
     const result = await setBudget(CATEGORY_KEY, {}, budgetForm("600", [WALLET_ID_1]));
 
-    expect(result).toEqual({ error: "Account not found." });
+    expect(result).toEqual({ error: "Wallet not found." });
     expect(rpcCalls).toEqual([]);
   });
 

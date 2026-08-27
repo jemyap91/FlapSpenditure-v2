@@ -157,7 +157,7 @@ describe("inviteToWallet", () => {
 
     const result = await inviteToWallet(WALLET_ID, {}, inviteForm("owner@x.io"));
 
-    expect(result).toEqual({ error: "You are already in this account." });
+    expect(result).toEqual({ error: "You are already in this wallet." });
     // Refused before the insert, not after it — a self-invite that reached
     // wallet_invites would sit there as a pending invitation the owner
     // could "accept" into a membership row they already hold.
@@ -171,7 +171,7 @@ describe("inviteToWallet", () => {
     // that normalisation this would slip past the self-invite guard.
     const result = await inviteToWallet(WALLET_ID, {}, inviteForm("  OWNER@X.io  "));
 
-    expect(result).toEqual({ error: "You are already in this account." });
+    expect(result).toEqual({ error: "You are already in this wallet." });
     expect(invitesInsertPayloads).toEqual([]);
   });
 
@@ -203,7 +203,7 @@ describe("inviteToWallet", () => {
     const result = await inviteToWallet(WALLET_ID, {}, inviteForm("someone@x.io"));
 
     expect(result).toEqual({
-      error: "There is already a pending invitation to that address for this account.",
+      error: "There is already a pending invitation to that address for this wallet.",
     });
     // Still no raw provider text — the constraint name would leak schema.
     expect(JSON.stringify(result)).not.toContain("wallet_invites_one_pending");
@@ -382,7 +382,7 @@ describe("removeMember", () => {
 
     const result = await removeMember(WALLET_ID, MEMBER_ID);
 
-    expect(result).toEqual({ error: "Only the account owner can do that." });
+    expect(result).toEqual({ error: "Only the wallet owner can do that." });
   });
 
   it("removes a legitimate member and revalidates both the layout and /wallets", async () => {

@@ -36,7 +36,7 @@ function monthAbbrev(periodStart: string, currentPeriodStart: string): string {
  * (`<category label> · <scope label>`) on the overall-cap row, whose own
  * `category_label` is NULL (controller addendum §1). Matches the language
  * of the pinned "Remove overall budget" control rather than reusing
- * "All spending" (the OLD single-wallet screen's wording) — "accounts" is
+ * "All spending" (the OLD single-wallet screen's wording) — "wallets" is
  * the vocabulary this whole redesign uses for a wallet set, and mixing in a
  * different noun for the same concept would read as two different features. */
 const OVERALL_LABEL = "Overall budget";
@@ -103,7 +103,7 @@ export function BudgetList({
    *  legitimately carry a DIFFERENT currency (a shared wallet whose set
    *  spans another member's own currency), and comparing that row's
    *  `wallet_count` against the wrong currency's total produced a false
-   *  "All accounts" for a set that did not actually cover everyone. Indexing
+   *  "All wallets" for a set that did not actually cover everyone. Indexing
    *  by `row.currency_code` instead removes that whole class of mismatch.
    *  Also backs the new-budget picker's options (filtered to
    *  `primaryCurrency`) and each existing row's "doesn't cover ..."
@@ -134,7 +134,7 @@ export function BudgetList({
    *  updating the one being edited. Matching wallet_names back to ids by
    *  NAME was considered and rejected: wallet names have no uniqueness
    *  constraint (checked: no `unique` index on `wallets.name` anywhere in
-   *  supabase/migrations), so two accounts sharing a name would resolve to
+   *  supabase/migrations), so two wallets sharing a name would resolve to
    *  the wrong id silently. A real id, fetched once in page.tsx, has no such
    *  failure mode. Name-based matching is still used for the cosmetic
    *  "doesn't cover ..." disclosure below, where a wrong guess is only ever
@@ -219,7 +219,7 @@ export function BudgetList({
           wallet-within-currency axis the per-row disclosure covers). */}
       {otherCurrencyCodes.length > 0 && (
         <p className="text-sm" style={{ color: "var(--ink-2)" }}>
-          Accounts in {otherCurrencyCodes.join(", ")} aren&rsquo;t covered by any budget here.
+          Wallets in {otherCurrencyCodes.join(", ")} aren&rsquo;t covered by any budget here.
         </p>
       )}
 
@@ -268,7 +268,7 @@ function BudgetRow({
   // N2 (whole-branch review): scoped with `· ${scope}`, same as the two
   // live regions below (`Error for ${categoryLabel} · ${scope}`, `Status
   // for ${categoryLabel} · ${scope}`) — a category can carry two budgets at
-  // once, over different wallet sets (e.g. "Groceries · All accounts" and
+  // once, over different wallet sets (e.g. "Groceries · All wallets" and
   // "Groceries · Savings"), and this button is a DESTRUCTIVE, undoable
   // control (`removeBudget` hard-deletes, no soft-delete, no undo). Before
   // this fix both rows' Remove buttons shared the exact same accessible
@@ -363,7 +363,7 @@ function BudgetRow({
 
       {walletCountMismatch && (
         <p className="text-xs" style={{ color: "var(--neg)" }}>
-          Covers an archived account, so its amount can&rsquo;t be edited here.
+          Covers an archived wallet, so its amount can&rsquo;t be edited here.
         </p>
       )}
 
@@ -571,12 +571,12 @@ function AddBudgetForm({
 
         <fieldset>
           <legend className="text-xs" style={{ color: "var(--ink-2)" }}>
-            Accounts this budget covers
+            Wallets this budget covers
           </legend>
           <div className="mt-1 flex flex-col gap-1">
             {primaryWallets.map((w) => (
               <label key={w.id} className="flex items-center gap-2 text-sm" style={{ color: "var(--ink)" }}>
-                {/* Defaults to every primary-currency account checked — the
+                {/* Defaults to every primary-currency wallet checked — the
                     picker's own default (controller addendum §4) — and a
                     caller can uncheck down to a subset. Submitting zero is
                     refused server-side (budgetInput's `.min(1)`), so no

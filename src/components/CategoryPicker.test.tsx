@@ -49,7 +49,7 @@ beforeEach(() => {
 describe("CategoryPicker — inline-created categories are wallet-scoped", () => {
   /**
    * Regression test for the cross-wallet leak that produced an UNSAVABLE
-   * transaction: inline-create "Vet" under wallet A, switch the Account
+   * transaction: inline-create "Vet" under wallet A, switch the Wallet
    * chip to wallet B (TransactionForm re-renders this same mounted picker
    * with a new `walletId` and B's own category list), and "Vet" was still
    * offered. Selecting it and saving got as far as the INSERT, where
@@ -83,7 +83,7 @@ describe("CategoryPicker — inline-created categories are wallet-scoped", () =>
     expect(await screen.findByRole("button", { name: "Vet" })).toBeInTheDocument();
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ id: "vet-a" }));
 
-    // TransactionForm's Account chip changed: same mounted picker, new
+    // TransactionForm's Wallet chip changed: same mounted picker, new
     // walletId, and only wallet B's own categories in the prop.
     rerender(
       <CategoryPicker

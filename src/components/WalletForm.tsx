@@ -54,9 +54,9 @@ export function WalletForm({
   const [state, action, pending] = useActionState<WalletState, FormData>(submitAction, {});
   const [kind, setKind] = useState<WalletInput["kind"]>("bank");
   // Supplied by the caller, not hardcoded: /wallets derives it from the
-  // accounts this person already has, and /onboarding falls back to their
-  // profile's base_currency. A constant "USD" made someone whose accounts
-  // are all SGD re-pick SGD on every new account.
+  // wallets this person already has, and /onboarding falls back to their
+  // profile's base_currency. A constant "USD" made someone whose wallets
+  // are all SGD re-pick SGD on every new wallet.
   const [currencyCode, setCurrencyCode] = useState<WalletInput["currency_code"]>(
     defaultCurrency as WalletInput["currency_code"],
   );
@@ -177,7 +177,7 @@ export function WalletForm({
           name="name"
           required
           maxLength={60}
-          placeholder="Everyday account"
+          placeholder="Everyday wallet"
           autoComplete="off"
           aria-describedby={errorId}
           aria-invalid={state.field === "name" ? true : undefined}

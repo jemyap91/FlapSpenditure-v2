@@ -165,7 +165,7 @@ test.describe("ledger", () => {
 async function addWallet(page: Page, name: string) {
   await page.goto("/wallets");
   await page.getByLabel("Name").fill(name);
-  await page.getByRole("button", { name: "Add account" }).click();
+  await page.getByRole("button", { name: "Add wallet" }).click();
   await expect(page.getByText(name)).toBeVisible();
 }
 
@@ -182,7 +182,7 @@ test.describe("wallets", () => {
     await expect(page.getByText("$0.00")).toBeVisible();
 
     await expect(page.getByRole("button", { name: "Archive Everyday" })).toBeDisabled();
-    await expect(page.getByText(/need at least one account/i)).toBeVisible();
+    await expect(page.getByText(/need at least one wallet/i)).toBeVisible();
   });
 
   test("refuses to archive the last wallet when a stale tab still offers it", async ({ page }) => {
@@ -192,7 +192,7 @@ test.describe("wallets", () => {
     // This tab now renders two wallets, so Archive is enabled on both.
     await expect(page.getByRole("button", { name: "Archive Everyday" })).toBeEnabled();
 
-    // A second tab (same session) archives one, leaving the account count
+    // A second tab (same session) archives one, leaving the wallet count
     // at 1 — but THIS tab does not know that. `revalidatePath` runs on the
     // server; it does not reach into an already-rendered client.
     const otherTab = await page.context().newPage();
@@ -211,7 +211,7 @@ test.describe("wallets", () => {
     await page.getByRole("button", { name: "Archive Everyday" }).click();
 
     // Asserts on the SERVER message's distinctive tail, not on "need at
-    // least one account" — WalletList renders a static hint containing
+    // least one wallet" — WalletList renders a static hint containing
     // that phrase whenever it is showing a lone wallet, so a looser
     // pattern could match text that was already on the page.
     await expect(page.getByText(/Add another before archiving this one/i)).toBeVisible();

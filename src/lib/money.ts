@@ -43,9 +43,9 @@ export function appendDigit(current: string, digit: string, minorUnit: number): 
 
 /**
  * Re-clamps an already-typed keypad-format amount string (see `appendDigit`)
- * to a possibly DIFFERENT currency's `minorUnit` — needed when the account a
+ * to a possibly DIFFERENT currency's `minorUnit` — needed when the wallet a
  * transaction is filed against changes mid-entry (Task 19's add-transaction
- * screen: switching accounts, or a transfer's destination account, after
+ * screen: switching wallets, or a transfer's destination wallet, after
  * some digits are already typed). Pure string manipulation, like every
  * other function in this file — the value never becomes a float.
  *

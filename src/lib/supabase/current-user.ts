@@ -9,7 +9,7 @@ export type CurrentUserProfile = {
   id: string;
   theme: ThemePref;
   /** The person's own default currency. Used to seed the currency select
-   *  when they have no accounts yet to infer one from. */
+   *  when they have no wallets yet to infer one from. */
   base_currency: string;
 };
 
