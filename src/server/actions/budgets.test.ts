@@ -285,13 +285,14 @@ describe("setBudget", () => {
 
     expect(revalidatePath).toHaveBeenCalledWith("/budgets");
     expect(revalidatePath).toHaveBeenCalledWith("/");
-    // N7d (whole-branch review): positive control for the three
+    // N7d (whole-branch review): positive control for the four
     // `expect(fromTables).toEqual([])` assertions above (each proving a
-    // guard runs BEFORE any Supabase client is touched) — without this, a
-    // mock that silently stopped recording table names would make every one
-    // of those absence checks pass vacuously forever, the same class of gap
-    // `budgetsEqCalls`'s own positive control below (in `removeBudget`)
-    // already closes.
+    // guard runs BEFORE any Supabase client is touched — one of the four is
+    // N3's own blank-categoryKey test, added after N7d's original count).
+    // Without this, a mock that silently stopped recording table names
+    // would make every one of those absence checks pass vacuously forever,
+    // the same class of gap `budgetsEqCalls`'s own positive control below
+    // (in `removeBudget`) already closes.
     expect(fromTables).toEqual(["wallet_members", "wallets"]);
   });
 });

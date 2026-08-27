@@ -285,6 +285,25 @@ test("a budget counts expenses only, in its own wallet set, and ignores income a
   await expect(overallAll.getByText("$30.00 of $1,000.00 · 3%")).toBeVisible();
   await expect(overallEveryday.getByText("$30.00 of $1,000.00 · 3%")).toBeVisible();
 
+  // N2 re-review: this screen now puts two overall caps on screen at once
+  // (the case above), each a DESTRUCTIVE, undoable Remove control — nothing
+  // above proves their accessible names actually differ, only that each
+  // SCOPED row locator can independently find its own button, which would
+  // pass even if both buttons shared one name (the row locator alone
+  // disambiguates them by DOM position, the same way `budgetRow`'s own doc
+  // comment already relies on for Groceries). This asserts the accessible
+  // NAME itself is distinct — the actual property a screen-reader user with
+  // more than one Remove control open depends on.
+  const overallRemoveButtons = page.getByRole("button", { name: /^Remove overall budget/ });
+  await expect(overallRemoveButtons).toHaveCount(2);
+  const overallRemoveNames = await overallRemoveButtons.evaluateAll((els) =>
+    els.map((el) => el.getAttribute("aria-label")),
+  );
+  expect(
+    new Set(overallRemoveNames).size,
+    "two overall caps over different wallet sets must not share one Remove button's accessible name",
+  ).toBe(2);
+
   // 2. Income against a real income category ("Salary", one of the seeded
   // defaults) and a transfer between the two wallets must move NEITHER the
   // Groceries figure, NOR either overall cap's figure, NOR the row count.

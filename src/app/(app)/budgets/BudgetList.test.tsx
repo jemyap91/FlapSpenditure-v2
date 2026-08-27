@@ -217,7 +217,7 @@ describe("BudgetList — Remove", () => {
 
   it("offers Remove, pinned by name, on the overall cap", () => {
     render(<BudgetList rows={[row({ category_key: null, category_label: null, budget_id: "b1" })]} />);
-    expect(screen.getByRole("button", { name: "Remove overall budget" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove overall budget · Everyday" })).toBeInTheDocument();
   });
 
   it("clicking Remove calls removeBudget with the row's real budget id", async () => {

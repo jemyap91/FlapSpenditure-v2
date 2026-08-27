@@ -58,7 +58,18 @@ function groupRows(rows: readonly BudgetStatusRow[]): {
   categoryBudgets: BudgetStatusRow[];
   uncovered: BudgetStatusRow[];
 } {
-  const overall = rows.filter((r) => r.budget_id !== null && r.category_key === null);
+  // Sorted too, now that B2's own e2e fixture proves two overall caps (over
+  // DIFFERENT wallet sets) are a real, on-screen case, not a one-of-one
+  // corner. `category_label` is null for every overall-cap row (it has no
+  // category), so the field `categoryBudgets`/`uncovered` sort by below is
+  // useless here — sorted by each row's own joined wallet names instead,
+  // the only per-row text that actually differs between two overall caps.
+  // Same underlying reason as the other two: `get_budget_status` has no
+  // ORDER BY, so leaving this unsorted renders in whatever order Postgres
+  // heap scan happens to return.
+  const overall = rows
+    .filter((r) => r.budget_id !== null && r.category_key === null)
+    .sort((a, b) => (a.wallet_names ?? []).join(", ").localeCompare((b.wallet_names ?? []).join(", ")));
   const categoryBudgets = rows
     .filter((r) => r.budget_id !== null && r.category_key !== null)
     .sort((a, b) => (a.category_label ?? "").localeCompare(b.category_label ?? ""));
@@ -264,7 +275,16 @@ function BudgetRow({
   // name, indistinguishable to a screen-reader user with more than one open
   // — this branch's own e2e suite hits this collision directly (see
   // budgetRow's doc comment in e2e/budgets.spec.ts).
-  const removeLabel = isOverall ? "Remove overall budget" : `Remove budget for ${categoryLabel} · ${scope}`;
+  //
+  // The overall cap gets the SAME treatment, not just the category branch:
+  // a caller can carry more than one overall cap at once (a different
+  // wallet set each, category_key still null for both) — B2's own e2e fix
+  // puts exactly such a pair on screen together — and their Remove buttons
+  // were just as indistinguishable to a screen-reader user as the category
+  // case above before this fix.
+  const removeLabel = isOverall
+    ? `Remove overall budget · ${scope}`
+    : `Remove budget for ${categoryLabel} · ${scope}`;
 
   // Fix round C1: a budget set in an EARLIER month and never touched since
   // is still that earlier month's own row (carry-forward: "the effective
