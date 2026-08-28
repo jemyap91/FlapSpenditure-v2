@@ -419,6 +419,13 @@ describe("BudgetList — select all / clear all in the wallet picker", () => {
     expect(screen.getByRole("checkbox", { name: "Savings" })).not.toBeChecked();
   });
 
+  // Documentation, not a guard. Review of 666f53f established by mutation that
+  // this test has no unique breaker and cannot be given one: its preconditions
+  // are the opening lines of "selects every wallet", and its assertion is a
+  // subset of "flips back to Select all". Every mutation that fails it — the
+  // label strings swapped, `onChange` never deleting, `.every` weakened to
+  // `.some` — fails one of those two first. Kept because the plan names it and
+  // it reads as a clear statement of the rule; do not mistake it for coverage.
   it("reads Select all when one or more wallets are unchecked", async () => {
     const user = userEvent.setup();
     render(<BudgetList rows={[]} wallets={wallets} primaryCurrency="SGD" categories={categories} />);
