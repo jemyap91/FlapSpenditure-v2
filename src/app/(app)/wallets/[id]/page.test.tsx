@@ -261,4 +261,45 @@ describe("WalletDetailPage", () => {
     expect(screen.getByText("Balance is not shown for archived wallets.")).toBeInTheDocument();
     expect(screen.queryByText("—")).not.toBeInTheDocument();
   });
+
+  /**
+   * Task 4 (wallet-detail plan): the floating add-transaction button. The
+   * controller addendum pins its accessible name exactly — asserted here,
+   * not just "a link exists," since a generic "Add" would be ambiguous
+   * against Sidebar/TabBar's own "Add" nav item once axe/screen-reader
+   * users are scanning the page for every "Add"-shaped control at once.
+   * The href is asserted too: it must carry BOTH `wallet=<id>` (preselect)
+   * and `from=wallet:<id>` (return trip) — see WalletFab.tsx's own doc
+   * comment for why neither is optional.
+   */
+  it("offers a FAB that preselects this wallet and returns to it after a save", async () => {
+    walletsById.set(WALLET_A, wallet(WALLET_A, { name: "Everyday" }));
+
+    const ui = await WalletDetailPage({ params: Promise.resolve({ id: WALLET_A }) });
+    render(ui);
+
+    const fab = screen.getByRole("link", { name: "Add a transaction to Everyday" });
+    expect(fab).toHaveAttribute(
+      "href",
+      `/transactions/new?wallet=${WALLET_A}&from=wallet:${WALLET_A}`,
+    );
+  });
+
+  /**
+   * An archived wallet is excluded from /transactions/new's own `wallets`
+   * query (that page's `.is("archived_at", null)` filter) — so a FAB
+   * offered here would preselect nothing (its `wallet` param would fail
+   * that page's own membership check and silently fall back to a
+   * DIFFERENT wallet, with no error to explain why). Rather than offer an
+   * affordance that quietly does the wrong thing, the FAB does not render
+   * at all once this wallet is archived.
+   */
+  it("does not offer the FAB on an archived wallet", async () => {
+    walletsById.set(WALLET_A, wallet(WALLET_A, { name: "Old Wallet", archived_at: "2026-01-01T00:00:00Z" }));
+
+    const ui = await WalletDetailPage({ params: Promise.resolve({ id: WALLET_A }) });
+    render(ui);
+
+    expect(screen.queryByRole("link", { name: /Add a transaction/ })).not.toBeInTheDocument();
+  });
 });

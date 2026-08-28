@@ -4,6 +4,7 @@ import { formatMoney } from "@/lib/money";
 import { TransactionList, type Row } from "@/components/TransactionList";
 import { resolveCreatedByNames, anyRowShared } from "../../transactions/attribution";
 import { mergeWalletBalances, type WalletRow, type BalanceRow } from "../wallet-rows";
+import { WalletFab } from "./WalletFab";
 
 const uuid = z.uuid();
 
@@ -276,6 +277,15 @@ export default async function WalletDetailPage({
           emptyMessage="No transactions in this wallet yet."
         />
       </div>
+
+      {/* Task 4 (wallet-detail plan): not offered on an archived wallet.
+          /transactions/new's own `wallets` query excludes archived wallets
+          (`.is("archived_at", null)`, that page's own doc comment), so this
+          wallet's id would fail that page's membership check and silently
+          preselect a DIFFERENT wallet instead — offering this affordance
+          here would be offering something that quietly does the wrong
+          thing, with nothing on screen to explain why. */}
+      {!walletRow.archived_at && <WalletFab walletId={walletRow.id} walletName={walletRow.name} />}
     </div>
   );
 }

@@ -1,7 +1,10 @@
 import { redirect } from "next/navigation";
+import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { TransactionForm } from "@/components/TransactionForm";
 import type { Category } from "@/components/CategoryPicker";
+
+const uuid = z.uuid();
 
 /**
  * /transactions/new — Task 19's add-transaction screen. A Server Component
@@ -34,7 +37,26 @@ import type { Category } from "@/components/CategoryPicker";
  * currently-selected wallet client-side (its `walletCategories`), so
  * switching the wallet chip needs no refetch.
  */
-export default async function NewTransactionPage() {
+export default async function NewTransactionPage({
+  searchParams,
+}: {
+  /**
+   * Task 4 (wallet-detail plan): two optional params, both user-supplied
+   * and both untrusted.
+   *
+   * `wallet` PRESELECTS a wallet in the form; it does not AUTHORISE
+   * anything — see the validation below, right where it is consumed
+   * against this page's own already-RLS-scoped `wallets` query.
+   *
+   * `from` is an origin IDENTIFIER (`wallet:<uuid>`), not a path — it is
+   * threaded straight through to TransactionForm unmodified and is never
+   * parsed here. `TransactionForm` is the only place it is consumed, via
+   * `parseOrigin` (`@/lib/origin`) — see that component's own doc comment
+   * for why nothing else may turn it into a navigation target.
+   */
+  searchParams: Promise<{ wallet?: string; from?: string }>;
+}) {
+  const { wallet, from } = await searchParams;
   const supabase = await createClient();
   const [
     { data: wallets, error: walletsError },
@@ -72,6 +94,19 @@ export default async function NewTransactionPage() {
   // what keeps this redirect from looping.
   if (!wallets?.length) redirect("/onboarding");
 
+  // `wallet` preselects but does not authorise (Task 4's controller
+  // addendum, binding): validated as a uuid, then matched only against
+  // THIS page's own already-RLS-scoped `wallets` query above — a wallet
+  // the caller is not a member of is simply absent from that list, so this
+  // one `.find` collapses "not a uuid", "well-formed uuid but doesn't
+  // exist", and "exists but isn't mine" into the identical silent
+  // fallback, no distinguishable error for any of them. Same three-
+  // inputs-one-outcome shape src/app/(app)/wallets/[id]/page.tsx already
+  // uses for its own not-found state, applied here to a fallback instead
+  // of a rendered error.
+  const requestedWalletId =
+    wallet && uuid.safeParse(wallet).success ? wallets.find((w) => w.id === wallet)?.id : undefined;
+
   return (
     <>
       {/* This screen had no level-one heading, so its outline started at
@@ -88,7 +123,8 @@ export default async function NewTransactionPage() {
       <TransactionForm
         wallets={wallets}
         categories={categories ?? ([] satisfies Category[])}
-        defaultWalletId={wallets[0]!.id}
+        defaultWalletId={requestedWalletId ?? wallets[0]!.id}
+        from={from}
       />
     </>
   );
