@@ -62,8 +62,11 @@ const uuid = z.uuid();
  *   file's own doc comment for why each of those is load-bearing).
  * - Drops the `wallets(name)` embed page.tsx needs (it lists MULTIPLE
  *   wallets' transactions and needs each row's own wallet name) — every row
- *   here is already known to belong to THIS wallet, so `wallet_name` is
- *   filled from the wallet row already fetched above, with no extra join.
+ *   here is already known to belong to THIS wallet, whose name the page's
+ *   own `<h1>` already states, so `wallet_name` is passed as `""` (review
+ *   round 1, M2) rather than repeating it on every row; `TransactionList`'s
+ *   secondary line already drops empty parts via `.filter(Boolean)`, so
+ *   this needs no change to that shared component.
  * - Reuses `resolveCreatedByNames`/`anyRowShared` from
  *   `transactions/attribution.ts` UNCHANGED — both are already generic over
  *   `{ wallet_id, created_by }` rows, not tied to the multi-wallet page, so
@@ -85,8 +88,13 @@ const uuid = z.uuid();
  * `get_wallet_balances()` (supabase/migrations/0006_aggregates.sql) filters
  * `archived_at is null` server-side, so an ARCHIVED wallet's id is simply
  * absent from that RPC's result — `mergeWalletBalances` already treats a
- * missing id as "unknown" (`null`), which this page renders as the same em
- * dash `WalletList.tsx` uses, with no archived-specific branch needed here.
+ * missing id as "unknown" (`null`). Review round 1 (I3) caught that
+ * rendering the bare em dash `WalletList.tsx` uses for THAT case here would
+ * be wrong: an archived wallet's balance is perfectly computable, the RPC
+ * just declines to, so "unknown" is the wrong word for it. This page
+ * special-cases `balanceMinor === null && archived_at` to say so in text
+ * ("Balance is not shown for archived wallets.") rather than reusing the
+ * em dash's "we could not compute this" meaning for a different situation.
  *
  * ## The archived disclosure
  *
@@ -196,10 +204,14 @@ export default async function WalletDetailPage({
     currency_code: r.currency_code,
     occurred_on: r.occurred_on,
     note: r.note,
-    // Every row here is already scoped to THIS wallet (the query's own
-    // `.eq("wallet_id", id)`) — filled from the wallet already fetched
-    // above rather than re-embedding `wallets(name)` per row.
-    wallet_name: walletRow.name,
+    // Every row here is already scoped to THIS wallet, and the page's own
+    // `<h1>` already says its name — `TransactionList`'s secondary line
+    // joins non-empty parts with `.filter(Boolean)`, so an empty string
+    // here (rather than `walletRow.name`, which is what page.tsx originally
+    // passed) drops the redundant repetition ("Coffee · Everyday" under a
+    // heading that already reads "Everyday") without needing any change to
+    // that shared component (review-caught, M2).
+    wallet_name: "",
     category_name: r.categories?.name ?? null,
     category_icon: r.categories?.icon ?? null,
     color_slot: r.categories?.color_slot ?? null,
@@ -221,21 +233,40 @@ export default async function WalletDetailPage({
           This wallet is archived.
         </p>
       )}
-      <p
-        className="mt-3 text-2xl tabular-nums"
-        style={{
-          color:
-            walletWithBalance.balanceMinor === null
-              ? "var(--ink-2)"
-              : walletWithBalance.balanceMinor < 0
-                ? "var(--neg)"
-                : "var(--ink)",
-        }}
-      >
-        {walletWithBalance.balanceMinor === null
-          ? "—"
-          : formatMoney(walletWithBalance.balanceMinor, walletRow.currency_code)}
-      </p>
+      {walletWithBalance.balanceMinor === null && walletRow.archived_at ? (
+        // `get_wallet_balances()` (supabase/migrations/0006_aggregates.sql)
+        // filters `archived_at is null`, so an archived wallet's balance is
+        // ABSENT from that RPC's result — not because it can't be computed
+        // (it's a starting balance plus a sum, same as any other wallet),
+        // but because the RPC declines to. `wallet-rows.ts` documents `null`
+        // as meaning "we did not compute this," deliberately distinct from a
+        // real zero — rendering the bare em dash `WalletList.tsx` uses for
+        // THAT case here would state a design decision (the RPC's own
+        // filter) in the vocabulary of a compute failure (review-caught,
+        // I3). Said in words instead. A wallet-scoped balance RPC, or moving
+        // the `archived_at` filter to call sites, would let this line go
+        // away — out of scope here: it touches `/wallets` and the
+        // dashboard, both outside this task's no-SQL-changes boundary.
+        <p className="mt-3 text-sm" style={{ color: "var(--ink-2)" }}>
+          Balance is not shown for archived wallets.
+        </p>
+      ) : (
+        <p
+          className="mt-3 text-2xl tabular-nums"
+          style={{
+            color:
+              walletWithBalance.balanceMinor === null
+                ? "var(--ink-2)"
+                : walletWithBalance.balanceMinor < 0
+                  ? "var(--neg)"
+                  : "var(--ink)",
+          }}
+        >
+          {walletWithBalance.balanceMinor === null
+            ? "—"
+            : formatMoney(walletWithBalance.balanceMinor, walletRow.currency_code)}
+        </p>
+      )}
 
       <div className="mt-6">
         <TransactionList
