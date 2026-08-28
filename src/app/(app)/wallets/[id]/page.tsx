@@ -99,10 +99,13 @@ const uuid = z.uuid();
  *
  * ## The archived disclosure
  *
- * Stated in TEXT ("This wallet is archived."), not colour or a muted style
- * alone — the controller addendum's binding rule, and this codebase's
- * general one (spec §6.4, applied throughout TransactionList.tsx/
- * WalletList.tsx already).
+ * Stated in TEXT ("This wallet is archived, so new transactions can’t be
+ * added to it."), not colour or a muted style alone — the controller
+ * addendum's binding rule, and this codebase's general one (spec §6.4,
+ * applied throughout TransactionList.tsx/WalletList.tsx already). The
+ * "can't be added" half names the consequence a reader would otherwise
+ * only discover by noticing the FAB's absence (review round 1, fix 4b) —
+ * see the FAB guard's own comment below for the full reasoning.
  */
 export default async function WalletDetailPage({
   params,
@@ -231,7 +234,7 @@ export default async function WalletDetailPage({
       </p>
       {walletRow.archived_at && (
         <p className="mt-1 text-sm" style={{ color: "var(--ink-2)" }}>
-          This wallet is archived.
+          This wallet is archived, so new transactions can’t be added to it.
         </p>
       )}
       {walletWithBalance.balanceMinor === null && walletRow.archived_at ? (
@@ -279,12 +282,18 @@ export default async function WalletDetailPage({
       </div>
 
       {/* Task 4 (wallet-detail plan): not offered on an archived wallet.
-          /transactions/new's own `wallets` query excludes archived wallets
-          (`.is("archived_at", null)`, that page's own doc comment), so this
-          wallet's id would fail that page's membership check and silently
-          preselect a DIFFERENT wallet instead — offering this affordance
-          here would be offering something that quietly does the wrong
-          thing, with nothing on screen to explain why. */}
+          The PRIMARY reason: `createTransaction`
+          (src/server/actions/transactions.ts:104) rejects any transaction
+          against an archived wallet outright — `if (!wallet ||
+          wallet.archived_at) return { error: "Wallet not found" }` — so this
+          button would be a dead end regardless of what it preselected.
+          Secondarily, /transactions/new's own `wallets` query also excludes
+          archived wallets (`.is("archived_at", null)`, that page's own doc
+          comment), so this wallet's id would fail that page's membership
+          check and silently preselect a DIFFERENT wallet instead. Either
+          reason alone would be enough to hide the affordance rather than
+          offer something that quietly does the wrong thing, with nothing on
+          screen to explain why. */}
       {!walletRow.archived_at && <WalletFab walletId={walletRow.id} walletName={walletRow.name} />}
     </div>
   );

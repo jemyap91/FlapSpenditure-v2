@@ -53,10 +53,28 @@ export default async function NewTransactionPage({
    * parsed here. `TransactionForm` is the only place it is consumed, via
    * `parseOrigin` (`@/lib/origin`) — see that component's own doc comment
    * for why nothing else may turn it into a navigation target.
+   *
+   * Both are typed `string | string[] | undefined`, not just `string`
+   * (review round 1, fix 1): that `string`-only annotation was never
+   * actually checked by TypeScript — Next's generated page-prop validator
+   * widens with `& any` (.next/types/validator.ts) — while Next's own
+   * generated route type for this page is `Record<string, string |
+   * string[] | undefined>` (.next/types/routes.d.ts). A URL with a
+   * repeated param (`?from=a&from=b`) really does deliver a `string[]` at
+   * runtime, and an unnormalised array reaching `parseOrigin` threw a
+   * TypeError (`from.split is not a function`) inside TransactionForm's
+   * post-save transition — AFTER `createTransaction` had already
+   * succeeded, so the row was saved but the user landed on an error
+   * boundary instead of the redirect. Normalised to the first value right
+   * below, at this page boundary — `src/lib/origin.ts` stays untouched,
+   * its `string | null | undefined` contract still pinned by its own 15
+   * tests.
    */
-  searchParams: Promise<{ wallet?: string; from?: string }>;
+  searchParams: Promise<{ wallet?: string | string[]; from?: string | string[] }>;
 }) {
-  const { wallet, from } = await searchParams;
+  const { wallet: walletParam, from: fromParam } = await searchParams;
+  const wallet = Array.isArray(walletParam) ? walletParam[0] : walletParam;
+  const from = Array.isArray(fromParam) ? fromParam[0] : fromParam;
   const supabase = await createClient();
   const [
     { data: wallets, error: walletsError },

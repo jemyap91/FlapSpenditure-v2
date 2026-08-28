@@ -236,7 +236,9 @@ describe("WalletDetailPage", () => {
     const ui = await WalletDetailPage({ params: Promise.resolve({ id: WALLET_A }) });
     render(ui);
 
-    expect(screen.getByText("This wallet is archived.")).toBeInTheDocument();
+    expect(
+      screen.getByText("This wallet is archived, so new transactions can’t be added to it."),
+    ).toBeInTheDocument();
     expect(screen.getByText("Old purchase")).toBeInTheDocument();
   });
 
@@ -300,6 +302,12 @@ describe("WalletDetailPage", () => {
     const ui = await WalletDetailPage({ params: Promise.resolve({ id: WALLET_A }) });
     render(ui);
 
+    // Positive anchor (review round 1, fix 3): proves this actually
+    // rendered the archived wallet page rather than passing vacuously
+    // because some earlier path threw or fell through to WalletNotFound.
+    expect(
+      screen.getByText("This wallet is archived, so new transactions can’t be added to it."),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Add a transaction/ })).not.toBeInTheDocument();
   });
 });

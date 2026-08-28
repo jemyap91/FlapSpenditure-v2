@@ -20,12 +20,32 @@
 // `next/navigation` is mocked because TransactionForm (rendered by this
 // page) calls `useRouter()` — outside a real Next router this throws
 // "invariant expected app router to be mounted", the same reason
-// src/app/(app)/wallets/[id]/page.test.tsx mocks this module.
+// src/app/(app)/wallets/[id]/page.test.tsx mocks this module. `push` is a
+// module-level mock (not created fresh per-test inline), same pattern as
+// TransactionForm.test.tsx, so the "threads `from` through" and
+// "array-valued `from` doesn't crash" tests below (review round 1, fixes 1
+// and 2) can assert on the actual navigation target after a save.
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { createTransaction } from "@/server/actions/transactions";
 
+const push = vi.fn();
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn() }),
+  useRouter: () => ({ push }),
+}));
+
+// TransactionForm mounts CategoryPicker, which independently imports
+// `@/server/actions/categories` (a "use server" module) to inline-create a
+// category — mocked for the same reason TransactionForm.test.tsx mocks it,
+// even though these new tests never exercise inline creation.
+vi.mock("@/server/actions/transactions", () => ({
+  createTransaction: vi.fn(),
+  createTransfer: vi.fn(),
+}));
+
+vi.mock("@/server/actions/categories", () => ({
+  createCategory: vi.fn(),
 }));
 
 const { walletsData, categoriesData } = vi.hoisted(() => ({
@@ -74,7 +94,24 @@ beforeEach(() => {
     { id: WALLET_A, name: "Everyday", currency_code: "USD" },
     { id: WALLET_B, name: "Savings", currency_code: "USD" },
   );
+  push.mockClear();
+  vi.mocked(createTransaction).mockReset();
+  vi.mocked(createTransaction).mockResolvedValue({ id: "t1" });
 });
+
+/** Fills the minimum a save needs (a nonzero amount, a category) and clicks
+ *  Save, then waits for the redirect that follows a successful save — same
+ *  helper shape as TransactionForm.test.tsx's `saveAnExpense`, but driven
+ *  through the page (so it also exercises the page's own `searchParams`
+ *  normalisation, not just the form). Requires `categoriesData` to contain
+ *  at least one expense category for WALLET_A before calling. */
+async function saveAnExpenseThroughThePage() {
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "5" }));
+  await user.click(screen.getByRole("button", { name: "Groceries" }));
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(push).toHaveBeenCalled());
+}
 
 describe("NewTransactionPage — ?wallet preselects, but only from the caller's own list", () => {
   it("preselects the wallet named by ?wallet", async () => {
@@ -112,5 +149,87 @@ describe("NewTransactionPage — ?wallet preselects, but only from the caller's 
     render(ui);
 
     expect(screen.getByRole("combobox", { name: "Wallet" })).toHaveValue(WALLET_A);
+  });
+});
+
+// Review round 1, fix 1: Next's own generated route type for this page is
+// `Record<string, string | string[] | undefined>` (.next/types/routes.d.ts)
+// — a claim this file's `searchParams: Promise<{ wallet?: string; from?:
+// string }>` annotation never actually checked (Next's generated page-prop
+// validator widens with `& any`; see .next/types/validator.ts). A URL with a
+// repeated param (`?from=a&from=b`) therefore delivers a real `string[]` at
+// runtime. Before the fix, that array reached `parseOrigin`
+// (src/lib/origin.ts) inside TransactionForm's post-save transition, where
+// `!from` is false and `from.split` is not a function — a TypeError thrown
+// AFTER `createTransaction` had already succeeded, leaving the user on an
+// error boundary despite the row being saved. The fix normalises both
+// params to their first value at the page boundary, without touching
+// `src/lib/origin.ts` (frozen — 15 tests pin its `string | null |
+// undefined` contract).
+describe("NewTransactionPage — array-valued search params do not crash (Task 4 review round 1, fix 1)", () => {
+  beforeEach(() => {
+    categoriesData.push({
+      id: "cat-1",
+      name: "Groceries",
+      kind: "expense",
+      color_slot: 1,
+      icon: "circle",
+      wallet_id: WALLET_A,
+    });
+  });
+
+  it("normalises a repeated `from` to its first value and redirects there, instead of throwing", async () => {
+    const ui = await NewTransactionPage({
+      // A repeated `?from=` param, exactly as a real browser would deliver
+      // it to `searchParams` for `/transactions/new?from=wallet:B&from=wallet:ignored-second-value`.
+      searchParams: Promise.resolve({ from: [`wallet:${WALLET_B}`, `wallet:${WALLET_A}`] }),
+    });
+
+    // The bug this closes threw INSIDE the render/transition, not before
+    // it — so the assertion is on the redirect that follows a real save,
+    // not merely that `NewTransactionPage` itself didn't throw.
+    render(ui);
+    await saveAnExpenseThroughThePage();
+
+    expect(push).toHaveBeenCalledWith(`/wallets/${WALLET_B}`);
+  });
+
+  it("normalises a repeated `wallet` to its first value, exactly as the single-value case already does", async () => {
+    const ui = await NewTransactionPage({
+      searchParams: Promise.resolve({ wallet: [WALLET_B, WALLET_A] }),
+    });
+    render(ui);
+
+    expect(screen.getByRole("combobox", { name: "Wallet" })).toHaveValue(WALLET_B);
+  });
+});
+
+// Review round 1, fix 2: deleting `from={from}` at new/page.tsx used to
+// leave the whole suite green — TransactionForm.test.tsx passes `from`
+// directly as a prop, and this file never exercised it at all. This test
+// closes that seam by driving an actual save through the PAGE (not the
+// form directly) and asserting the FAB's entire return trip — `from`
+// arriving via the URL, through the page, into the form, out through
+// `parseOrigin`, into `router.push` — still works end to end.
+describe("NewTransactionPage — threads `from` into TransactionForm (Task 4 review round 1, fix 2)", () => {
+  beforeEach(() => {
+    categoriesData.push({
+      id: "cat-1",
+      name: "Groceries",
+      kind: "expense",
+      color_slot: 1,
+      icon: "circle",
+      wallet_id: WALLET_A,
+    });
+  });
+
+  it("returns to the originating wallet after a save when ?from names one", async () => {
+    const ui = await NewTransactionPage({
+      searchParams: Promise.resolve({ from: `wallet:${WALLET_B}` }),
+    });
+    render(ui);
+    await saveAnExpenseThroughThePage();
+
+    expect(push).toHaveBeenCalledWith(`/wallets/${WALLET_B}`);
   });
 });
