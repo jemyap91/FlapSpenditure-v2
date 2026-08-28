@@ -40,9 +40,9 @@ async function signUpAndOnboard(page: Page, walletName = "Everyday"): Promise<st
   await page.getByRole("button", { name: "Create account" }).click();
 
   // signUp redirects to /onboarding (src/server/actions/auth.ts).
-  await expect(page.getByRole("heading", { name: "Add your first account" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Add your first wallet" })).toBeVisible();
   await page.getByLabel("Name").fill(walletName);
-  await page.getByRole("button", { name: "Create account" }).click();
+  await page.getByRole("button", { name: "Create wallet" }).click();
 
   // createWallet redirects to /, which (app)/layout.tsx now lets through
   // because the wallet count is no longer zero.

@@ -45,9 +45,9 @@ async function signUpAndOnboard(page: Page, wallet: string): Promise<string> {
   await page.getByLabel("Password").fill(PASSWORD);
   await page.getByRole("button", { name: "Create account" }).click();
 
-  await expect(page.getByRole("heading", { name: "Add your first account" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Add your first wallet" })).toBeVisible();
   await page.getByLabel("Name").fill(wallet);
-  await page.getByRole("button", { name: "Create account" }).click();
+  await page.getByRole("button", { name: "Create wallet" }).click();
 
   await expect(page).toHaveURL("/");
   return user;
