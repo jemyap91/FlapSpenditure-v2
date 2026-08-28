@@ -224,8 +224,30 @@ export default async function WalletDetailPage({
 
   const showAttribution = anyRowShared(joined, memberRows);
 
+  // Whether the FAB below renders at all — hoisted so the padding that
+  // reserves space for it (this const's other use) can never drift out of
+  // sync with the FAB's own render condition.
+  const hasFab = !walletRow.archived_at;
+
   return (
-    <div className="mx-auto max-w-2xl p-6">
+    <div
+      className={`mx-auto max-w-2xl p-6 ${
+        // `WalletFab.tsx`'s doc comment: `fixed bottom-24 right-6 h-14 w-14
+        // … md:bottom-6`. On mobile that occupies the viewport band from
+        // 96px to 96+56=152px above the bottom edge; on desktop, 24px to
+        // 24+56=80px. Neither `<main>`'s `pb-20 md:pb-0`
+        // ((app)/layout.tsx) nor this container's own `p-6` reserves any
+        // of that band, so the last row of a long transaction list scrolls
+        // in underneath the FAB with nothing left to scroll past it
+        // (review-caught: final whole-branch review, Fix 1). `pb-44`
+        // (176px) and `md:pb-24` (96px) clear both bands with a margin,
+        // applied ONLY when the FAB actually renders — unconditionally
+        // padding every wallet, including archived ones (no FAB at all,
+        // see the guard below), would add dead scroll space that fixes
+        // nothing there.
+        hasFab ? "pb-44 md:pb-24" : ""
+      }`}
+    >
       <h1 className="text-2xl font-semibold" style={{ color: "var(--ink)" }}>
         {walletRow.name}
       </h1>
@@ -294,7 +316,7 @@ export default async function WalletDetailPage({
           reason alone would be enough to hide the affordance rather than
           offer something that quietly does the wrong thing, with nothing on
           screen to explain why. */}
-      {!walletRow.archived_at && <WalletFab walletId={walletRow.id} walletName={walletRow.name} />}
+      {hasFab && <WalletFab walletId={walletRow.id} walletName={walletRow.name} />}
     </div>
   );
 }

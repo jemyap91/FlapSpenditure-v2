@@ -328,6 +328,76 @@ test.describe("wallets", () => {
 
     await expectNoViolations(page, `/wallets/${walletId} (populated)`);
   });
+
+  /**
+   * Fix 1 (final whole-branch review): `WalletFab` is `fixed bottom-24
+   * right-6 h-14 w-14 … md:bottom-6` (WalletFab.tsx) and, before this fix,
+   * nothing reserved that band inside the scrolling content — a wallet
+   * with enough transactions to overflow the viewport put its last row's
+   * Delete button directly underneath the FAB, unreachable.
+   * `toBeVisible()` cannot catch this: an obscured element still passes
+   * that matcher. This test scrolls to the bottom of a long list and uses
+   * a TRIAL click, which runs Playwright's actionability checks
+   * (including "receives pointer events") without dispatching one — it
+   * fails exactly when something else is on top.
+   *
+   * Mobile-only: the occlusion is specific to the mobile FAB position
+   * (`bottom-24`, clearing the TabBar) versus the desktop one
+   * (`md:bottom-6`, no TabBar — see WalletFab.tsx's own doc comment), and
+   * the desktop project's viewport also has far more vertical room, so the
+   * same transaction count would not even overflow it there.
+   *
+   * 14 transactions, not 26: the brief's own reviewer used 20–26 on a
+   * Pixel 7 (412×839, this project's exact viewport) for a pixel-precise
+   * repro, but this test only needs the list to overflow the viewport AND
+   * put its last row's Delete control inside the reserved band once
+   * scrolled to the bottom — not reproduce those exact coordinates. 14
+   * comfortably overflows 839px (confirmed while writing this test: the
+   * assertion below fails without the padding fix and passes with it, at
+   * this count) with margin to spare, without paying for 26 UI-driven
+   * saves. Every row shares one amount ("1") and category ("Groceries") —
+   * this test only needs a long list, not distinguishable rows — and all
+   * go to the one "Everyday" wallet from onboarding (no `wallet=`/`from=`
+   * query params needed: it is already /transactions/new's default with a
+   * single wallet), which is the cheapest path available through this
+   * self-contained spec.
+   */
+  test("the FAB never covers the last row's Delete button on a long list", async ({ page }, testInfo) => {
+    test.skip(
+      testInfo.project.name !== "mobile",
+      "occlusion is specific to the mobile FAB position (WalletFab.tsx: bottom-24 vs md:bottom-6)",
+    );
+
+    await signUpAndOnboard(page, "Everyday");
+
+    for (let i = 0; i < 14; i++) {
+      await page.goto("/transactions/new");
+      await pressAmount(page, "1");
+      await page.getByRole("button", { name: "Groceries" }).click();
+      await page.getByRole("button", { name: "Save", exact: true }).click();
+      await expect(page).toHaveURL("/transactions");
+    }
+
+    await page.goto("/wallets");
+    await page.getByRole("link", { name: "Everyday", exact: true }).click();
+    await expect(page).toHaveURL(/\/wallets\/[0-9a-f-]+$/);
+
+    // Every row shares the same accessible name ("Delete Groceries,
+    // $1.00") on purpose (see this test's own doc comment) — `.last()`
+    // still resolves to the visually last row (bottom of page, DOM order),
+    // which is the one this test targets.
+    const deleteButtons = page.getByRole("button", { name: /^Delete Groceries, / });
+    await expect(deleteButtons).toHaveCount(14);
+    const lastDelete = deleteButtons.last();
+    await lastDelete.scrollIntoViewIfNeeded();
+
+    // A trial click runs every actionability check (visible, stable,
+    // receives pointer events, enabled) WITHOUT dispatching the click —
+    // it fails on occlusion the same way a real tap would, which
+    // `toBeVisible()` cannot: an obscured element is still "visible" to
+    // that matcher.
+    await lastDelete.click({ trial: true, timeout: 5000 });
+  });
 });
 
 /**
