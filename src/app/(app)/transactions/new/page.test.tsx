@@ -124,6 +124,18 @@ describe("NewTransactionPage — ?wallet preselects, but only from the caller's 
   });
 
   it("falls back to the default wallet when ?wallet names one the caller cannot see, rather than erroring", async () => {
+    // Needed so the state-driven assertion below has something to click —
+    // scoped to THIS test only (not the describe block's `beforeEach`),
+    // so the other three tests here are untouched.
+    categoriesData.push({
+      id: "cat-1",
+      name: "Groceries",
+      kind: "expense",
+      color_slot: 1,
+      icon: "circle",
+      wallet_id: WALLET_A,
+    });
+
     const ui = await NewTransactionPage({
       searchParams: Promise.resolve({ wallet: NOT_MINE }),
     });
@@ -132,7 +144,39 @@ describe("NewTransactionPage — ?wallet preselects, but only from the caller's 
     // Silently falls back to the first wallet in the caller's own
     // RLS-scoped list — never a distinguishable error, and never the
     // supplied (invisible) wallet.
+    //
+    // This `<select>` assertion alone does NOT discriminate between the
+    // real membership check and a mutant that trusts `?wallet` outright
+    // (`wallets.find((w) => w.id === wallet)?.id` weakened to just
+    // `wallet`): React renders `<select value=…>` by marking the matching
+    // `<option>` selected, and when NOTHING matches (as here, under both
+    // implementations — NOT_MINE names no `<option>` either way) the DOM
+    // itself auto-selects the first option, which happens to be WALLET_A.
+    // That is the browser's fallback rendering the mutant's WRONG state
+    // (`defaultWalletId = NOT_MINE`) exactly as if it were the app's own
+    // correct fallback (`defaultWalletId = WALLET_A`) — kept here anyway
+    // (not weakened) because it does confirm the fallback UX, just not the
+    // security property.
     expect(screen.getByRole("combobox", { name: "Wallet" })).toHaveValue(WALLET_A);
+
+    // The state-driven assertion: `walletCategories` (TransactionForm) is
+    // derived by filtering on the RESOLVED wallet id, not the `<select>`'s
+    // rendered value — so it reflects the app's real decision even where
+    // the DOM's own fallback would paper over a wrong one. Under the real
+    // membership check this resolves to WALLET_A, whose "Groceries"
+    // category (seeded above) renders; under the mutant it resolves to
+    // NOT_MINE, whose category list is empty, and this button does not
+    // exist.
+    expect(screen.getByRole("button", { name: "Groceries" })).toBeInTheDocument();
+
+    // Belt-and-suspenders on the same property: drive an actual save and
+    // assert the `wallet_id` `createTransaction` receives is WALLET_A, not
+    // the caller-supplied NOT_MINE — the field the server action itself
+    // re-validates membership on (src/server/actions/transactions.ts).
+    await saveAnExpenseThroughThePage();
+    expect(createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ wallet_id: WALLET_A }),
+    );
   });
 
   it("falls back to the default wallet when ?wallet is not a uuid at all", async () => {
