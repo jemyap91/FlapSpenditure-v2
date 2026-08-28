@@ -531,6 +531,17 @@ function AddBudgetForm({
   const amountStatusId = useId();
   const headingId = useId(); // fix round Minor: was a hardcoded id; every other heading in this file uses useId().
 
+  // Controlled wallet selection (Task 5, controller addendum): seeded with
+  // every primaryWallets id, preserving today's all-checked default exactly.
+  // A `defaultChecked` uncontrolled input can't support a select-all toggle,
+  // which must both SET every box and KNOW whether all are currently
+  // checked to choose its own label.
+  const [selectedWalletIds, setSelectedWalletIds] = useState<Set<string>>(
+    () => new Set(primaryWallets.map((w) => w.id)),
+  );
+  const allWalletsSelected =
+    primaryWallets.length > 0 && primaryWallets.every((w) => selectedWalletIds.has(w.id));
+
   const [formState, formAction, saving] = useActionState<BudgetState, FormData>(
     setBudget.bind(null, categoryKey),
     {},
@@ -569,10 +580,33 @@ function AddBudgetForm({
           </select>
         </label>
 
-        <fieldset>
+        <fieldset className="relative">
           <legend className="text-xs" style={{ color: "var(--ink-2)" }}>
             Wallets this budget covers
           </legend>
+          {/* Absolutely positioned against the fieldset rather than a sibling
+              of the legend in normal flow: `legend` must stay the fieldset's
+              only direct-child legend for its accessible name to resolve
+              (browsers only look at direct children per the HTML-AAM
+              fieldset/legend algorithm), which rules out wrapping legend and
+              button together in a flex row. Rendered only when there is
+              something to select — an empty `primaryWallets` would make
+              `.every()` vacuously true and mislabel this "Clear all" against
+              nothing (controller addendum). */}
+          {primaryWallets.length > 0 && (
+            <button
+              type="button"
+              onClick={() =>
+                setSelectedWalletIds(
+                  allWalletsSelected ? new Set() : new Set(primaryWallets.map((w) => w.id)),
+                )
+              }
+              className={`absolute right-0 top-0 text-xs underline ${FOCUS_RING}`}
+              style={{ color: "var(--cat-1)" }}
+            >
+              {allWalletsSelected ? "Clear all" : "Select all"}
+            </button>
+          )}
           <div className="mt-1 flex flex-col gap-1">
             {primaryWallets.map((w) => (
               <label key={w.id} className="flex items-center gap-2 text-sm" style={{ color: "var(--ink)" }}>
@@ -580,8 +614,27 @@ function AddBudgetForm({
                     picker's own default (controller addendum §4) — and a
                     caller can uncheck down to a subset. Submitting zero is
                     refused server-side (budgetInput's `.min(1)`), so no
-                    client-side guard is duplicated here. */}
-                <input type="checkbox" name="walletIds" value={w.id} defaultChecked />
+                    client-side guard is duplicated here. Controlled (not
+                    `defaultChecked`) so the Select all / Clear all toggle
+                    above can both set every box and know whether all are
+                    checked. */}
+                <input
+                  type="checkbox"
+                  name="walletIds"
+                  value={w.id}
+                  checked={selectedWalletIds.has(w.id)}
+                  onChange={(e) =>
+                    setSelectedWalletIds((prev) => {
+                      const next = new Set(prev);
+                      if (e.target.checked) {
+                        next.add(w.id);
+                      } else {
+                        next.delete(w.id);
+                      }
+                      return next;
+                    })
+                  }
+                />
                 {w.name}
               </label>
             ))}

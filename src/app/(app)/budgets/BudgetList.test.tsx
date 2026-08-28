@@ -395,6 +395,67 @@ describe("BudgetList — adding a new budget", () => {
   });
 });
 
+describe("BudgetList — select all / clear all in the wallet picker", () => {
+  const wallets = [
+    { id: "w1", name: "Everyday", currency_code: "SGD" },
+    { id: "w2", name: "Savings", currency_code: "SGD" },
+  ];
+  const categories = [{ key: "groceries", label: "Groceries" }];
+
+  it("selects every wallet when pressed with some unchecked", async () => {
+    const user = userEvent.setup();
+    render(<BudgetList rows={[]} wallets={wallets} primaryCurrency="SGD" categories={categories} />);
+    await user.click(screen.getByRole("checkbox", { name: "Savings" })); // uncheck Savings
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    expect(screen.getByRole("checkbox", { name: "Everyday" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Savings" })).toBeChecked();
+  });
+
+  it("clears every wallet when pressed with all checked", async () => {
+    const user = userEvent.setup();
+    render(<BudgetList rows={[]} wallets={wallets} primaryCurrency="SGD" categories={categories} />);
+    await user.click(screen.getByRole("button", { name: "Clear all" }));
+    expect(screen.getByRole("checkbox", { name: "Everyday" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Savings" })).not.toBeChecked();
+  });
+
+  it("reads Select all when one or more wallets are unchecked", async () => {
+    const user = userEvent.setup();
+    render(<BudgetList rows={[]} wallets={wallets} primaryCurrency="SGD" categories={categories} />);
+    await user.click(screen.getByRole("checkbox", { name: "Savings" })); // uncheck Savings
+    expect(screen.getByRole("button", { name: "Select all" })).toBeInTheDocument();
+  });
+
+  it("flips the label back to Select all after unchecking one of every wallet", async () => {
+    const user = userEvent.setup();
+    render(<BudgetList rows={[]} wallets={wallets} primaryCurrency="SGD" categories={categories} />);
+    // Starts all-checked, so the button starts as "Clear all".
+    expect(screen.getByRole("button", { name: "Clear all" })).toBeInTheDocument();
+    await user.click(screen.getByRole("checkbox", { name: "Everyday" })); // uncheck Everyday
+    expect(screen.getByRole("button", { name: "Select all" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear all" })).not.toBeInTheDocument();
+  });
+
+  it("renders no select-all button when there are no primary-currency wallets", () => {
+    render(<BudgetList rows={[]} />);
+    expect(screen.queryByRole("button", { name: "Select all" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear all" })).not.toBeInTheDocument();
+  });
+
+  it("contributes one walletIds value per wallet to FormData after Select all", async () => {
+    const user = userEvent.setup();
+    render(<BudgetList rows={[]} wallets={wallets} primaryCurrency="SGD" categories={categories} />);
+    await user.click(screen.getByRole("checkbox", { name: "Savings" })); // uncheck Savings
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    await user.selectOptions(screen.getByLabelText("Category"), "groceries");
+    await user.type(screen.getByLabelText("Budget amount"), "600");
+    await user.click(screen.getByRole("button", { name: "Save budget" }));
+    expect(setBudget).toHaveBeenCalled();
+    const formData = vi.mocked(setBudget).mock.calls[0]![2] as FormData;
+    expect(formData.getAll("walletIds")).toEqual(["w1", "w2"]);
+  });
+});
+
 describe("BudgetList — coverage disclosures", () => {
   it("discloses, in text, when a budget does not cover every wallet in its own currency", () => {
     render(
