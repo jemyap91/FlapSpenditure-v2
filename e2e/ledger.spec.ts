@@ -297,7 +297,7 @@ test.describe("wallets", () => {
     // clicks (Task 3 of the wallet-detail plan), not page.goto straight to
     // the detail URL.
     await page.goto("/wallets");
-    await page.getByRole("link", { name: "Everyday" }).click();
+    await page.getByRole("link", { name: "Everyday", exact: true }).click();
     await expect(page).toHaveURL(/\/wallets\/[0-9a-f-]+$/);
     const walletId = new URL(page.url()).pathname.replace("/wallets/", "");
 
@@ -306,9 +306,13 @@ test.describe("wallets", () => {
     await expect(page.getByText(`${MINUS}$33.00`)).toHaveCount(0);
 
     // The FAB's accessible name is pinned by the controller addendum:
-    // "Add a transaction to <wallet name>" (WalletFab.tsx) — matched exact,
-    // which is what Playwright (and RTL) both do by default for role names.
-    await page.getByRole("link", { name: "Add a transaction to Everyday" }).click();
+    // "Add a transaction to <wallet name>" (WalletFab.tsx). `exact: true` is
+    // required and is NOT the default here: Playwright's role-name matcher is
+    // case-insensitive SUBSTRING unless told otherwise (see the `name` option
+    // in playwright-core's types.d.ts). Testing Library's getByRole is the
+    // opposite — exact string equality — and the two are easy to conflate,
+    // because the call site and the option name are identical in both.
+    await page.getByRole("link", { name: "Add a transaction to Everyday", exact: true }).click();
     await pressAmount(page, "9.99");
     await page.getByRole("button", { name: "Groceries" }).click();
     await page.getByRole("button", { name: "Save", exact: true }).click();
