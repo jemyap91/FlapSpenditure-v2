@@ -56,3 +56,7 @@ yarn-error.log*
 
 # subagent-driven-development scratch
 .superpowers/
+
+# Region-migration dumps. REAL production data: auth.users rows including
+# encrypted_password hashes. This repo is public — never commit these.
+migration-dump/
