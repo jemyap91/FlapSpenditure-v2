@@ -66,17 +66,30 @@ describe("WalletList", () => {
     expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
   });
 
+  /**
+   * Task 3 of the wallet-detail plan: the wallet's NAME becomes the link
+   * into its detail screen (Members and Archive stay put on the card). The
+   * link's accessible name is the wallet's name alone — pinned by that
+   * plan's controller addendum, since the final task in the plan targets
+   * this exact accessible name with a Playwright selector.
+   */
+  it("links the wallet's name to its detail screen", () => {
+    render(<WalletList currentUserId={ME} wallets={[wallet("a", { name: "Everyday" })]} />);
+    const link = screen.getByRole("link", { name: "Everyday" });
+    expect(link).toHaveAttribute("href", "/wallets/a");
+  });
+
   it("disables Archive on the only wallet and says why", () => {
     render(<WalletList currentUserId={ME} wallets={[wallet("a", { name: "Everyday" })]} />);
     expect(screen.getByRole("button", { name: /Archive Everyday/ })).toBeDisabled();
-    expect(screen.getByText(/need at least one account/i)).toBeInTheDocument();
+    expect(screen.getByText(/need at least one wallet/i)).toBeInTheDocument();
   });
 
   it("enables Archive once a second wallet exists", () => {
     render(<WalletList currentUserId={ME} wallets={[wallet("a", { name: "Everyday" }), wallet("b", { name: "Savings" })]} />);
     expect(screen.getByRole("button", { name: /Archive Everyday/ })).toBeEnabled();
     expect(screen.getByRole("button", { name: /Archive Savings/ })).toBeEnabled();
-    expect(screen.queryByText(/need at least one account/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/need at least one wallet/i)).not.toBeInTheDocument();
   });
 
   it("archives the wallet whose button was pressed, not the first one", async () => {
@@ -91,7 +104,7 @@ describe("WalletList", () => {
     // message would not survive to the user: Next replaces errors
     // forwarded from the server with a generic digest in production
     // (node_modules/next/dist/docs/01-app/03-api-reference/
-    // 03-file-conventions/error.md), so "You need at least one account"
+    // 03-file-conventions/error.md), so "You need at least one wallet"
     // would reach the browser as an opaque identifier.
     vi.mocked(archiveWallet).mockResolvedValue({ error: "Could not archive wallet" });
     const user = userEvent.setup();
@@ -102,7 +115,7 @@ describe("WalletList", () => {
 
   it("renders the empty state rather than an empty list", () => {
     render(<WalletList currentUserId={ME} wallets={[]} />);
-    expect(screen.getByText(/no accounts yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/no wallets yet/i)).toBeInTheDocument();
   });
 
   /**
@@ -150,7 +163,7 @@ describe("WalletList", () => {
       />,
     );
     expect(screen.getByRole("button", { name: /Archive Everyday/ })).toBeDisabled();
-    expect(screen.getByText(/need at least one account/i)).toBeInTheDocument();
+    expect(screen.getByText(/need at least one wallet/i)).toBeInTheDocument();
   });
 
   it("enables Archive once the user owns a second wallet, shared wallets aside", () => {
@@ -166,7 +179,7 @@ describe("WalletList", () => {
     );
     expect(screen.getByRole("button", { name: /Archive Everyday/ })).toBeEnabled();
     expect(screen.getByRole("button", { name: /Archive Savings/ })).toBeEnabled();
-    expect(screen.queryByText(/need at least one account/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/need at least one wallet/i)).not.toBeInTheDocument();
   });
 });
 
@@ -222,13 +235,13 @@ describe("WalletList — search", () => {
 
   it("stays out of the way until there are enough wallets to need it", () => {
     render(<WalletList wallets={many.slice(0, 2)} currentUserId={ME} />);
-    expect(screen.queryByLabelText(/Search accounts/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Search wallets/i)).not.toBeInTheDocument();
   });
 
   it("filters by wallet name, case-insensitively", async () => {
     const user = userEvent.setup();
     render(<WalletList wallets={many} currentUserId={ME} />);
-    await user.type(screen.getByLabelText(/Search accounts/i), "cItI");
+    await user.type(screen.getByLabelText(/Search wallets/i), "cItI");
     expect(screen.getByText("Citi Rewards")).toBeInTheDocument();
     expect(screen.queryByText("Everyday")).not.toBeInTheDocument();
   });
@@ -236,8 +249,8 @@ describe("WalletList — search", () => {
   it("says so when nothing matches, rather than rendering an empty list", async () => {
     const user = userEvent.setup();
     render(<WalletList wallets={many} currentUserId={ME} />);
-    await user.type(screen.getByLabelText(/Search accounts/i), "zzzz");
-    expect(screen.getByText(/No accounts match/i)).toBeInTheDocument();
+    await user.type(screen.getByLabelText(/Search wallets/i), "zzzz");
+    expect(screen.getByText(/No wallets match/i)).toBeInTheDocument();
   });
 
   it("does not let a filtered-down view re-enable Archive on the last owned wallet", async () => {
@@ -246,7 +259,7 @@ describe("WalletList — search", () => {
     // only one.
     const user = userEvent.setup();
     render(<WalletList wallets={many} currentUserId={ME} />);
-    await user.type(screen.getByLabelText(/Search accounts/i), "Travel");
+    await user.type(screen.getByLabelText(/Search wallets/i), "Travel");
     expect(screen.getByRole("button", { name: "Archive Travel" })).toBeEnabled();
   });
 });

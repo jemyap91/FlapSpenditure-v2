@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import Link from "next/link";
 import { Landmark, CreditCard, ChevronRight } from "lucide-react";
 import { archiveWallet } from "@/server/actions/wallets";
 import { formatMoney } from "@/lib/money";
@@ -57,8 +58,8 @@ export function WalletList({
    *
    * These previously lived in a separate block BELOW the whole list, which
    * detached them from their wallets: two wallets produced two identical
-   * "MEMBERS" headings in a row with nothing visible tying either to an
-   * account. Containment is what fixes that — a members list inside its
+   * "MEMBERS" headings in a row with nothing visible tying either to a
+   * wallet. Containment is what fixes that — a members list inside its
    * wallet's card cannot be misread as belonging to another.
    *
    * Passed as ReactNode rather than data because the page (a Server
@@ -91,12 +92,12 @@ export function WalletList({
   // owned wallet, and only learned it was refused after clicking.
   // Counted over EVERY wallet, never the filtered view: search is a view
   // concern, and hiding rows must not make the remaining one look like the
-  // only account someone owns.
+  // only wallet someone owns.
   const ownedCount = wallets.filter((w) => w.owner_id === currentUserId).length;
   const isLastWallet = ownedCount === 1;
 
   // The search box earns its space only once scanning gets hard. With two
-  // or three accounts the list IS the search result.
+  // or three wallets the list IS the search result.
   const showSearch = wallets.length > 3;
   const q = query.trim().toLowerCase();
   const visible = q ? wallets.filter((w) => w.name.toLowerCase().includes(q)) : wallets;
@@ -118,7 +119,7 @@ export function WalletList({
   if (!wallets.length) {
     return (
       <p className="py-8 text-sm" style={{ color: "var(--ink-2)" }}>
-        No accounts yet.
+        No wallets yet.
       </p>
     );
   }
@@ -137,12 +138,12 @@ export function WalletList({
       {showSearch && (
         <label className="mb-3 flex flex-col gap-1">
           <span className="text-sm" style={{ color: "var(--ink-2)" }}>
-            Search accounts
+            Search wallets
           </span>
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Account name"
+            placeholder="Wallet name"
             autoComplete="off"
             className={`rounded-md border px-3 py-2 ${FOCUS_RING}`}
             style={{ borderColor: "var(--ink-2)", background: "var(--surface)", color: "var(--ink)" }}
@@ -152,7 +153,7 @@ export function WalletList({
 
       {showSearch && visible.length === 0 && (
         <p className="py-6 text-sm" style={{ color: "var(--ink-2)" }}>
-          No accounts match “{query.trim()}”.
+          No wallets match “{query.trim()}”.
         </p>
       )}
 
@@ -174,9 +175,25 @@ export function WalletList({
                   beside it are what actually identify the wallet. */}
               <Icon aria-hidden size={18} style={{ color: slotVar(w.color_slot) }} className="shrink-0" />
               <span className="min-w-0 flex-1">
-                <span className="block truncate" style={{ color: "var(--ink)" }}>
+                {/* The wallet's NAME is the link into its detail screen
+                    (Task 3 of the wallet-detail plan) — Members and Archive
+                    stay right here on the card, unmoved, per that task's
+                    brief. `block truncate` preserved on the link itself so
+                    a long name still clips with an ellipsis instead of
+                    wrapping the row, exactly as the plain span did before.
+                    The accessible name is the wallet's name alone: nothing
+                    inside this anchor besides `w.name`'s text node, so no
+                    "Card · USD" leaks into what a screen reader announces
+                    as the link's name (the controller addendum pins this
+                    exact accessible name — the wallet's own name, nothing
+                    more). */}
+                <Link
+                  href={`/wallets/${w.id}`}
+                  className={`block truncate rounded-sm ${FOCUS_RING}`}
+                  style={{ color: "var(--ink)" }}
+                >
                   {w.name}
-                </span>
+                </Link>
                 <span className="block text-xs" style={{ color: "var(--ink-2)" }}>
                   {w.kind === "card" ? "Card" : "Bank"} · {w.currency_code}
                 </span>
@@ -274,7 +291,7 @@ export function WalletList({
 
       {isLastWallet && (
         <p className="text-xs" style={{ color: "var(--ink-2)" }}>
-          You need at least one account, so this one can’t be archived. Add another first.
+          You need at least one wallet, so this one can’t be archived. Add another first.
         </p>
       )}
     </div>

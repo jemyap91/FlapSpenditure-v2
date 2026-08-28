@@ -47,7 +47,7 @@ function firstIssueField(error: z.ZodError): WalletField | undefined {
  * This split exists because the two entry points need DIFFERENT
  * navigation: onboarding must leave /onboarding or the user is stranded on
  * a form they have already completed, while /wallets must stay put or
- * adding a second account throws the user back to the dashboard. Taking a
+ * adding a second wallet throws the user back to the dashboard. Taking a
  * redirect target as a parameter was the obvious alternative and is worse:
  * a bound Server Function argument is serialized to the client and can be
  * tampered with, so it would put an open-redirect surface behind a
@@ -253,7 +253,7 @@ export async function archiveWallet(id: string): Promise<WalletState> {
   // refusing to permitting, which is the wrong way for a guard to fail.
   if (countError) return { error: "Could not archive wallet. Please try again." };
   if ((count ?? 0) <= 1) {
-    return { error: "You need at least one account. Add another before archiving this one." };
+    return { error: "You need at least one wallet. Add another before archiving this one." };
   }
 
   // The affected-row count is checked, not assumed — `.select("id")` makes
@@ -282,7 +282,7 @@ export async function archiveWallet(id: string): Promise<WalletState> {
   // distinguishes "this wallet is not yours" from "this wallet does not
   // exist" that a caller has any business being told apart, and
   // `archiveCategory` already answers the identical question this way.
-  if (!data || data.length === 0) return { error: "Account not found" };
+  if (!data || data.length === 0) return { error: "Wallet not found" };
 
   revalidatePath("/", "layout");
   revalidatePath("/wallets");

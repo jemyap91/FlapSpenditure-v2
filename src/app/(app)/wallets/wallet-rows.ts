@@ -54,16 +54,16 @@ export function mergeWalletBalances(
 }
 
 /**
- * Which currency the "Add an account" form should start on.
+ * Which currency the "Add a wallet" form should start on.
  *
- * Almost nobody's second account is in a different currency from their
- * first, so the person's OWN accounts are a better default than a constant
+ * Almost nobody's second wallet is in a different currency from their
+ * first, so the person's OWN wallets are a better default than a constant
  * — a hardcoded "USD" made someone with two SGD wallets re-pick SGD every
  * time. Derived rather than stored, so it stays right on its own if their
  * mix changes; there is no setting to keep in sync.
  *
  * `fallback` is the profile's `base_currency`, used at onboarding when
- * there are no accounts yet to learn from.
+ * there are no wallets yet to learn from.
  *
  * A code the form cannot offer is ignored: `CURRENCY_CODES` is a strict
  * subset of what the column allows, and a `<select>` handed a value with no

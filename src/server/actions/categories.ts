@@ -86,7 +86,7 @@ export async function createCategory(raw: unknown): Promise<CategoryResult> {
     .eq("wallet_id", wallet_id)
     .eq("user_id", user.id)
     .maybeSingle();
-  if (!membership) return { error: "You do not have access to that account." };
+  if (!membership) return { error: "You do not have access to that wallet." };
 
   // Colour slots spread within the WALLET now, so two members of one wallet
   // never collide, and two wallets never constrain each other.

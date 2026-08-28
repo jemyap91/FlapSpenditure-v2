@@ -40,9 +40,9 @@ async function signUpAndOnboard(page: Page, walletName = "Everyday"): Promise<st
   await page.getByRole("button", { name: "Create account" }).click();
 
   // signUp redirects to /onboarding (src/server/actions/auth.ts).
-  await expect(page.getByRole("heading", { name: "Add your first account" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Add your first wallet" })).toBeVisible();
   await page.getByLabel("Name").fill(walletName);
-  await page.getByRole("button", { name: "Create account" }).click();
+  await page.getByRole("button", { name: "Create wallet" }).click();
 
   // createWallet redirects to /, which (app)/layout.tsx now lets through
   // because the wallet count is no longer zero.
@@ -165,7 +165,7 @@ test.describe("ledger", () => {
 async function addWallet(page: Page, name: string) {
   await page.goto("/wallets");
   await page.getByLabel("Name").fill(name);
-  await page.getByRole("button", { name: "Add account" }).click();
+  await page.getByRole("button", { name: "Add wallet" }).click();
   await expect(page.getByText(name)).toBeVisible();
 }
 
@@ -182,7 +182,7 @@ test.describe("wallets", () => {
     await expect(page.getByText("$0.00")).toBeVisible();
 
     await expect(page.getByRole("button", { name: "Archive Everyday" })).toBeDisabled();
-    await expect(page.getByText(/need at least one account/i)).toBeVisible();
+    await expect(page.getByText(/need at least one wallet/i)).toBeVisible();
   });
 
   test("refuses to archive the last wallet when a stale tab still offers it", async ({ page }) => {
@@ -192,7 +192,7 @@ test.describe("wallets", () => {
     // This tab now renders two wallets, so Archive is enabled on both.
     await expect(page.getByRole("button", { name: "Archive Everyday" })).toBeEnabled();
 
-    // A second tab (same session) archives one, leaving the account count
+    // A second tab (same session) archives one, leaving the wallet count
     // at 1 — but THIS tab does not know that. `revalidatePath` runs on the
     // server; it does not reach into an already-rendered client.
     const otherTab = await page.context().newPage();
@@ -211,7 +211,7 @@ test.describe("wallets", () => {
     await page.getByRole("button", { name: "Archive Everyday" }).click();
 
     // Asserts on the SERVER message's distinctive tail, not on "need at
-    // least one account" — WalletList renders a static hint containing
+    // least one wallet" — WalletList renders a static hint containing
     // that phrase whenever it is showing a lone wallet, so a looser
     // pattern could match text that was already on the page.
     await expect(page.getByText(/Add another before archiving this one/i)).toBeVisible();
@@ -264,6 +264,139 @@ test.describe("wallets", () => {
     await page.getByRole("button", { name: "Undo", exact: true }).click();
     await expect(page.getByText(`${MINUS}$25.00`)).toBeVisible();
     await expect(page.getByText("+$25.00")).toBeVisible();
+  });
+
+  test("clicking a wallet opens its detail page, and its add-transaction button returns you there", async ({
+    page,
+  }) => {
+    await signUpAndOnboard(page, "Everyday");
+    await addWallet(page, "Savings");
+
+    // A distinguishable expense in EACH wallet, so the isolation assertion
+    // below (Everyday's amount shows, Savings' doesn't) can actually tell
+    // them apart. $25.00 is avoided on purpose — the transfer test above
+    // already uses it, and a wallet's own balance (unsigned `formatMoney`,
+    // per WalletList.tsx/[id]/page.tsx) would otherwise print the SAME
+    // digits as a wallet's sole expense, so presence checks below key off
+    // each row's own "Delete <category>, <amount>" button name rather than
+    // the bare amount text.
+    await page.goto("/transactions/new");
+    await pressAmount(page, "18");
+    await page.getByRole("button", { name: "Groceries" }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page).toHaveURL("/transactions");
+
+    await page.goto("/transactions/new");
+    await page.getByLabel("Wallet").selectOption({ label: "Savings" });
+    await pressAmount(page, "33");
+    await page.getByRole("button", { name: "Groceries" }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page).toHaveURL("/transactions");
+
+    // Click the wallet's NAME on /wallets — the real affordance a user
+    // clicks (Task 3 of the wallet-detail plan), not page.goto straight to
+    // the detail URL.
+    await page.goto("/wallets");
+    await page.getByRole("link", { name: "Everyday", exact: true }).click();
+    await expect(page).toHaveURL(/\/wallets\/[0-9a-f-]+$/);
+    const walletId = new URL(page.url()).pathname.replace("/wallets/", "");
+
+    // Isolation: Everyday's own expense renders here; Savings' does not.
+    await expect(page.getByRole("button", { name: `Delete Groceries, ${MINUS}$18.00` })).toBeVisible();
+    await expect(page.getByText(`${MINUS}$33.00`)).toHaveCount(0);
+
+    // The FAB's accessible name is pinned by the controller addendum:
+    // "Add a transaction to <wallet name>" (WalletFab.tsx). `exact: true` is
+    // required and is NOT the default here: Playwright's role-name matcher is
+    // case-insensitive SUBSTRING unless told otherwise (see the `name` option
+    // in playwright-core's types.d.ts). Testing Library's getByRole is the
+    // opposite — exact string equality — and the two are easy to conflate,
+    // because the call site and the option name are identical in both.
+    await page.getByRole("link", { name: "Add a transaction to Everyday", exact: true }).click();
+    await pressAmount(page, "9.99");
+    await page.getByRole("button", { name: "Groceries" }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+
+    // THE load-bearing assertion: saving from this wallet's own FAB returns
+    // you to THIS wallet, not the global /transactions list the plain
+    // add-transaction flow lands on (see the "ledger" describe block's
+    // first test, which asserts that exact URL). A test that only checked
+    // the new row appeared would still pass with this redirect completely
+    // broken.
+    await expect(page).toHaveURL(`/wallets/${walletId}`);
+    await expect(page.getByRole("button", { name: `Delete Groceries, ${MINUS}$9.99` })).toBeVisible();
+
+    await expectNoViolations(page, `/wallets/${walletId} (populated)`);
+  });
+
+  /**
+   * Fix 1 (final whole-branch review): `WalletFab` is `fixed bottom-24
+   * right-6 h-14 w-14 … md:bottom-6` (WalletFab.tsx) and, before this fix,
+   * nothing reserved that band inside the scrolling content — a wallet
+   * with enough transactions to overflow the viewport put its last row's
+   * Delete button directly underneath the FAB, unreachable.
+   * `toBeVisible()` cannot catch this: an obscured element still passes
+   * that matcher. This test scrolls to the bottom of a long list and uses
+   * a TRIAL click, which runs Playwright's actionability checks
+   * (including "receives pointer events") without dispatching one — it
+   * fails exactly when something else is on top.
+   *
+   * Mobile-only: the occlusion is specific to the mobile FAB position
+   * (`bottom-24`, clearing the TabBar) versus the desktop one
+   * (`md:bottom-6`, no TabBar — see WalletFab.tsx's own doc comment), and
+   * the desktop project's viewport also has far more vertical room, so the
+   * same transaction count would not even overflow it there.
+   *
+   * 14 transactions, not 26: the brief's own reviewer used 20–26 on a
+   * Pixel 7 (412×839, this project's exact viewport) for a pixel-precise
+   * repro, but this test only needs the list to overflow the viewport AND
+   * put its last row's Delete control inside the reserved band once
+   * scrolled to the bottom — not reproduce those exact coordinates. 14
+   * comfortably overflows 839px (confirmed while writing this test: the
+   * assertion below fails without the padding fix and passes with it, at
+   * this count) with margin to spare, without paying for 26 UI-driven
+   * saves. Every row shares one amount ("1") and category ("Groceries") —
+   * this test only needs a long list, not distinguishable rows — and all
+   * go to the one "Everyday" wallet from onboarding (no `wallet=`/`from=`
+   * query params needed: it is already /transactions/new's default with a
+   * single wallet), which is the cheapest path available through this
+   * self-contained spec.
+   */
+  test("the FAB never covers the last row's Delete button on a long list", async ({ page }, testInfo) => {
+    test.skip(
+      testInfo.project.name !== "mobile",
+      "occlusion is specific to the mobile FAB position (WalletFab.tsx: bottom-24 vs md:bottom-6)",
+    );
+
+    await signUpAndOnboard(page, "Everyday");
+
+    for (let i = 0; i < 14; i++) {
+      await page.goto("/transactions/new");
+      await pressAmount(page, "1");
+      await page.getByRole("button", { name: "Groceries" }).click();
+      await page.getByRole("button", { name: "Save", exact: true }).click();
+      await expect(page).toHaveURL("/transactions");
+    }
+
+    await page.goto("/wallets");
+    await page.getByRole("link", { name: "Everyday", exact: true }).click();
+    await expect(page).toHaveURL(/\/wallets\/[0-9a-f-]+$/);
+
+    // Every row shares the same accessible name ("Delete Groceries,
+    // $1.00") on purpose (see this test's own doc comment) — `.last()`
+    // still resolves to the visually last row (bottom of page, DOM order),
+    // which is the one this test targets.
+    const deleteButtons = page.getByRole("button", { name: /^Delete Groceries, / });
+    await expect(deleteButtons).toHaveCount(14);
+    const lastDelete = deleteButtons.last();
+    await lastDelete.scrollIntoViewIfNeeded();
+
+    // A trial click runs every actionability check (visible, stable,
+    // receives pointer events, enabled) WITHOUT dispatching the click —
+    // it fails on occlusion the same way a real tap would, which
+    // `toBeVisible()` cannot: an obscured element is still "visible" to
+    // that matcher.
+    await lastDelete.click({ trial: true, timeout: 5000 });
   });
 });
 

@@ -26,7 +26,7 @@ export async function inviteToWallet(
   if (!user) return { error: "Not signed in" };
 
   if (parsed.data.email === (user.email ?? "").toLowerCase()) {
-    return { error: "You are already in this account." };
+    return { error: "You are already in this wallet." };
   }
 
   const { error } = await supabase.from("wallet_invites").insert({
@@ -46,7 +46,7 @@ export async function inviteToWallet(
     // about whether that address has an account. Compare `invites_owner_insert`
     // refusing a non-owner, which must stay generic.
     if (error.code === "23505") {
-      return { error: "There is already a pending invitation to that address for this account." };
+      return { error: "There is already a pending invitation to that address for this wallet." };
     }
     return { error: "Could not send that invitation. Please try again." };
   }
@@ -83,7 +83,7 @@ export async function removeMember(walletId: string, userId: string): Promise<In
   // would lock them out of a wallet they still own.
   const { data: wallet } = await supabase
     .from("wallets").select("owner_id").eq("id", walletId).maybeSingle();
-  if (!wallet || wallet.owner_id !== user.id) return { error: "Only the account owner can do that." };
+  if (!wallet || wallet.owner_id !== user.id) return { error: "Only the wallet owner can do that." };
   // Postgres returns owner_id already lower-cased, but userId arrives from
   // the client and is never normalised on the way in — a bare `===` here
   // would let an uppercased copy of the owner's own id slip past this

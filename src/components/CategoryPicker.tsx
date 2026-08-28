@@ -83,7 +83,7 @@ export function CategoryPicker({
     // just-created category never renders twice once the prop does catch
     // up, and filtered by `kind` so a category created while a different
     // kind was selected doesn't leak into this kind's list.
-    // `walletId` is checked as well as `kind`: TransactionForm's Account
+    // `walletId` is checked as well as `kind`: TransactionForm's Wallet
     // chip changes `walletId` on this SAME mounted picker, and `created`
     // survives that change (there is no `key` remounting it). Without this
     // filter a category inline-created under wallet A stayed listed after

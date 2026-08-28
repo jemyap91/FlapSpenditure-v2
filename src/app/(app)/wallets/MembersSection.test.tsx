@@ -22,7 +22,7 @@ beforeEach(() => {
 });
 
 describe("MembersSection", () => {
-  it("marks who owns the account", () => {
+  it("marks who owns the wallet", () => {
     render(<MembersSection walletId="w1" members={members} pendingInvites={[]} isOwner />);
     expect(screen.getByText("Alex")).toBeInTheDocument();
     expect(screen.getByText("Owner")).toBeInTheDocument();
@@ -47,11 +47,11 @@ describe("MembersSection", () => {
   });
 
   it("surfaces a failure rather than appearing to succeed", async () => {
-    vi.mocked(removeMember).mockResolvedValue({ error: "Only the account owner can do that." });
+    vi.mocked(removeMember).mockResolvedValue({ error: "Only the wallet owner can do that." });
     const user = userEvent.setup();
     render(<MembersSection walletId="w1" members={members} pendingInvites={[]} isOwner />);
     await user.click(screen.getByRole("button", { name: "Remove Sam" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Only the account owner can do that.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Only the wallet owner can do that.");
   });
 });
 

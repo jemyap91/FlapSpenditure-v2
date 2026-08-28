@@ -7,6 +7,7 @@ import { AmountKeypad } from "./AmountKeypad";
 import { CategoryPicker, type Category } from "./CategoryPicker";
 import { createTransaction, createTransfer } from "@/server/actions/transactions";
 import { appendDigit, clampAmountInput, minorUnitFor, parseAmountInput } from "@/lib/money";
+import { parseOrigin } from "@/lib/origin";
 
 type Wallet = { id: string; name: string; currency_code: string };
 type Kind = "expense" | "income" | "transfer";
@@ -87,10 +88,19 @@ export function TransactionForm({
   wallets,
   categories,
   defaultWalletId,
+  from,
 }: {
   wallets: Wallet[];
   categories: Category[];
   defaultWalletId: string;
+  /**
+   * The `?from` search param, threaded down unmodified from the page — an
+   * origin IDENTIFIER (e.g. `wallet:<uuid>`), NOT a path or URL, and
+   * untrusted (it comes straight off the query string). `parseOrigin`
+   * (`@/lib/origin`) is the only thing allowed to turn it into a
+   * navigation target; see the redirect below.
+   */
+  from?: string | null;
 }) {
   const router = useRouter();
   const [kind, setKind] = useState<Kind>("expense");
@@ -217,7 +227,7 @@ export function TransactionForm({
     // ever getting that far: a category chosen under the OLD wallet must
     // not silently carry over to the new one.
     setCategory(null);
-    // The account just changed currency (possibly to a different
+    // The wallet just changed currency (possibly to a different
     // `minorUnit`) — an amount already typed under the OLD currency's
     // precision can be over-precise for the new one (e.g. "1.505" typed
     // against KWD's 3 decimals is invalid for USD's 2). Clamp it, the same
@@ -331,14 +341,24 @@ export function TransactionForm({
         return;
       }
 
-      // /transactions (Task 20) now exists and is where this redirect
-      // lands: it is this app's ledger review screen, the save just
-      // recorded a row in it, and (unlike "/", still Task 14's dashboard
-      // placeholder pending Task 21/22) navigating there gives the user
-      // real, immediate confirmation their save worked — the new row is
-      // visible at the top of today's group. This was previously "/" only
-      // because /transactions didn't exist yet (see this task's report).
-      router.push("/transactions");
+      // Task 4 (wallet-detail plan): this used to be a hardcoded
+      // router.push("/transactions") — /transactions (Task 20) is this
+      // app's ledger review screen, and navigating there gave the user
+      // real, immediate confirmation their save worked. Now that a wallet's
+      // own detail screen can also launch this form (its FAB), the user
+      // should land back where they came from instead of always being
+      // dumped on the global list.
+      //
+      // `parseOrigin` (@/lib/origin) is the ONLY thing that may turn `from`
+      // into a navigation target — it validates the shape, matches a known
+      // origin kind, and BUILDS the path itself; it never returns its
+      // input. `from` is user-supplied (a query param), so passing it to
+      // router.push directly, or reimplementing this parsing here, would
+      // reopen the exact open-redirect this function exists to close.
+      // Absent or unrecognised `from` (including no `from` at all, or an
+      // attacker-supplied absolute URL) falls back to "/transactions" —
+      // the same destination this always used, unchanged.
+      router.push(parseOrigin(from));
     });
   }
 
@@ -440,14 +460,14 @@ export function TransactionForm({
         )}
         <label className="flex items-center gap-1 text-sm" style={{ color: "var(--ink-2)" }}>
           {/* VISIBLE for a transfer. These were sr-only, so a screen reader
-              announced "From account"/"To account" while a sighted user saw
+              announced "From wallet"/"To wallet" while a sighted user saw
               two identical dropdowns side by side with nothing to tell them
               apart — and on a transfer, choosing them the wrong way round
               sends money in the wrong direction. Left sr-only for a
               non-transfer, where there is only one select and no ambiguity
               to resolve. */}
           <span className={kind === "transfer" ? "text-sm" : "sr-only"} style={{ color: "var(--ink-2)" }}>
-            {kind === "transfer" ? "From" : "Account"}
+            {kind === "transfer" ? "From" : "Wallet"}
           </span>
           <select
             value={walletId}
@@ -567,7 +587,7 @@ export function TransactionForm({
         exact height TabBar reserves via `<main>`'s own `pb-20` in
         src/app/(app)/layout.tsx — so Save sits flush above TabBar, never
         under or over it) above the viewport bottom regardless of how tall
-        the category list grows, on this account or a future one with many
+        the category list grows, on this wallet or a future one with many
         more categories. `md:bottom-0`: no TabBar exists at that
         breakpoint, matching `pb-20 md:pb-0`'s own breakpoint exactly.
       */}

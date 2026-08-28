@@ -73,7 +73,7 @@ export default async function CategoriesPage({
       </h1>
       {/* Plain links, not a <select>: this is a Server Component and the
           selection is a URL, so it needs no client JS and is shareable. */}
-      <nav aria-label="Choose account" className="mb-6 flex flex-wrap gap-2">
+      <nav aria-label="Choose wallet" className="mb-6 flex flex-wrap gap-2">
         {wallets.map((w) => (
           <Link
             key={w.id}

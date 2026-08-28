@@ -224,9 +224,23 @@ export function TransactionList({
   // "solo wallet" default this page.tsx computes for a wallet with no
   // co-members.
   showAttribution = false,
+  // Both default to /transactions' own original copy, so every existing
+  // caller/test that doesn't pass these keeps rendering exactly as before.
+  // Task 3 (wallets/[id]/page.tsx) is the first caller to override them —
+  // that screen is scoped to one wallet, so its accessible name and empty
+  // state say so ("Transactions in <wallet name>" /
+  // "No transactions in this wallet yet."), pinned by the wallet-detail
+  // plan's controller addendum. Overridable here rather than forked into a
+  // second component, which is exactly the reuse this task's brief asks
+  // for: the money formatting, transfer labelling, and undo-based delete
+  // below are shared unmodified.
+  listLabel = "Transaction list",
+  emptyMessage = "No transactions yet. Add your first one to get started.",
 }: {
   rows: Row[];
   showAttribution?: boolean;
+  listLabel?: string;
+  emptyMessage?: string;
 }) {
   const router = useRouter();
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -348,10 +362,22 @@ export function TransactionList({
   const undoPending = toast?.kind === "undo" && pendingIds.has(toast.id);
 
   return (
-    <div ref={listRef} tabIndex={-1} aria-label="Transaction list" className="focus:outline-none">
+    <div
+      ref={listRef}
+      tabIndex={-1}
+      // `role="region"` (not just `aria-label` on a bare div, which a
+      // generic/no-role element does not reliably expose an accessible name
+      // FOR) is what makes this a landmark a screen-reader user can jump to
+      // and a `getByRole("region", { name: ... })` query can find — the
+      // wallet-detail plan's controller addendum pins the exact name this
+      // must carry per screen.
+      role="region"
+      aria-label={listLabel}
+      className="focus:outline-none"
+    >
       {rows.length === 0 ? (
         <p className="p-8 text-center text-sm" style={{ color: "var(--ink-2)" }}>
-          No transactions yet. Add your first one to get started.
+          {emptyMessage}
         </p>
       ) : (
         Object.entries(byDay).map(([day, list]) => (

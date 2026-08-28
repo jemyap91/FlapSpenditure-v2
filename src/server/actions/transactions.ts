@@ -84,8 +84,8 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
   //
   // Task 17's decision (this check was carried from Task 16, which flagged
   // it and deferred the call): an archived wallet is rejected here exactly
-  // like a nonexistent one, with the identical "Account not found" message
-  // rather than a distinct "this account is archived" — archiving is meant
+  // like a nonexistent one, with the identical "Wallet not found" message
+  // rather than a distinct "this wallet is archived" — archiving is meant
   // to remove a wallet from every place a NEW transaction could reference
   // it (mirroring wallets.ts's own doc comment: a wallets-management screen
   // is expected to stop offering an archived wallet as a destination), and
@@ -101,7 +101,7 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
     .select("currency_code, archived_at")
     .eq("id", wallet_id)
     .single();
-  if (!wallet || wallet.archived_at) return { error: "Account not found" };
+  if (!wallet || wallet.archived_at) return { error: "Wallet not found" };
 
   // `categories_member` RLS (0008: `is_wallet_member(wallet_id)`, which
   // REPLACED `categories_own`) scopes this to every wallet the caller
@@ -214,14 +214,14 @@ export async function createTransfer(input: TransferInput): Promise<TransferResu
   // that rule (rejecting it in createTransaction but not here) would leave
   // an archived wallet reachable as a transfer endpoint — a gap the two
   // functions being separate silently created despite sharing the same
-  // "Account not found" reasoning.
+  // "Wallet not found" reasoning.
   const { data: wallets } = await supabase
     .from("wallets")
     .select("id, currency_code, archived_at")
     .in("id", [from_wallet_id, to_wallet_id]);
   const from = wallets?.find((w) => w.id === from_wallet_id);
   const to = wallets?.find((w) => w.id === to_wallet_id);
-  if (!from || !to || from.archived_at || to.archived_at) return { error: "Account not found" };
+  if (!from || !to || from.archived_at || to.archived_at) return { error: "Wallet not found" };
 
   const fromMinorUnit = minorUnitFor(from.currency_code);
   const toMinorUnit = minorUnitFor(to.currency_code);

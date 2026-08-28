@@ -28,7 +28,7 @@ export const budgetInput = z.object({
   // "could not save" after a round trip through set_budget's own `uuid[]`
   // cast. That later layer still exists in set_budget itself (defense in
   // depth), but this is the precise, pre-DB-call rejection.
-  walletIds: z.array(z.uuid()).min(1, "Choose at least one account"),
+  walletIds: z.array(z.uuid()).min(1, "Choose at least one wallet"),
 });
 
 export type BudgetInput = z.infer<typeof budgetInput>;

@@ -154,7 +154,7 @@ export const transferInput = z
     note: z.string().trim().max(280, "Note is too long").optional().or(z.literal("")),
   })
   .refine((v) => v.from_wallet_id !== v.to_wallet_id, {
-    message: "Choose two different accounts",
+    message: "Choose two different wallets",
     path: ["to_wallet_id"],
   });
 

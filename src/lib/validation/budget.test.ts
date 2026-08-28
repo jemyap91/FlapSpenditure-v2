@@ -5,11 +5,11 @@ import { budgetInput } from "@/lib/validation/budget";
 const WALLET_ID = "11111111-1111-4111-8111-111111111111";
 
 describe("budgetInput", () => {
-  it("accepts an amount with at least one account", () => {
+  it("accepts an amount with at least one wallet", () => {
     expect(budgetInput.safeParse({ amount: "600", walletIds: [WALLET_ID] }).success).toBe(true);
   });
 
-  it("rejects an empty account set — it would be visible to everyone", () => {
+  it("rejects an empty wallet set — it would be visible to everyone", () => {
     expect(budgetInput.safeParse({ amount: "600", walletIds: [] }).success).toBe(false);
   });
 

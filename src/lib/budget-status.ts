@@ -90,10 +90,10 @@ export function budgetProgress(row: BudgetRow): {
 }
 
 /**
- * How a budget's wallet set reads on screen. "All accounts" is claimed ONLY
+ * How a budget's wallet set reads on screen. "All wallets" is claimed ONLY
  * when the set covers every wallet in that currency — a set is materialised
  * when the budget is created (spec §1), so a wallet created afterwards is not
- * covered, and calling that "All accounts" would state something false rather
+ * covered, and calling that "All wallets" would state something false rather
  * than merely stale.
  *
  * Pure function of its three arguments -- deliberately does not reach for
@@ -111,9 +111,9 @@ export function scopeLabel(
   // whole-branch review). Guards the indexed reads below (`names[0]`,
   // `names[1]`) against rendering the literal string "undefined" if a
   // future caller ever passes a shorter `names` than its own `count`.
-  if (names.length < count) return `${count} accounts`;
-  if (count === totalInCurrency) return "All accounts";
+  if (names.length < count) return `${count} wallets`;
+  if (count === totalInCurrency) return "All wallets";
   if (count === 1) return names[0]!;
   if (count === 2) return `${names[0]} + ${names[1]}`;
-  return `${count} accounts`;
+  return `${count} wallets`;
 }

@@ -18,19 +18,19 @@ import { WalletForm } from "@/components/WalletForm";
  * form; /wallets binds `addWallet` instead, which stays put).
  */
 export function OnboardingForm({ baseCurrency }: { baseCurrency: string }) {
-  // The first wallet has no sibling accounts to learn a currency from, so
+  // The first wallet has no sibling wallets to learn a currency from, so
   // the profile's base_currency is all there is to go on.
   return (
     <main className="mx-auto flex min-h-dvh max-w-sm flex-col justify-center gap-6 p-6">
       <div>
-        <h1 className="text-3xl font-semibold">Add your first account</h1>
+        <h1 className="text-3xl font-semibold">Add your first wallet</h1>
         <p className="mt-1 text-sm" style={{ color: "var(--ink-2)" }}>
           A card or bank account to track. You can add more later.
         </p>
       </div>
       <WalletForm
         action={createWallet}
-        submitLabel="Create account"
+        submitLabel="Create wallet"
         pendingLabel="Creating…"
         defaultCurrency={baseCurrency}
       />

@@ -1,12 +1,12 @@
 // src/components/BudgetSummary.test.tsx
 //
-// Dashboard's all-accounts budget block (task-7-brief.md + CONTROLLER
+// Dashboard's all-wallets budget block (task-7-brief.md + CONTROLLER
 // ADDENDUM). `BudgetStatusRow` is imported from "@/lib/budget-status", never
 // redefined here -- same reasoning BudgetList.test.tsx's own doc comment
 // gives: a local shadow of the generated+narrowed row type is exactly the
 // mistake that shipped an `undefined 2026` heading on the previous branch.
 //
-// This block is the "all accounts" view only (controller addendum §2): a
+// This block is the "all wallets" view only (controller addendum §2): a
 // budget whose wallet set covers only a SUBSET of the caller's active
 // wallets in that currency is a /budgets-only concern and must never appear
 // here, no matter how it's spending.
@@ -30,7 +30,7 @@ const row = (over: Partial<BudgetStatusRow> = {}): BudgetStatusRow => ({
   ...over,
 });
 
-describe("BudgetSummary — scope filtering (all-accounts only)", () => {
+describe("BudgetSummary — scope filtering (all-wallets only)", () => {
   it("shows a budget whose wallet set covers every active wallet in that currency", () => {
     render(<BudgetSummary rows={[row({ spent_minor: 41200 })]} currencyCode="SGD" walletCount={2} />);
     expect(screen.getByText("Groceries")).toBeInTheDocument();
@@ -43,7 +43,7 @@ describe("BudgetSummary — scope filtering (all-accounts only)", () => {
     expect(document.querySelector(".h-2")).toBeInTheDocument();
   });
 
-  it("hides a budget over only a SUBSET of accounts (a /budgets-only concern)", () => {
+  it("hides a budget over only a SUBSET of wallets (a /budgets-only concern)", () => {
     render(
       <BudgetSummary
         rows={[row({ wallet_names: ["Everyday"], wallet_count: 1 })]}
@@ -52,7 +52,7 @@ describe("BudgetSummary — scope filtering (all-accounts only)", () => {
       />,
     );
     expect(screen.queryByText("Groceries")).not.toBeInTheDocument();
-    expect(screen.getByText(/no budgets cover every account/i)).toBeInTheDocument();
+    expect(screen.getByText(/no budgets cover every wallet/i)).toBeInTheDocument();
   });
 
   it("hides an uncovered-spending row (budget_id null) rather than treating a null wallet_count as a match", () => {
@@ -71,12 +71,12 @@ describe("BudgetSummary — scope filtering (all-accounts only)", () => {
         walletCount={2}
       />,
     );
-    expect(screen.getByText(/no budgets cover every account/i)).toBeInTheDocument();
+    expect(screen.getByText(/no budgets cover every wallet/i)).toBeInTheDocument();
   });
 
   it("hides a budget in a different currency than the dashboard's primary one", () => {
     render(<BudgetSummary rows={[row({ currency_code: "USD" })]} currencyCode="SGD" walletCount={2} />);
-    expect(screen.getByText(/no budgets cover every account/i)).toBeInTheDocument();
+    expect(screen.getByText(/no budgets cover every wallet/i)).toBeInTheDocument();
   });
 });
 
@@ -96,9 +96,9 @@ describe("BudgetSummary — over-budget stated in words", () => {
 });
 
 describe("BudgetSummary — empty state", () => {
-  it("renders one explanatory line and no empty chrome when nothing covers all accounts", () => {
+  it("renders one explanatory line and no empty chrome when nothing covers all wallets", () => {
     render(<BudgetSummary rows={[]} currencyCode="SGD" walletCount={2} />);
-    expect(screen.getByText(/no budgets cover every account/i)).toBeInTheDocument();
+    expect(screen.getByText(/no budgets cover every wallet/i)).toBeInTheDocument();
     // No heading, no bar, no section chrome -- same "single line, nothing
     // else" precedent CategoryBreakdown/CashFlow's own empty states set.
     expect(screen.queryByRole("heading")).not.toBeInTheDocument();

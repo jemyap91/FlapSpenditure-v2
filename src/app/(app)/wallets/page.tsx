@@ -8,7 +8,7 @@ import { PendingInvites, type PendingInvite } from "./PendingInvites";
 import { mergeWalletBalances, defaultCurrencyFor, type BalanceRow, type WalletRow } from "./wallet-rows";
 
 /**
- * /wallets — the accounts screen. Both the Sidebar and the TabBar have
+ * /wallets — the wallets screen. Both the Sidebar and the TabBar have
  * linked here since Task 14; until now the route did not exist and the nav
  * item 404'd.
  *
@@ -16,7 +16,7 @@ import { mergeWalletBalances, defaultCurrencyFor, type BalanceRow, type WalletRo
  * creates the first and then refuses to render again (it redirects to /
  * once an active wallet exists), so before this page there was no way to
  * reach two wallets at all — and TransactionForm gates transfers on
- * `wallets.length >= 2`. Adding an account here is what unlocks them.
+ * `wallets.length >= 2`. Adding a wallet here is what unlocks them.
  *
  * `wallets_select` RLS (`is_wallet_member`) already scopes this SELECT to
  * the caller's own wallets, so no explicit `.eq("owner_id", ...)` is needed
@@ -81,7 +81,7 @@ export default async function WalletsPage() {
   ]);
 
   // A query error is not an empty result — `data` comes back null for all
-  // four, so skipping this check would render "No accounts yet" (and,
+  // four, so skipping this check would render "No wallets yet" (and,
   // worse, the last-wallet guard's own disabled state) on a transient DB
   // blip. Thrown, not redirected, matching (app)/layout.tsx and
   // (app)/categories/page.tsx.
@@ -126,7 +126,7 @@ export default async function WalletsPage() {
   return (
     <div className="mx-auto max-w-2xl p-6">
       <h1 className="mb-6 text-2xl font-semibold" style={{ color: "var(--ink)" }}>
-        Accounts
+        Wallets
       </h1>
 
       <PendingInvites invites={pendingInvites} />
@@ -138,7 +138,7 @@ export default async function WalletsPage() {
       {/* Members and the invite form are handed to WalletList as per-wallet
           slots so each renders INSIDE its own wallet's card. Rendering them
           in a separate block below the list detached them from their
-          wallets: with two accounts you saw two identical "MEMBERS"
+          wallets: with two wallets you saw two identical "MEMBERS"
           headings stacked underneath, with nothing visible saying which
           belonged to which. Containment fixes that structurally. */}
       <WalletList
@@ -179,14 +179,14 @@ export default async function WalletsPage() {
 
       {/* `addWallet`, not `createWallet`: the latter redirects to / on
           success, which is right for onboarding and wrong here — adding a
-          second account should leave the user looking at their accounts. */}
+          second wallet should leave the user looking at their wallets. */}
       <section aria-labelledby="add-wallet-heading" className="mt-8">
         <h2 id="add-wallet-heading" className="mb-3 text-sm font-medium uppercase tracking-wide" style={{ color: "var(--ink-2)" }}>
-          Add an account
+          Add a wallet
         </h2>
         <WalletForm
           action={addWallet}
-          submitLabel="Add account"
+          submitLabel="Add wallet"
           pendingLabel="Adding…"
           defaultCurrency={defaultCurrencyFor(rows, profile.base_currency)}
         />

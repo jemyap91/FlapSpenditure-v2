@@ -154,7 +154,7 @@ describe("BudgetList — heading semantics", () => {
       />,
     );
     expect(
-      screen.getByRole("heading", { level: 2, name: "Overall budget · All accounts" }),
+      screen.getByRole("heading", { level: 2, name: "Overall budget · All wallets" }),
     ).toBeInTheDocument();
   });
 });
@@ -173,7 +173,7 @@ describe("BudgetList — grouping and order", () => {
     );
     const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
     // "Add a budget" is the always-mounted new-budget section's own h2
-    // (matching (app)/wallets/page.tsx's "Add an account" heading, also an
+    // (matching (app)/wallets/page.tsx's "Add a wallet" heading, also an
     // h2 alongside its list) — trailing here rather than absent, since
     // every OTHER heading assertion in this file targets one by its exact
     // pinned name and would not otherwise notice it moved.
@@ -353,10 +353,10 @@ describe("BudgetList — adding a new budget", () => {
   it("offers a Category picker and a wallet picker, pinned by name", () => {
     render(<BudgetList rows={[]} wallets={wallets} primaryCurrency="SGD" categories={categories} />);
     expect(screen.getByLabelText("Category")).toBeInTheDocument();
-    expect(screen.getByRole("group", { name: "Accounts this budget covers" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Wallets this budget covers" })).toBeInTheDocument();
   });
 
-  it("defaults the wallet picker to every account in the primary currency, all checked", () => {
+  it("defaults the wallet picker to every wallet in the primary currency, all checked", () => {
     render(<BudgetList rows={[]} wallets={wallets} primaryCurrency="SGD" categories={categories} />);
     const everyday = screen.getByRole("checkbox", { name: "Everyday" });
     const savings = screen.getByRole("checkbox", { name: "Savings" });
@@ -381,7 +381,7 @@ describe("BudgetList — adding a new budget", () => {
     expect(vi.mocked(setBudget).mock.calls[0]![0]).toBeNull();
   });
 
-  it("submits the selected category and the checked accounts when creating a category budget", async () => {
+  it("submits the selected category and the checked wallets when creating a category budget", async () => {
     const user = userEvent.setup();
     render(<BudgetList rows={[]} wallets={wallets} primaryCurrency="SGD" categories={categories} />);
     await user.selectOptions(screen.getByLabelText("Category"), "groceries");
@@ -395,8 +395,76 @@ describe("BudgetList — adding a new budget", () => {
   });
 });
 
+describe("BudgetList — select all / clear all in the wallet picker", () => {
+  const wallets = [
+    { id: "w1", name: "Everyday", currency_code: "SGD" },
+    { id: "w2", name: "Savings", currency_code: "SGD" },
+  ];
+  const categories = [{ key: "groceries", label: "Groceries" }];
+
+  it("selects every wallet when pressed with some unchecked", async () => {
+    const user = userEvent.setup();
+    render(<BudgetList rows={[]} wallets={wallets} primaryCurrency="SGD" categories={categories} />);
+    await user.click(screen.getByRole("checkbox", { name: "Savings" })); // uncheck Savings
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    expect(screen.getByRole("checkbox", { name: "Everyday" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Savings" })).toBeChecked();
+  });
+
+  it("clears every wallet when pressed with all checked", async () => {
+    const user = userEvent.setup();
+    render(<BudgetList rows={[]} wallets={wallets} primaryCurrency="SGD" categories={categories} />);
+    await user.click(screen.getByRole("button", { name: "Clear all" }));
+    expect(screen.getByRole("checkbox", { name: "Everyday" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Savings" })).not.toBeChecked();
+  });
+
+  // Documentation, not a guard. Review of 666f53f established by mutation that
+  // this test has no unique breaker and cannot be given one: its preconditions
+  // are the opening lines of "selects every wallet", and its assertion is a
+  // subset of "flips back to Select all". Every mutation that fails it — the
+  // label strings swapped, `onChange` never deleting, `.every` weakened to
+  // `.some` — fails one of those two first. Kept because the plan names it and
+  // it reads as a clear statement of the rule; do not mistake it for coverage.
+  it("reads Select all when one or more wallets are unchecked", async () => {
+    const user = userEvent.setup();
+    render(<BudgetList rows={[]} wallets={wallets} primaryCurrency="SGD" categories={categories} />);
+    await user.click(screen.getByRole("checkbox", { name: "Savings" })); // uncheck Savings
+    expect(screen.getByRole("button", { name: "Select all" })).toBeInTheDocument();
+  });
+
+  it("flips the label back to Select all after unchecking one of every wallet", async () => {
+    const user = userEvent.setup();
+    render(<BudgetList rows={[]} wallets={wallets} primaryCurrency="SGD" categories={categories} />);
+    // Starts all-checked, so the button starts as "Clear all".
+    expect(screen.getByRole("button", { name: "Clear all" })).toBeInTheDocument();
+    await user.click(screen.getByRole("checkbox", { name: "Everyday" })); // uncheck Everyday
+    expect(screen.getByRole("button", { name: "Select all" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear all" })).not.toBeInTheDocument();
+  });
+
+  it("renders no select-all button when there are no primary-currency wallets", () => {
+    render(<BudgetList rows={[]} />);
+    expect(screen.queryByRole("button", { name: "Select all" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear all" })).not.toBeInTheDocument();
+  });
+
+  it("contributes one walletIds value per wallet to FormData after Select all", async () => {
+    const user = userEvent.setup();
+    render(<BudgetList rows={[]} wallets={wallets} primaryCurrency="SGD" categories={categories} />);
+    await user.click(screen.getByRole("checkbox", { name: "Savings" })); // uncheck Savings
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    await user.selectOptions(screen.getByLabelText("Category"), "groceries");
+    await user.type(screen.getByLabelText("Budget amount"), "600");
+    await user.click(screen.getByRole("button", { name: "Save budget" }));
+    expect(setBudget).toHaveBeenCalled();
+    const formData = vi.mocked(setBudget).mock.calls[0]![2] as FormData;
+    expect(formData.getAll("walletIds")).toEqual(["w1", "w2"]);
+  });
+});
+
 describe("BudgetList — coverage disclosures", () => {
-  it("discloses, in text, when a budget does not cover every account in its own currency", () => {
+  it("discloses, in text, when a budget does not cover every wallet in its own currency", () => {
     render(
       <BudgetList
         rows={[row({ wallet_names: ["Everyday"], wallet_count: 1 })]}
@@ -413,7 +481,7 @@ describe("BudgetList — coverage disclosures", () => {
     expect(screen.getByText(/Doesn.t cover Savings/)).toBeInTheDocument();
   });
 
-  it("discloses, in text, when accounts in another currency are excluded entirely", () => {
+  it("discloses, in text, when wallets in another currency are excluded entirely", () => {
     render(
       <BudgetList
         rows={[row({ wallet_names: ["Everyday"], wallet_count: 1 })]}
@@ -428,7 +496,7 @@ describe("BudgetList — coverage disclosures", () => {
     // bare match would pass under any rewording that merely mentions the
     // currency code somewhere.
     expect(
-      screen.getByText("Accounts in JPY aren’t covered by any budget here."),
+      screen.getByText("Wallets in JPY aren’t covered by any budget here."),
     ).toBeInTheDocument();
   });
 });

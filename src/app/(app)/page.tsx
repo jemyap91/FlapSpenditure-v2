@@ -59,7 +59,7 @@ export default async function DashboardPage() {
   // limitation; `profiles.base_currency` is NOT used here because nothing
   // in this codebase ever sets it away from its 'USD' default (confirmed:
   // no reference to it in onboarding-form.tsx or wallets.ts), so it would
-  // silently mislabel a JPY-only or EUR-only account as USD.
+  // silently mislabel a JPY-only or EUR-only wallet as USD.
   const currency = activeWallets[0]?.currency_code ?? "USD";
   const walletIds = activeWallets.filter((w) => w.currency_code === currency).map((w) => w.id);
   // REVIEW-CAUGHT (Important): excluding non-primary-currency wallets keeps
@@ -115,7 +115,7 @@ export default async function DashboardPage() {
   // budgets whose wallet set covers every active wallet in it (Task 7's
   // controller addendum §2/§3) -- reusing this page's own already-resolved
   // `currency`/`walletIds.length` rather than resolving a second, possibly-
-  // disagreeing notion of "primary currency" or "all accounts" inside that
+  // disagreeing notion of "primary currency" or "all wallets" inside that
   // component. Same "error is not emptiness" split as `breakdownError`/
   // `flowError` above.
   const { data: budgetStatus, error: budgetStatusError } = await supabase.rpc("get_budget_status", {
