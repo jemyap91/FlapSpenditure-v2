@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import Link from "next/link";
 import { Landmark, CreditCard, ChevronRight } from "lucide-react";
 import { archiveWallet } from "@/server/actions/wallets";
 import { formatMoney } from "@/lib/money";
@@ -174,9 +175,25 @@ export function WalletList({
                   beside it are what actually identify the wallet. */}
               <Icon aria-hidden size={18} style={{ color: slotVar(w.color_slot) }} className="shrink-0" />
               <span className="min-w-0 flex-1">
-                <span className="block truncate" style={{ color: "var(--ink)" }}>
+                {/* The wallet's NAME is the link into its detail screen
+                    (Task 3 of the wallet-detail plan) — Members and Archive
+                    stay right here on the card, unmoved, per that task's
+                    brief. `block truncate` preserved on the link itself so
+                    a long name still clips with an ellipsis instead of
+                    wrapping the row, exactly as the plain span did before.
+                    The accessible name is the wallet's name alone: nothing
+                    inside this anchor besides `w.name`'s text node, so no
+                    "Card · USD" leaks into what a screen reader announces
+                    as the link's name (the controller addendum pins this
+                    exact accessible name — the wallet's own name, nothing
+                    more). */}
+                <Link
+                  href={`/wallets/${w.id}`}
+                  className={`block truncate rounded-sm ${FOCUS_RING}`}
+                  style={{ color: "var(--ink)" }}
+                >
                   {w.name}
-                </span>
+                </Link>
                 <span className="block text-xs" style={{ color: "var(--ink-2)" }}>
                   {w.kind === "card" ? "Card" : "Bank"} · {w.currency_code}
                 </span>

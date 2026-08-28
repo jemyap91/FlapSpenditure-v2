@@ -66,6 +66,19 @@ describe("WalletList", () => {
     expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
   });
 
+  /**
+   * Task 3 of the wallet-detail plan: the wallet's NAME becomes the link
+   * into its detail screen (Members and Archive stay put on the card). The
+   * link's accessible name is the wallet's name alone — pinned by that
+   * plan's controller addendum, since the final task in the plan targets
+   * this exact accessible name with a Playwright selector.
+   */
+  it("links the wallet's name to its detail screen", () => {
+    render(<WalletList currentUserId={ME} wallets={[wallet("a", { name: "Everyday" })]} />);
+    const link = screen.getByRole("link", { name: "Everyday" });
+    expect(link).toHaveAttribute("href", "/wallets/a");
+  });
+
   it("disables Archive on the only wallet and says why", () => {
     render(<WalletList currentUserId={ME} wallets={[wallet("a", { name: "Everyday" })]} />);
     expect(screen.getByRole("button", { name: /Archive Everyday/ })).toBeDisabled();
