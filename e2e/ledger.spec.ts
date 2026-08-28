@@ -265,6 +265,65 @@ test.describe("wallets", () => {
     await expect(page.getByText(`${MINUS}$25.00`)).toBeVisible();
     await expect(page.getByText("+$25.00")).toBeVisible();
   });
+
+  test("clicking a wallet opens its detail page, and its add-transaction button returns you there", async ({
+    page,
+  }) => {
+    await signUpAndOnboard(page, "Everyday");
+    await addWallet(page, "Savings");
+
+    // A distinguishable expense in EACH wallet, so the isolation assertion
+    // below (Everyday's amount shows, Savings' doesn't) can actually tell
+    // them apart. $25.00 is avoided on purpose — the transfer test above
+    // already uses it, and a wallet's own balance (unsigned `formatMoney`,
+    // per WalletList.tsx/[id]/page.tsx) would otherwise print the SAME
+    // digits as a wallet's sole expense, so presence checks below key off
+    // each row's own "Delete <category>, <amount>" button name rather than
+    // the bare amount text.
+    await page.goto("/transactions/new");
+    await pressAmount(page, "18");
+    await page.getByRole("button", { name: "Groceries" }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page).toHaveURL("/transactions");
+
+    await page.goto("/transactions/new");
+    await page.getByLabel("Wallet").selectOption({ label: "Savings" });
+    await pressAmount(page, "33");
+    await page.getByRole("button", { name: "Groceries" }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page).toHaveURL("/transactions");
+
+    // Click the wallet's NAME on /wallets — the real affordance a user
+    // clicks (Task 3 of the wallet-detail plan), not page.goto straight to
+    // the detail URL.
+    await page.goto("/wallets");
+    await page.getByRole("link", { name: "Everyday" }).click();
+    await expect(page).toHaveURL(/\/wallets\/[0-9a-f-]+$/);
+    const walletId = new URL(page.url()).pathname.replace("/wallets/", "");
+
+    // Isolation: Everyday's own expense renders here; Savings' does not.
+    await expect(page.getByRole("button", { name: `Delete Groceries, ${MINUS}$18.00` })).toBeVisible();
+    await expect(page.getByText(`${MINUS}$33.00`)).toHaveCount(0);
+
+    // The FAB's accessible name is pinned by the controller addendum:
+    // "Add a transaction to <wallet name>" (WalletFab.tsx) — matched exact,
+    // which is what Playwright (and RTL) both do by default for role names.
+    await page.getByRole("link", { name: "Add a transaction to Everyday" }).click();
+    await pressAmount(page, "9.99");
+    await page.getByRole("button", { name: "Groceries" }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+
+    // THE load-bearing assertion: saving from this wallet's own FAB returns
+    // you to THIS wallet, not the global /transactions list the plain
+    // add-transaction flow lands on (see the "ledger" describe block's
+    // first test, which asserts that exact URL). A test that only checked
+    // the new row appeared would still pass with this redirect completely
+    // broken.
+    await expect(page).toHaveURL(`/wallets/${walletId}`);
+    await expect(page.getByRole("button", { name: `Delete Groceries, ${MINUS}$9.99` })).toBeVisible();
+
+    await expectNoViolations(page, `/wallets/${walletId} (populated)`);
+  });
 });
 
 /**
