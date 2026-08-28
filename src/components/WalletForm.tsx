@@ -58,6 +58,7 @@ export function WalletForm({
   defaultCurrency,
   defaults,
   lockCurrency = false,
+  onSuccess,
 }: {
   action: (prev: WalletState, formData: FormData) => Promise<WalletState>;
   submitLabel: string;
@@ -75,6 +76,18 @@ export function WalletForm({
   };
   /** Hides the currency control. Set when editing — see the doc above. */
   lockCurrency?: boolean;
+  /**
+   * Called once after a submission that returned no error. Used by
+   * /wallets to close the edit dialog — a modal left open on top of a save
+   * that already worked reads as though nothing happened.
+   *
+   * A completed submission cannot be detected from `state` alone: the
+   * action returns `{}` on success and `{}` is also the INITIAL state, so
+   * a `useEffect` on `state` would fire on mount and close the dialog
+   * before the user had typed anything. The pending transition is what
+   * distinguishes them — see the effect below.
+   */
+  onSuccess?: () => void;
 }) {
 
   const [state, action, pending] = useActionState<WalletState, FormData>(submitAction, {});
@@ -100,6 +113,16 @@ export function WalletForm({
   useEffect(() => {
     if (state.error) errorRef.current?.focus();
   }, [state.error]);
+
+  // Fires on the FALLING edge of `pending` — a submission that has just
+  // finished — and only when it left no error behind. Watching `state`
+  // instead would fire on mount, because a successful result and the
+  // initial state are the same value: `{}`.
+  const wasPending = useRef(false);
+  useEffect(() => {
+    if (wasPending.current && !pending && !state.error) onSuccess?.();
+    wasPending.current = pending;
+  }, [pending, state, onSuccess]);
 
   // Forcibly re-applies `kind`/`currencyCode` to the native radio/select
   // DOM nodes after every action response. This is a correction, not a

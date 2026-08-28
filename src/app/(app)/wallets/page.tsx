@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentUserProfile } from "@/lib/supabase/current-user";
-import { addWallet } from "@/server/actions/wallets";
+import { addWallet, updateWallet } from "@/server/actions/wallets";
 import { WalletForm } from "@/components/WalletForm";
 import { WalletList } from "./WalletList";
 import { MembersSection, type Member, type PendingInvite as SectionInvite } from "./MembersSection";
@@ -63,7 +63,7 @@ export default async function WalletsPage() {
   ] = await Promise.all([
     supabase
       .from("wallets")
-      .select("id, name, kind, currency_code, color_slot, icon, owner_id")
+      .select("id, name, kind, currency_code, color_slot, icon, owner_id, starting_balance_minor")
       .is("archived_at", null)
       .order("created_at"),
     supabase.rpc("get_wallet_balances"),
@@ -174,6 +174,27 @@ export default async function WalletsPage() {
               />
             </section>,
           ]),
+        )}
+        /* Bound ACTIONS, not rendered forms. WalletList already holds
+            every wallet's data, so handing it the capability rather than
+            the markup lets it render the form itself — and therefore know
+            when a save succeeded and close its own dialog. A Server
+            Component cannot pass a callback to a Client Component, but it
+            can pass a server action, which is what makes this work.
+
+            `updateWallet.bind(null, w.id)` fixes the action to one wallet:
+            the id never travels in the FormData, so a crafted POST cannot
+            retarget the edit, and the action's own `.eq("owner_id",
+            user.id)` still scopes it server-side.
+
+            Only for wallets the viewer OWNS. updateWallet's UPDATE is
+            owner-scoped, so a member's edit would match zero rows and be
+            reported as success — the same defect archiveWallet was fixed
+            for. Absent rather than disabled, per this file's convention. */
+        editActions={Object.fromEntries(
+          rows
+            .filter((w) => ownerByWalletId.get(w.id) === profile.id)
+            .map((w) => [w.id, updateWallet.bind(null, w.id)]),
         )}
       />
 

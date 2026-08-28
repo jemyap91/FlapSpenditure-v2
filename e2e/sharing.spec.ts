@@ -131,20 +131,24 @@ const membersRegion = (page: Page, walletName: string) =>
   page.getByRole("region", { name: `${walletName} members` });
 
 /**
- * Members and the invite form sit behind a per-wallet disclosure that is
- * CLOSED by default — the balance is what /wallets is opened for, so
- * membership does not occupy the page until asked for. The panel is
- * unmounted while collapsed, not merely hidden, so nothing inside it is
+ * Members and the invite form live in a per-wallet DIALOG (2026-08-28;
+ * previously an inline disclosure). The balance is what /wallets is opened
+ * for, so membership does not occupy the row until asked for, and the
+ * dialog's contents are unmounted while closed — nothing inside is
  * reachable until this runs.
  *
- * Idempotent: checks aria-expanded first, so calling it twice on the same
- * card does not toggle the panel shut again.
+ * Idempotent by checking whether the dialog is already open, NOT by
+ * reading aria-expanded: the trigger no longer carries that attribute, and
+ * `getAttribute` returning null would make the old check click every time.
+ * A second click is not harmlessly redundant here — the trigger sits behind
+ * the modal backdrop, so it would be intercepted and time out.
  */
 async function openMembers(page: Page, walletName: string) {
-  const toggle = page.getByRole("button", { name: `Members of ${walletName}` });
-  if ((await toggle.getAttribute("aria-expanded")) !== "true") {
-    await toggle.click();
+  const dialog = page.getByRole("dialog", { name: `Members of ${walletName}` });
+  if (!(await dialog.isVisible())) {
+    await page.getByRole("button", { name: `Members of ${walletName}` }).click();
   }
+  await expect(dialog).toBeVisible();
   await expect(membersRegion(page, walletName)).toBeVisible();
 }
 
