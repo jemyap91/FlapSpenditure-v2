@@ -2,13 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Wallet, Plus, TrendingUp, Tags, Target } from "lucide-react";
+import { Home, Wallet, TrendingUp, Tags, Target } from "lucide-react";
 import { isActive } from "./nav-active";
 
 const NAV = [
   { href: "/", label: "Home", Icon: Home },
   { href: "/wallets", label: "Wallets", Icon: Wallet },
-  { href: "/transactions/new", label: "Add", Icon: Plus, primary: true },
   { href: "/transactions", label: "Activity", Icon: TrendingUp },
   { href: "/budgets", label: "Budgets", Icon: Target },
   { href: "/categories", label: "Categories", Icon: Tags },
@@ -26,9 +25,17 @@ const NAV_HREFS = NAV.map((item) => item.href);
  * measures 7.73:1 light / 9.72:1 dark.
  *
  * Active state uses the shared isActive() (see ./nav-active.ts), not a bare
- * `pathname.startsWith(href)`: this nav has both "/transactions" (Activity)
- * and "/transactions/new" (Add), and a bare prefix check made both tabs
- * report aria-current="page" simultaneously on "/transactions/new".
+ * `pathname.startsWith(href)`: a bare prefix check made "/transactions"
+ * (Activity) report aria-current="page" on "/transactions/new" as well.
+ * That collision predates 2026-08-29 — when "Add" was a tab here too — and
+ * the guard is kept because Activity's prefix still matches the add screen.
+ *
+ * "Add" is no longer a tab. It moved to AddFab, a bottom-right floating
+ * button (2026-08-29): six tabs left the wallet names on /wallets squeezed,
+ * and a primary action reads better as a button than as a peer of five
+ * navigation destinations. The desktop Sidebar keeps its own Add item —
+ * there is no FAB there, and without that item /transactions/new was once
+ * unreachable on desktop except by URL.
  */
 export function TabBar() {
   const pathname = usePathname();
@@ -38,7 +45,7 @@ export function TabBar() {
       className="fixed inset-x-0 bottom-0 flex border-t md:hidden"
       style={{ borderColor: "var(--grid)", background: "var(--surface)" }}
     >
-      {NAV.map(({ href, label, Icon, primary }) => {
+      {NAV.map(({ href, label, Icon }) => {
         const active = isActive(pathname, href, NAV_HREFS);
         return (
           <Link
@@ -50,7 +57,6 @@ export function TabBar() {
           >
             <span
               className="grid h-9 w-9 place-items-center rounded-full"
-              style={primary ? { background: "var(--cat-1)", color: "var(--surface)" } : undefined}
             >
               <Icon size={20} aria-hidden />
             </span>

@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getCurrentUserProfile } from "@/lib/supabase/current-user";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { TabBar } from "@/components/shell/TabBar";
+import { AddFab } from "@/components/shell/AddFab";
 import { ThemeCookieSync } from "@/components/shell/ThemeCookieSync";
 
 /**
@@ -84,6 +85,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       <main id="main-content" tabIndex={-1} className="flex-1 pb-20 md:pb-0 focus:outline-none">
         {children}
       </main>
+      <AddFab />
       <TabBar />
     </div>
   );

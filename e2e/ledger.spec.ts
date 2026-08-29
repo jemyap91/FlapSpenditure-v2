@@ -109,14 +109,16 @@ test.describe("ledger", () => {
     await signUpAndOnboard(page);
     await page.goto("/transactions");
 
-    // Deliberately ONE locator for both projects. Sidebar (`hidden md:flex`)
-    // and TabBar (`md:hidden`) are mutually exclusive by breakpoint and only
-    // one is in the accessibility tree at a time, so this resolves to
-    // whichever nav the viewport actually shows — and fails on the viewport
-    // whose nav is missing an entry point. The desktop sidebar had no "Add"
-    // item at all, so /transactions/new was unreachable there except by
-    // typing the URL, while the mobile tab bar had its "+" the whole time.
-    await page.getByRole("link", { name: "Add" }).click();
+    // ONE locator for both projects, still — but the two entry points are
+    // no longer the same shape. Desktop keeps the Sidebar's "Add" item
+    // (`hidden md:flex`); mobile lost its tab and gained AddFab, a
+    // bottom-right floating button named "Add a transaction" (`md:hidden`).
+    // Exactly one of the two is in the accessibility tree at any viewport,
+    // so this still fails on whichever viewport has no entry point at all —
+    // which is the regression the test was written for.
+    await page
+      .getByRole("link", { name: /^(Add|Add a transaction)$/ })
+      .click();
     await expect(page).toHaveURL("/transactions/new");
   });
 
@@ -169,6 +171,25 @@ async function addWallet(page: Page, name: string) {
   await expect(page.getByText(name)).toBeVisible();
 }
 
+/**
+ * Archives a wallet through the EDIT DIALOG, which is the route that works
+ * on every viewport — the swipe added on 2026-08-29 is touch-only by
+ * design, and these cases run on desktop too. Both routes open the same
+ * confirmation, so this exercises the same code path a swipe reaches.
+ *
+ * Stops at the confirmation when `confirm` is false, so a caller can
+ * assert on a refusal that never gets that far.
+ */
+async function archiveViaDialog(page: Page, walletName: string, confirm = true) {
+  await page.getByRole("button", { name: `Edit ${walletName}` }).click();
+  await page.getByRole("button", { name: "Archive this wallet" }).click();
+  if (!confirm) return;
+  await page
+    .getByRole("dialog", { name: `Archive ${walletName}?` })
+    .getByRole("button", { name: "Archive" })
+    .click();
+}
+
 test.describe("wallets", () => {
   test("lists the onboarding wallet with a balance and refuses to archive the last one", async ({
     page,
@@ -181,34 +202,40 @@ test.describe("wallets", () => {
     // which must render as an amount rather than the "not computed" dash.
     await expect(page.getByText("$0.00")).toBeVisible();
 
-    await expect(page.getByRole("button", { name: "Archive Everyday" })).toBeDisabled();
-    await expect(page.getByText(/need at least one wallet/i)).toBeVisible();
+    // The Archive button left the row on 2026-08-29 (it was eating the
+    // width wallet names need on a phone). The guard did not move: asking
+    // to archive a lone wallet is refused rather than offered.
+    await archiveViaDialog(page, "Everyday", false);
+
+    await expect(page.getByRole("dialog", { name: "Archive Everyday?" })).toHaveCount(0);
+    await expect(page.getByRole("alert").filter({ hasText: /need at least one wallet/i })).toBeVisible();
   });
 
   test("refuses to archive the last wallet when a stale tab still offers it", async ({ page }) => {
     await signUpAndOnboard(page, "Everyday");
     await addWallet(page, "Savings");
 
-    // This tab now renders two wallets, so Archive is enabled on both.
-    await expect(page.getByRole("button", { name: "Archive Everyday" })).toBeEnabled();
+    // This tab renders two wallets, so archiving is offered on both.
+    await page.getByRole("button", { name: "Edit Everyday" }).click();
+    await expect(page.getByRole("button", { name: "Archive this wallet" })).toBeVisible();
+    await page.getByRole("button", { name: "Close" }).click();
 
     // A second tab (same session) archives one, leaving the wallet count
     // at 1 — but THIS tab does not know that. `revalidatePath` runs on the
     // server; it does not reach into an already-rendered client.
     const otherTab = await page.context().newPage();
     await otherTab.goto("/wallets");
-    await otherTab.getByRole("button", { name: "Archive Savings" }).click();
-    await expect(otherTab.getByText("Savings")).toHaveCount(0);
+    await archiveViaDialog(otherTab, "Savings");
+    await expect(otherTab.getByRole("listitem", { name: "Savings" })).toHaveCount(0);
     await otherTab.close();
 
-    // The stale tab still offers Archive on the only remaining wallet.
-    // This is the exact case the UI's disabled state cannot cover and the
-    // guard inside `archiveWallet` exists for — and it is a real scenario
-    // (two tabs, or a page left open), not a synthetic tamper. Note the
-    // DOM cannot be tampered into this state instead: React decides
-    // whether to dispatch a click from the fiber's own props, so
-    // un-disabling the button in the DOM does not deliver the event.
-    await page.getByRole("button", { name: "Archive Everyday" }).click();
+    // The stale tab still offers archiving on the only remaining wallet.
+    // This is the exact case the client-side guard cannot cover and the
+    // one inside `archiveWallet` exists for — a real scenario (two tabs,
+    // or a page left open), not a synthetic tamper. The stale tab believes
+    // it still has two wallets, so its own last-wallet check passes and
+    // the request genuinely reaches the server.
+    await archiveViaDialog(page, "Everyday");
 
     // Asserts on the SERVER message's distinctive tail, not on "need at
     // least one wallet" — WalletList renders a static hint containing
@@ -217,17 +244,18 @@ test.describe("wallets", () => {
     await expect(page.getByText(/Add another before archiving this one/i)).toBeVisible();
   });
 
-  test("a second wallet unlocks Archive on both", async ({ page }) => {
+  test("a second wallet unlocks archiving, and archiving it re-engages the guard", async ({ page }) => {
     await signUpAndOnboard(page, "Everyday");
     await addWallet(page, "Savings");
 
-    await expect(page.getByRole("button", { name: "Archive Everyday" })).toBeEnabled();
-    await expect(page.getByRole("button", { name: "Archive Savings" })).toBeEnabled();
+    await archiveViaDialog(page, "Savings");
+    await expect(page.getByRole("listitem", { name: "Savings" })).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Archive Savings" }).click();
-    await expect(page.getByText("Savings")).toHaveCount(0);
-    // Back down to one wallet, so the guard re-engages.
-    await expect(page.getByRole("button", { name: "Archive Everyday" })).toBeDisabled();
+    // Back down to one wallet, so the guard re-engages — asked for and
+    // refused, rather than a button that is merely disabled.
+    await archiveViaDialog(page, "Everyday", false);
+    await expect(page.getByRole("dialog", { name: "Archive Everyday?" })).toHaveCount(0);
+    await expect(page.getByRole("alert").filter({ hasText: /need at least one wallet/i })).toBeVisible();
   });
 
   test("editing a wallet's opening balance moves its balance by that amount", async ({ page }) => {
@@ -401,6 +429,57 @@ test.describe("wallets", () => {
    * single wallet), which is the cheapest path available through this
    * self-contained spec.
    */
+  test("swipe-left archives a wallet, but only after confirming", async ({ page }, testInfo) => {
+    test.skip(
+      testInfo.project.name !== "mobile",
+      "swipe-to-archive is touch-only by design; desktop and keyboard reach Archive through the edit dialog instead",
+    );
+
+    await signUpAndOnboard(page, "Everyday");
+    await addWallet(page, "Savings");
+    await page.goto("/wallets");
+
+    const row = page.getByRole("listitem", { name: "Savings" });
+    const box = (await row.boundingBox())!;
+    const y = box.y + box.height / 2;
+
+    /* Playwright's touchscreen API only taps, so a swipe is dispatched
+       directly — but each Touch needs a real `target` element handle, or
+       the browser refuses to construct the TouchList. Passing the handle
+       is what makes these genuine Touch objects rather than plain data,
+       and `identifier` is a required TouchInit member the constructor
+       refuses to default. */
+    const handle = (await row.elementHandle())!;
+    async function swipeLeftOn(startX: number, endX: number) {
+      await row.dispatchEvent("touchstart", {
+        touches: [{ identifier: 0, target: handle, clientX: startX, clientY: y }],
+        changedTouches: [{ identifier: 0, target: handle, clientX: startX, clientY: y }],
+        targetTouches: [{ identifier: 0, target: handle, clientX: startX, clientY: y }],
+      });
+      await row.dispatchEvent("touchend", {
+        touches: [],
+        changedTouches: [{ identifier: 0, target: handle, clientX: endX, clientY: y }],
+        targetTouches: [],
+      });
+    }
+
+    await swipeLeftOn(box.x + box.width - 10, box.x + 10);
+
+    // Cancel first: a mis-swipe on a phone must cost nothing.
+    const confirm = page.getByRole("dialog", { name: "Archive Savings?" });
+    await expect(confirm).toBeVisible();
+    await expect(confirm).toContainText(/transactions are kept/i);
+    await confirm.getByRole("button", { name: "Cancel" }).click();
+    await expect(page.getByRole("listitem", { name: "Savings" })).toBeVisible();
+
+    // Then confirm, and the wallet actually goes.
+    await swipeLeftOn(box.x + box.width - 10, box.x + 10);
+    await page.getByRole("dialog", { name: "Archive Savings?" }).getByRole("button", { name: "Archive" }).click();
+
+    await expect(page.getByRole("listitem", { name: "Savings" })).toHaveCount(0);
+    await expect(page.getByRole("listitem", { name: "Everyday" })).toBeVisible();
+  });
+
   test("the FAB never covers the last row's Delete button on a long list", async ({ page }, testInfo) => {
     test.skip(
       testInfo.project.name !== "mobile",
