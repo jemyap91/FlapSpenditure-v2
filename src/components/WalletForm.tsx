@@ -32,33 +32,72 @@ const FOCUS_RING =
  * /wallets renders it below the wallet list — so this component renders
  * only the <form> itself and takes no view on its own placement.
  *
- * Only wallet *creation* is bound today. color_slot is fixed to 1 (no
- * colour picker in scope) and `icon` is derived from the chosen kind
- * rather than offered as its own control, so there is no "card wallet with
- * a bank icon" mismatch. Editing is future work — updateWallet already
- * exists in src/server/actions/wallets.ts for it.
+ * `icon` is derived from the chosen kind rather than offered as its own
+ * control, so there is no "card wallet with a bank icon" mismatch. On
+ * creation `color_slot` is fixed to 1 (no colour picker in scope); on edit
+ * the wallet's existing slot is carried through unchanged, so editing a
+ * name never silently repaints the wallet.
+ *
+ * EDIT MODE (2026-08-28) is this same component with `defaults` supplied
+ * and `lockCurrency` set — the shape the doc comment above anticipated
+ * when it said editing was future work. Two differences from creation:
+ *
+ *  - every field seeds from the wallet being edited;
+ *  - the currency SELECT is not rendered at all, while the hidden
+ *    `currency_code` input still submits. `updateWallet` refuses to write
+ *    that column (see its comment: a currency swap reinterprets every
+ *    stored minor-unit amount), but `walletInput` still needs the value to
+ *    know which minor unit to validate the balance against. Absent rather
+ *    than disabled, matching how this codebase treats a control that can
+ *    never succeed.
  */
 export function WalletForm({
   action: submitAction,
   submitLabel,
   pendingLabel,
   defaultCurrency,
+  defaults,
+  lockCurrency = false,
+  onSuccess,
 }: {
   action: (prev: WalletState, formData: FormData) => Promise<WalletState>;
   submitLabel: string;
   pendingLabel: string;
   /** Which currency the select starts on. See the state below. */
   defaultCurrency: string;
+  /** The wallet being edited. Absent when creating. */
+  defaults?: {
+    name: string;
+    kind: WalletInput["kind"];
+    currency_code: string;
+    starting_balance: string;
+    color_slot: number;
+    icon: string;
+  };
+  /** Hides the currency control. Set when editing — see the doc above. */
+  lockCurrency?: boolean;
+  /**
+   * Called once after a submission that returned no error. Used by
+   * /wallets to close the edit dialog — a modal left open on top of a save
+   * that already worked reads as though nothing happened.
+   *
+   * A completed submission cannot be detected from `state` alone: the
+   * action returns `{}` on success and `{}` is also the INITIAL state, so
+   * a `useEffect` on `state` would fire on mount and close the dialog
+   * before the user had typed anything. The pending transition is what
+   * distinguishes them — see the effect below.
+   */
+  onSuccess?: () => void;
 }) {
 
   const [state, action, pending] = useActionState<WalletState, FormData>(submitAction, {});
-  const [kind, setKind] = useState<WalletInput["kind"]>("bank");
+  const [kind, setKind] = useState<WalletInput["kind"]>(defaults?.kind ?? "bank");
   // Supplied by the caller, not hardcoded: /wallets derives it from the
   // wallets this person already has, and /onboarding falls back to their
   // profile's base_currency. A constant "USD" made someone whose wallets
   // are all SGD re-pick SGD on every new wallet.
   const [currencyCode, setCurrencyCode] = useState<WalletInput["currency_code"]>(
-    defaultCurrency as WalletInput["currency_code"],
+    (defaults?.currency_code ?? defaultCurrency) as WalletInput["currency_code"],
   );
   const errorId = useId();
   const hintId = useId();
@@ -74,6 +113,16 @@ export function WalletForm({
   useEffect(() => {
     if (state.error) errorRef.current?.focus();
   }, [state.error]);
+
+  // Fires on the FALLING edge of `pending` — a submission that has just
+  // finished — and only when it left no error behind. Watching `state`
+  // instead would fire on mount, because a successful result and the
+  // initial state are the same value: `{}`.
+  const wasPending = useRef(false);
+  useEffect(() => {
+    if (wasPending.current && !pending && !state.error) onSuccess?.();
+    wasPending.current = pending;
+  }, [pending, state, onSuccess]);
 
   // Forcibly re-applies `kind`/`currencyCode` to the native radio/select
   // DOM nodes after every action response. This is a correction, not a
@@ -119,11 +168,22 @@ export function WalletForm({
     // normally carries. Stating that here, rather than silently accepting
     // "-500" as if it meant debt and storing +500, is the honest option
     // until a product decision widens this.
-    " Only zero or positive amounts are accepted.";
+    " Only zero or positive amounts are accepted." +
+    // Edit mode only. The balance shown on /wallets is
+    // `starting_balance_minor + sum(transactions)` (get_wallet_balances),
+    // so a user who types their statement's CURRENT figure here will not
+    // get that figure back — their transactions are applied on top of it.
+    // That is the one genuinely surprising thing about editing this field,
+    // so it is said plainly rather than left to be discovered.
+    (defaults ? " This is the wallet's opening figure — transactions are still added on top." : "");
 
   return (
     <form action={action} className="flex flex-col gap-4" noValidate>
-      <input type="hidden" name="color_slot" value="1" />
+      {/* The wallet's existing slot on edit; 1 on creation (no colour
+          picker in scope). Carrying it through matters because
+          `updateWallet` writes color_slot on every save — a hardcoded "1"
+          would repaint any wallet the user merely renamed. */}
+      <input type="hidden" name="color_slot" value={String(defaults?.color_slot ?? 1)} />
       <input type="hidden" name="icon" value={selectedIcon} />
       {/* `kind` and `currency_code` are submitted via these hidden inputs,
           not by giving `name="kind"`/`name="currency_code"` to the visible
@@ -177,6 +237,7 @@ export function WalletForm({
           name="name"
           required
           maxLength={60}
+          defaultValue={defaults?.name}
           placeholder="Everyday wallet"
           autoComplete="off"
           aria-describedby={errorId}
@@ -225,6 +286,16 @@ export function WalletForm({
         })}
       </fieldset>
 
+      {lockCurrency ? (
+        /* No control at all, and no <label> either — there is nothing to
+           label. The value is still stated, because a wallet's currency is
+           part of identifying it, and the reason is stated with it so its
+           absence reads as deliberate rather than missing. */
+        <p className="text-sm" style={{ color: "var(--ink-2)" }}>
+          Currency: <span style={{ color: "var(--ink)" }}>{currencyCode}</span> — fixed once a
+          wallet exists, because every amount already recorded is stored in this currency.
+        </p>
+      ) : (
       <label className="flex flex-col gap-1">
         <span className="text-sm" style={{ color: "var(--ink-2)" }}>
           Currency
@@ -257,6 +328,7 @@ export function WalletForm({
           ))}
         </select>
       </label>
+      )}
 
       <label className="flex flex-col gap-1">
         <span className="text-sm" style={{ color: "var(--ink-2)" }}>
@@ -265,7 +337,7 @@ export function WalletForm({
         <input
           name="starting_balance"
           inputMode="decimal"
-          defaultValue="0"
+          defaultValue={defaults?.starting_balance ?? "0"}
           aria-describedby={`${hintId} ${errorId}`}
           aria-invalid={state.field === "starting_balance" ? true : undefined}
           className={`rounded-md border px-3 py-2 ${FOCUS_RING}`}

@@ -150,28 +150,37 @@ export async function addWallet(
  * a future wallet-management screen is expected to bind it the same way
  * src/server/actions/profile.ts's setTheme is bound today.
  *
- * `starting_balance_minor` and `currency_code` are deliberately NOT written
- * here, even though `walletInput` validates both (the schema is shared with
- * `createWallet`, which needs them):
+ * `starting_balance_minor` IS written here as of 2026-08-28, reversing this
+ * action's original decision. The user was shown both designs — a visible
+ * balance-adjustment entry, or an editable opening figure — and chose the
+ * opening figure, explicitly accepting that it restates historical
+ * balances. That is defensible for a field named the INITIAL balance:
+ * correcting what a wallet started with is meant to change what its balance
+ * was all along. The alternative, an `adjustment` txn_kind, was rejected as
+ * disproportionate — it would have added a fourth entry kind that every
+ * budget, chart and transaction list would then have to exclude.
  *
- *  - `starting_balance_minor` only means anything at creation time, seeding
- *    get_wallet_balances' running total. Changing it later would silently
- *    rewrite historical balances instead of recording a correction as its
- *    own event — a future "adjust balance" feature belongs in transactions,
- *    not a field edit.
- *  - `currency_code` has the identical problem, worse: a wallet holding
- *    `starting_balance_minor = 1000` under USD ($10.00) reinterpreted as
- *    JPY becomes ¥1,000 — a 100x value change with no data written, and
- *    `transactions` rows keep their own (now-mismatched) `currency_code`
- *    while get_wallet_balances sums both under one label. Changing a
- *    wallet's currency after it holds a balance or transactions is a
- *    migration operation (recompute/relabel every dependent row), not a
- *    field this action can safely touch.
+ * Balance therefore stays DERIVED. `get_wallet_balances` remains
+ * `starting_balance_minor + sum(transactions)`; nothing writes a balance
+ * column, because there is none.
  *
- * Both are reachable via direct POST regardless of what UI exists (see the
- * module doc comment above), so excluding them from the update payload,
- * not just from a form that doesn't render yet, is what actually closes
- * this off.
+ * `currency_code` is still deliberately NOT written here, even though
+ * `walletInput` validates it (the schema is shared with `createWallet`,
+ * which needs it):
+ *
+ * a wallet holding `starting_balance_minor = 1000` under USD ($10.00)
+ * reinterpreted as JPY becomes ¥1,000 — a 100x value change with no data
+ * written, and `transactions` rows keep their own (now-mismatched)
+ * `currency_code` while get_wallet_balances sums both under one label.
+ * Changing a wallet's currency after it holds a balance or transactions is
+ * a migration operation (recompute/relabel every dependent row), not a
+ * field this action can safely touch.
+ *
+ * It is reachable via direct POST regardless of what UI exists (see the
+ * module doc comment above), so excluding it from the update payload, not
+ * merely from the form, is what actually closes this off — and
+ * wallets.test.ts pins that by posting a different currency and asserting
+ * the column never appears in the payload.
  */
 export async function updateWallet(
   id: string,
@@ -189,11 +198,23 @@ export async function updateWallet(
   } = await supabase.auth.getUser();
   if (!user) return { error: "Not signed in" };
 
-  const { name, kind, color_slot, icon } = parsed.data;
+  const { name, kind, currency_code, starting_balance, color_slot, icon } = parsed.data;
+
+  // Same conversion insertWallet documents at length: pure string->integer
+  // digit manipulation, never `parseFloat(x) * 100`. The minor unit comes
+  // from the wallet's EXISTING currency as posted — which this action then
+  // refuses to write — so a caller cannot combine a currency swap with a
+  // balance edit to reinterpret the figure on the way in.
+  let startingMinor: number;
+  try {
+    startingMinor = parseAmountInput(starting_balance, minorUnitFor(currency_code));
+  } catch {
+    return { error: "Starting balance is not a valid amount", field: "starting_balance" };
+  }
 
   const { error } = await supabase
     .from("wallets")
-    .update({ name, kind, color_slot, icon })
+    .update({ name, kind, color_slot, icon, starting_balance_minor: startingMinor })
     .eq("id", id)
     .eq("owner_id", user.id);
   if (error) return { error: "Could not update wallet. Please try again." };

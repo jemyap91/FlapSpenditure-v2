@@ -27,6 +27,26 @@ export function parseAmountInput(raw: string, minorUnit: number): number {
   return n;
 }
 
+/**
+ * The inverse of `parseAmountInput`: minor units back to the plain string
+ * a text input can hold and the parser will accept again.
+ *
+ * Deliberately not `formatMoney`, which produces "$1,234,567.89" — a
+ * symbol and thousands separators that `parseAmountInput`'s
+ * `^\d*(\.\d*)?$` would reject the moment the form was resubmitted. Used
+ * to seed WalletForm's edit mode from `starting_balance_minor`.
+ *
+ * Digit manipulation only, never `n / 100`: the division would reintroduce
+ * exactly the binary-float error the minor-unit representation exists to
+ * avoid, and is banned project-wide.
+ */
+export function formatAmountInput(minor: number, minorUnit: number): string {
+  const digits = String(Math.abs(minor)).padStart(minorUnit + 1, "0");
+  const sign = minor < 0 ? "-" : "";
+  if (minorUnit === 0) return `${sign}${digits}`;
+  return `${sign}${digits.slice(0, -minorUnit)}.${digits.slice(-minorUnit)}`;
+}
+
 /** Keypad reducer. Enforces one decimal point and the currency's precision. */
 export function appendDigit(current: string, digit: string, minorUnit: number): string {
   if (digit === ".") {

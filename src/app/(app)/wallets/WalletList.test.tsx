@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { WalletList } from "./WalletList";
 import type { WalletWithBalance } from "./wallet-rows";
@@ -21,6 +21,11 @@ vi.mock("@/server/actions/wallets", () => ({
 const ME = "11111111-1111-4111-8111-111111111111";
 const PARTNER = "22222222-2222-4222-8222-222222222222";
 
+/** A stand-in for the bound `updateWallet`. WalletList only needs
+ *  SOMETHING action-shaped to render the form; what the action does is
+ *  wallets.test.ts's subject, not this file's. */
+const noopAction = async () => ({});
+
 const wallet = (id: string, over: Partial<WalletWithBalance> = {}): WalletWithBalance => ({
   id,
   name: `Wallet ${id}`,
@@ -28,6 +33,7 @@ const wallet = (id: string, over: Partial<WalletWithBalance> = {}): WalletWithBa
   currency_code: "USD",
   color_slot: 1,
   icon: "landmark",
+  starting_balance_minor: 0,
   owner_id: ME,
   balanceMinor: 0,
   ...over,
@@ -183,8 +189,8 @@ describe("WalletList", () => {
   });
 });
 
-describe("WalletList — collapsible members", () => {
-  it("hides each wallet's members behind a closed disclosure by default", () => {
+describe("WalletList — members and edit dialogs", () => {
+  it("shows no members until asked, and no dialog at rest", () => {
     render(
       <WalletList
         wallets={[wallet("a", { name: "Test" })]}
@@ -192,12 +198,13 @@ describe("WalletList — collapsible members", () => {
         memberSections={{ a: <p>members for Test</p> }}
       />,
     );
-    const toggle = screen.getByRole("button", { name: "Members of Test" });
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    expect(screen.getByRole("button", { name: "Members of Test" })).toBeInTheDocument();
     expect(screen.queryByText("members for Test")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("reveals that wallet's members when its own disclosure is opened", async () => {
+  it("opens ONLY that wallet's members, in a dialog named after it", async () => {
     const user = userEvent.setup();
     render(
       <WalletList
@@ -206,14 +213,121 @@ describe("WalletList — collapsible members", () => {
         memberSections={{ a: <p>members for Test</p>, b: <p>members for Citi</p> }}
       />,
     );
-    // Opening one card must not open the other — state is per wallet, not
-    // a single shared boolean.
+
     await user.click(screen.getByRole("button", { name: "Members of Test" }));
+
+    // The dialog's own name is the only thing identifying WHICH wallet is
+    // being changed once the row is behind a backdrop.
+    expect(screen.getByRole("dialog", { name: "Members of Test" })).toBeInTheDocument();
     expect(screen.getByText("members for Test")).toBeInTheDocument();
     expect(screen.queryByText("members for Citi")).not.toBeInTheDocument();
   });
 
-  it("keeps the balance visible while collapsed — it is why the page is opened", () => {
+  it("opens the edit form for that wallet", async () => {
+    const user = userEvent.setup();
+    render(
+      <WalletList
+        wallets={[wallet("a", { name: "Test" })]}
+        currentUserId={ME}
+        memberSections={{ a: <p>members for Test</p> }}
+        editActions={{ a: noopAction }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Edit Test" }));
+
+    expect(screen.getByRole("dialog", { name: "Edit Test" })).toBeInTheDocument();
+    // The list builds the form itself from the wallet it already holds, so
+    // the fields must arrive seeded — an empty form here would mean the
+    // dialog opened on the right wallet but forgot which one.
+    expect(screen.getByLabelText("Name")).toHaveValue("Test");
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeInTheDocument();
+    // The two dialogs share one slot — opening Edit must not also show
+    // Members, which a per-view render could easily get wrong.
+    expect(screen.queryByText("members for Test")).not.toBeInTheDocument();
+  });
+
+  /**
+   * `updateWallet` scopes its UPDATE to `owner_id`, so an edit by a member
+   * would match zero rows and be reported as success — the identical defect
+   * archiveWallet was fixed for. The page withholds the slot; this asserts
+   * the list then offers no control, rather than a disabled one.
+   */
+  it("offers no Edit for a wallet with no edit slot", () => {
+    render(
+      <WalletList
+        wallets={[wallet("a", { name: "Shared", owner_id: PARTNER })]}
+        currentUserId={ME}
+        memberSections={{ a: <p>members for Shared</p> }}
+        editActions={{}}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Edit Shared" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Members of Shared" })).toBeInTheDocument();
+  });
+
+  /**
+   * The reason the page hands over bound ACTIONS rather than rendered
+   * forms. A pre-rendered node cannot tell this component that a save
+   * succeeded, so the dialog would sit open on top of a change that had
+   * already happened — reading as though nothing did.
+   */
+  it("closes the edit dialog once the save succeeds", async () => {
+    const user = userEvent.setup();
+    render(
+      <WalletList
+        wallets={[wallet("a", { name: "Test" })]}
+        currentUserId={ME}
+        editActions={{ a: noopAction }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Edit Test" }));
+    expect(screen.getByRole("dialog", { name: "Edit Test" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  /** The other half: a REJECTED save must leave the dialog open, or the
+   *  user loses both the error message and everything they typed. */
+  it("keeps the edit dialog open when the save is refused", async () => {
+    const user = userEvent.setup();
+    render(
+      <WalletList
+        wallets={[wallet("a", { name: "Test" })]}
+        currentUserId={ME}
+        editActions={{ a: async () => ({ error: "Name is required" }) }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Edit Test" }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(screen.getByText("Name is required")).toBeInTheDocument());
+    expect(screen.getByRole("dialog", { name: "Edit Test" })).toBeInTheDocument();
+  });
+
+  it("closes the dialog again", async () => {
+    const user = userEvent.setup();
+    render(
+      <WalletList
+        wallets={[wallet("a", { name: "Test" })]}
+        currentUserId={ME}
+        memberSections={{ a: <p>members for Test</p> }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Members of Test" }));
+    await user.keyboard("{Escape}");
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByText("members for Test")).not.toBeInTheDocument();
+  });
+
+  it("keeps the balance on the row — it is why the page is opened", () => {
     render(
       <WalletList
         wallets={[wallet("a", { name: "Test", balanceMinor: 1491200, currency_code: "SGD" })]}

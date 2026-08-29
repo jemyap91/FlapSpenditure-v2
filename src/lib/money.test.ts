@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { formatMoney, parseAmountInput, appendDigit, clampAmountInput } from "./money";
+import {
+  formatMoney,
+  formatAmountInput,
+  parseAmountInput,
+  appendDigit,
+  clampAmountInput,
+} from "./money";
 
 describe("parseAmountInput", () => {
   it("converts a 2-decimal string to minor units without floating point", () => {
@@ -96,5 +102,50 @@ describe("formatMoney", () => {
   it("always renders an explicit sign when asked", () => {
     expect(formatMoney(-1250, "USD", { signed: true })).toBe("−$12.50");
     expect(formatMoney(1250, "USD", { signed: true })).toBe("+$12.50");
+  });
+});
+
+/**
+ * The inverse of parseAmountInput, needed so an edit form can seed its
+ * amount field from what is stored. Deliberately NOT formatMoney: that
+ * produces "$620.00" with a symbol and thousands separators, which
+ * parseAmountInput would then reject on the way back in.
+ */
+describe("formatAmountInput", () => {
+  it("renders minor units as a plain editable string", () => {
+    expect(formatAmountInput(62000, 2)).toBe("620.00");
+    expect(formatAmountInput(0, 2)).toBe("0.00");
+    expect(formatAmountInput(5, 2)).toBe("0.05");
+  });
+
+  it("renders a zero-decimal currency with no decimal point", () => {
+    expect(formatAmountInput(1200, 0)).toBe("1200");
+  });
+
+  it("renders a three-decimal currency with all three", () => {
+    expect(formatAmountInput(1234, 3)).toBe("1.234");
+  });
+
+  it("carries no symbol and no thousands separator", () => {
+    // Both would make the output unparseable by parseAmountInput, which is
+    // exactly where this value is headed when the form is submitted.
+    const out = formatAmountInput(123456789, 2);
+    expect(out).toBe("1234567.89");
+    expect(out).not.toMatch(/[$,]/);
+  });
+
+  /** The property that actually matters: what this renders must survive a
+   *  round trip through the parser the form posts into. */
+  it("round-trips through parseAmountInput", () => {
+    for (const [minor, unit] of [
+      [62000, 2],
+      [0, 2],
+      [5, 2],
+      [1200, 0],
+      [1234, 3],
+      [123456789, 2],
+    ] as const) {
+      expect(parseAmountInput(formatAmountInput(minor, unit), unit)).toBe(minor);
+    }
   });
 });

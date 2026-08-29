@@ -129,11 +129,18 @@ export default async function WalletDetailPage({
     icon: string;
     owner_id: string;
     archived_at: string | null;
+    /* Not rendered here. Selected so the `as WalletRow` cast below is
+       truthful rather than merely convenient — mergeWalletBalances takes a
+       WalletRow, and a cast that omits one of its fields is a claim about
+       this row that is not true. */
+    starting_balance_minor: number;
   };
 
   const { data, error: walletError } = await supabase
     .from("wallets")
-    .select("id, name, kind, currency_code, color_slot, icon, owner_id, archived_at")
+    .select(
+      "id, name, kind, currency_code, color_slot, icon, owner_id, archived_at, starting_balance_minor",
+    )
     .eq("id", id)
     .maybeSingle();
 

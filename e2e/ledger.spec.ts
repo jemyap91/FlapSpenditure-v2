@@ -230,6 +230,45 @@ test.describe("wallets", () => {
     await expect(page.getByRole("button", { name: "Archive Everyday" })).toBeDisabled();
   });
 
+  test("editing a wallet's opening balance moves its balance by that amount", async ({ page }) => {
+    await signUpAndOnboard(page, "Everyday");
+
+    // One expense first, so the assertion below can only pass if the
+    // opening figure is ADDED to transactions rather than replacing the
+    // balance outright. With no transactions the two designs would be
+    // indistinguishable — which is the whole point of this test.
+    await page.goto("/transactions/new");
+    await pressAmount(page, "18.00");
+    await page.getByRole("button", { name: "Groceries" }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page).toHaveURL("/transactions");
+
+    await page.goto("/wallets");
+    await expect(page.getByText(`${MINUS}$18.00`)).toBeVisible();
+
+    await page.getByRole("button", { name: "Edit Everyday" }).click();
+    const dialog = page.getByRole("dialog", { name: "Edit Everyday" });
+    await expect(dialog).toBeVisible();
+
+    // Currency is not offered: it is fixed once a wallet exists, because
+    // every amount already recorded is stored in it.
+    await expect(dialog.getByRole("combobox")).toHaveCount(0);
+
+    const balance = dialog.getByLabel("Starting balance");
+    await balance.fill("700.00");
+    await dialog.getByRole("button", { name: "Save changes" }).click();
+
+    // The dialog closes itself on success — a modal left open over a save
+    // that already happened reads as though nothing did.
+    await expect(dialog).toBeHidden();
+
+    // 700.00 opening + (−18.00) spent. NOT 700.00: that would mean the
+    // edit had overwritten the balance instead of seeding it, which is the
+    // design that was explicitly rejected.
+    await expect(page.getByText("$682.00")).toBeVisible();
+    await expect(page.getByText("$700.00")).toHaveCount(0);
+  });
+
   test("a second wallet unlocks transfers, and undo restores BOTH legs", async ({ page }) => {
     await signUpAndOnboard(page, "Everyday");
     await addWallet(page, "Savings");

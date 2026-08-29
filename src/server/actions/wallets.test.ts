@@ -8,7 +8,7 @@
 // reason this suite exercises `archiveWallet`'s real logic rather than a
 // stand-in.
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { archiveWallet } from "./wallets";
+import { archiveWallet, updateWallet } from "./wallets";
 
 const OWNER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const WALLET_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -26,10 +26,15 @@ const WALLET_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
  * and the assertions are on `archiveWallet`'s return value, which is the
  * only thing the user ever sees.
  */
-const { getUser, countResult, updateResult, revalidatePath } = vi.hoisted(() => ({
+const { getUser, countResult, updateResult, updateSpy, revalidatePath } = vi.hoisted(() => ({
   getUser: vi.fn(),
   countResult: { count: 0 as number | null, error: null as unknown },
   updateResult: { data: null as { id: string }[] | null, error: null as unknown },
+  // Captures the UPDATE payload itself. `updateWallet`'s whole contract is
+  // WHICH columns it writes — `currency_code` must stay out of it however
+  // the form is posted — and that is invisible to a mock that only reports
+  // the outcome.
+  updateSpy: vi.fn(),
   revalidatePath: vi.fn(),
 }));
 
@@ -47,8 +52,9 @@ vi.mock("@/lib/supabase/server", () => ({
           if (opts?.head) mode = "count";
           return builder;
         },
-        update: () => {
+        update: (payload: unknown) => {
           mode = "update";
+          updateSpy(payload);
           return builder;
         },
         is: () => builder,
@@ -132,5 +138,67 @@ describe("archiveWallet", () => {
     const result = await archiveWallet(WALLET_ID);
 
     expect(result).toEqual({ error: "Not signed in" });
+  });
+});
+
+/**
+ * `updateWallet` deliberately wrote only descriptive columns until the user
+ * asked for an editable opening figure (2026-08-28). That decision is
+ * recorded on the action itself; these tests pin the resulting column set,
+ * because the risk is entirely about WHICH columns travel — `currency_code`
+ * reinterprets every stored minor-unit amount and must stay out no matter
+ * what a caller posts.
+ */
+function editForm(overrides: Record<string, string> = {}) {
+  const fd = new FormData();
+  const fields: Record<string, string> = {
+    name: "Citi Rewards",
+    kind: "card",
+    currency_code: "SGD",
+    starting_balance: "700.00",
+    color_slot: "2",
+    icon: "credit-card",
+    ...overrides,
+  };
+  for (const [k, v] of Object.entries(fields)) fd.set(k, v);
+  return fd;
+}
+
+describe("updateWallet", () => {
+  it("writes the opening balance as minor units", async () => {
+    const result = await updateWallet(WALLET_ID, {}, editForm());
+
+    expect(result).toEqual({});
+    expect(updateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ starting_balance_minor: 70000 }),
+    );
+  });
+
+  /**
+   * The guard that matters. A currency change would reinterpret every
+   * amount already stored against this wallet (SGD 10.00 and JPY 10 are
+   * `1000` and `10`), and `transactions` rows keep their own currency_code
+   * while get_wallet_balances sums both under one label. Excluding it from
+   * the PAYLOAD — not merely from a form — is what closes off a direct POST.
+   */
+  it("never writes currency_code, however the form is posted", async () => {
+    // `starting_balance` must be JPY-legal (no decimals) so the payload is
+    // actually REACHED — posting "700.00" here would fail validation first
+    // and the test would pass without ever inspecting a payload.
+    await updateWallet(WALLET_ID, {}, editForm({ currency_code: "JPY", starting_balance: "700" }));
+
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect(updateSpy.mock.calls[0]![0]).not.toHaveProperty("currency_code");
+  });
+
+  it("rejects a fraction the currency cannot hold, rather than truncating it", async () => {
+    const result = await updateWallet(
+      WALLET_ID,
+      {},
+      editForm({ currency_code: "JPY", starting_balance: "12.999" }),
+    );
+
+    expect(result.error).toMatch(/no decimal places/i);
+    expect(updateSpy).not.toHaveBeenCalled();
   });
 });

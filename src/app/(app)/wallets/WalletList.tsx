@@ -2,10 +2,12 @@
 
 import { useState, useTransition } from "react";
 import Link from "next/link";
-import { Landmark, CreditCard, ChevronRight } from "lucide-react";
-import { archiveWallet } from "@/server/actions/wallets";
-import { formatMoney } from "@/lib/money";
+import { Landmark, CreditCard } from "lucide-react";
+import { archiveWallet, type WalletState } from "@/server/actions/wallets";
+import { formatAmountInput, formatMoney, minorUnitFor } from "@/lib/money";
 import { slotVar } from "@/lib/palette";
+import { Modal } from "@/components/Modal";
+import { WalletForm } from "@/components/WalletForm";
 import type { WalletWithBalance } from "./wallet-rows";
 
 const FOCUS_RING =
@@ -49,6 +51,7 @@ export function WalletList({
   wallets,
   currentUserId,
   memberSections,
+  editActions,
 }: {
   wallets: WalletWithBalance[];
   currentUserId: string;
@@ -68,13 +71,31 @@ export function WalletList({
    * needing to know anything about membership.
    */
   memberSections?: Record<string, React.ReactNode>;
+  /**
+   * Per-wallet bound `updateWallet` actions, keyed by wallet id. Actions
+   * rather than rendered forms — unlike `memberSections` above — because
+   * this component must know when a save SUCCEEDED in order to close its
+   * dialog, and a pre-rendered node cannot tell it. A Server Component
+   * cannot hand a Client Component a callback, but it can hand over a
+   * server action, so the form is built here instead.
+   *
+   * Present only for wallets the viewer OWNS — the page filters them —
+   * because `updateWallet` scopes its UPDATE to `owner_id` and an edit
+   * matching zero rows would be reported as success. A wallet with no
+   * action here simply renders no Edit control.
+   */
+  editActions?: Record<string, (prev: WalletState, formData: FormData) => Promise<WalletState>>;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [, start] = useTransition();
-  /** Which wallets have their members revealed. Per wallet, not one shared
-   *  flag — opening one card must not open every card. */
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  /** Which wallet's dialog is open, and which one. A single value rather
+   *  than a per-wallet map: only one modal can be open at a time, and a map
+   *  would let two dialogs be "open" at once with only z-order deciding
+   *  which the user could reach. */
+  const [dialog, setDialog] = useState<{ walletId: string; view: "members" | "edit" } | null>(
+    null,
+  );
   const [query, setQuery] = useState("");
 
   // The app requires at least one active wallet to function: (app)/layout.tsx
@@ -101,6 +122,11 @@ export function WalletList({
   const showSearch = wallets.length > 3;
   const q = query.trim().toLowerCase();
   const visible = q ? wallets.filter((w) => w.name.toLowerCase().includes(q)) : wallets;
+
+  /* Resolved from the full list, never from `visible`: typing in the search
+     box while a dialog is open must not unmount the dialog and strand the
+     user's half-finished edit. */
+  const dialogWallet = dialog ? wallets.find((w) => w.id === dialog.walletId) : undefined;
 
   function archive(id: string) {
     setError(null);
@@ -166,27 +192,19 @@ export function WalletList({
           return (
             <li
               key={w.id}
-              className="mb-4 flex flex-col rounded-lg border px-4 py-3"
+              className="mb-2 flex items-center gap-3 rounded-lg border px-3 py-2"
               style={{ borderColor: "var(--grid)" }}
             >
-              <div className="flex items-center gap-3">
               {/* Colour is never the only cue (spec §6.1/§6.3): the slot
                   colour tints the glyph, but the glyph shape and the name
                   beside it are what actually identify the wallet. */}
               <Icon aria-hidden size={18} style={{ color: slotVar(w.color_slot) }} className="shrink-0" />
               <span className="min-w-0 flex-1">
-                {/* The wallet's NAME is the link into its detail screen
-                    (Task 3 of the wallet-detail plan) — Members and Archive
-                    stay right here on the card, unmoved, per that task's
-                    brief. `block truncate` preserved on the link itself so
-                    a long name still clips with an ellipsis instead of
-                    wrapping the row, exactly as the plain span did before.
+                {/* The wallet's NAME is the link into its detail screen.
                     The accessible name is the wallet's name alone: nothing
                     inside this anchor besides `w.name`'s text node, so no
                     "Card · USD" leaks into what a screen reader announces
-                    as the link's name (the controller addendum pins this
-                    exact accessible name — the wallet's own name, nothing
-                    more). */}
+                    as the link's name. */}
                 <Link
                   href={`/wallets/${w.id}`}
                   className={`block truncate rounded-sm ${FOCUS_RING}`}
@@ -203,8 +221,7 @@ export function WalletList({
                   "$0.00" would assert a balance this app never derived.
                   Unsigned `formatMoney` still prefixes a real minus for a
                   negative balance (a card can genuinely be overdrawn) but
-                  adds no "+" to a positive one, which is what a balance
-                  should read like. */}
+                  adds no "+" to a positive one. */}
               <span
                 className="shrink-0 tabular-nums"
                 style={{
@@ -218,72 +235,52 @@ export function WalletList({
               >
                 {w.balanceMinor === null ? "—" : formatMoney(w.balanceMinor, w.currency_code)}
               </span>
+
+              {/* Every row action is named after its wallet. Several rows
+                  each render an "Edit"/"Members" control, and by visible
+                  text alone they are indistinguishable to anyone navigating
+                  by accessible name — the same reasoning the old inline
+                  Members toggle already documented. */}
+              {editActions?.[w.id] && (
+                <button
+                  type="button"
+                  aria-label={`Edit ${w.name}`}
+                  onClick={() => setDialog({ walletId: w.id, view: "edit" })}
+                  className={`shrink-0 rounded-sm text-xs underline ${FOCUS_RING}`}
+                  style={{ color: "var(--ink-2)" }}
+                >
+                  Edit
+                </button>
+              )}
+
+              {memberSections?.[w.id] && (
+                <button
+                  type="button"
+                  aria-label={`Members of ${w.name}`}
+                  onClick={() => setDialog({ walletId: w.id, view: "members" })}
+                  className={`shrink-0 rounded-sm text-xs underline ${FOCUS_RING}`}
+                  style={{ color: "var(--ink-2)" }}
+                >
+                  Members
+                </button>
+              )}
+
               {/* Absent for a non-owner, not disabled — the convention this
                   codebase already applies to a control that can never
-                  succeed (TransactionForm removes the category chip on a
-                  transfer rather than greying it out; MembersSection
-                  renders no Remove for a non-owner at all). A disabled
-                  Archive would also read as "you could archive this if
-                  something changed", which is false: only the owner ever
-                  can. */}
+                  succeed. A disabled Archive would also read as "you could
+                  archive this if something changed", which is false. */}
               {isOwner && (
                 <button
                   type="button"
                   aria-label={`Archive ${w.name}`}
                   disabled={isLastWallet || archiving}
                   onClick={() => archive(w.id)}
-                  className={`shrink-0 text-xs underline disabled:opacity-60 ${FOCUS_RING}`}
+                  className={`shrink-0 rounded-sm text-xs underline disabled:opacity-60 ${FOCUS_RING}`}
                   style={{ color: "var(--ink-2)" }}
                 >
                   {archiving ? "Archiving…" : "Archive"}
                 </button>
               )}
-              </div>
-
-              {memberSections?.[w.id] ? (
-                <div className="mt-3 border-t pt-3" style={{ borderColor: "var(--grid)" }}>
-                  {/* A real <button> with aria-expanded/aria-controls, not a
-                      styled div: this is a disclosure, and assistive tech
-                      needs to know both that it toggles and what it toggles.
-                      Collapsed by default — the balance is what this page is
-                      opened for; membership is occasional. */}
-                  <button
-                    type="button"
-                    aria-expanded={!!expanded[w.id]}
-                    aria-controls={`members-panel-${w.id}`}
-                    /* Named after the wallet: several cards each render a
-                       "Members" toggle, and by accessible name alone they
-                       would be indistinguishable. Unlike the earlier
-                       sr-only-heading mistake this hides nothing — the
-                       wallet's name is visible immediately above, inside
-                       the same card; this only gives assistive tech the
-                       containment a sighted user already has. */
-                    aria-label={`Members of ${w.name}`}
-                    onClick={() => setExpanded((prev) => ({ ...prev, [w.id]: !prev[w.id] }))}
-                    className={`flex w-full items-center gap-2 text-sm ${FOCUS_RING}`}
-                    style={{ color: "var(--ink-2)" }}
-                  >
-                    <ChevronRight
-                      aria-hidden
-                      size={14}
-                      style={{
-                        transform: expanded[w.id] ? "rotate(90deg)" : "none",
-                        transition: "transform 120ms",
-                      }}
-                    />
-                    Members
-                  </button>
-                  {/* Unmounted rather than hidden when collapsed: a
-                      display:none subtree still exposes its form controls to
-                      some tooling, and an invite form nobody can see should
-                      not be submittable. */}
-                  {expanded[w.id] && (
-                    <div id={`members-panel-${w.id}`} className="mt-3">
-                      {memberSections[w.id]}
-                    </div>
-                  )}
-                </div>
-              ) : null}
             </li>
           );
         })}
@@ -293,6 +290,49 @@ export function WalletList({
         <p className="text-xs" style={{ color: "var(--ink-2)" }}>
           You need at least one wallet, so this one can’t be archived. Add another first.
         </p>
+      )}
+
+      {/* ONE dialog for the whole list, not one per row. Rendering a Modal
+          inside every <li> would mount a focus trap and a keydown handler
+          per wallet — 30 wallets, 30 traps — when only one can ever be
+          open. The open row's slot is looked up here instead.
+
+          Named after the wallet, not just "Edit"/"Members": the dialog's
+          accessible name is the only thing telling a screen-reader user
+          WHICH wallet they are about to change, since the row they clicked
+          is now behind a backdrop. */}
+      {dialogWallet && (
+        <Modal
+          open
+          title={
+            dialog!.view === "edit" ? `Edit ${dialogWallet.name}` : `Members of ${dialogWallet.name}`
+          }
+          onClose={() => setDialog(null)}
+        >
+          {dialog!.view === "edit" && editActions?.[dialogWallet.id] ? (
+            <WalletForm
+              action={editActions[dialogWallet.id]!}
+              submitLabel="Save changes"
+              pendingLabel="Saving…"
+              defaultCurrency={dialogWallet.currency_code}
+              defaults={{
+                name: dialogWallet.name,
+                kind: dialogWallet.kind,
+                currency_code: dialogWallet.currency_code,
+                starting_balance: formatAmountInput(
+                  dialogWallet.starting_balance_minor,
+                  minorUnitFor(dialogWallet.currency_code),
+                ),
+                color_slot: dialogWallet.color_slot,
+                icon: dialogWallet.icon,
+              }}
+              lockCurrency
+              onSuccess={() => setDialog(null)}
+            />
+          ) : (
+            memberSections?.[dialogWallet.id]
+          )}
+        </Modal>
       )}
     </div>
   );

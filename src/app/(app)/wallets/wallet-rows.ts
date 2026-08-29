@@ -12,6 +12,11 @@ export type WalletRow = {
   currency_code: string;
   color_slot: number;
   icon: string;
+  /** The wallet's opening figure, in minor units. Carried to the UI so the
+   *  edit form can seed itself: the balance shown on this screen is
+   *  `starting_balance_minor + sum(transactions)` and only the opening half
+   *  is editable, so the form cannot derive it from the displayed total. */
+  starting_balance_minor: number;
 };
 
 export type BalanceRow = {
