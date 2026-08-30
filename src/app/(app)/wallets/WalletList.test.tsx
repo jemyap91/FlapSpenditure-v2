@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { WalletList } from "./WalletList";
 import type { WalletWithBalance } from "./wallet-rows";
@@ -85,23 +85,36 @@ describe("WalletList", () => {
     expect(link).toHaveAttribute("href", "/wallets/a");
   });
 
-  it("disables Archive on the only wallet and says why", () => {
+  /* The Archive BUTTON is gone (2026-08-29) — it moved to a swipe plus an
+     entry in the edit dialog, to give wallet names their width back on a
+     phone. The behaviour it guarded did not move, so these cases now drive
+     the same logic through the swipe. See "WalletList — archiving" below
+     for the gesture's own cases. */
+
+  it("refuses to archive the only wallet, and says why", () => {
     render(<WalletList currentUserId={ME} wallets={[wallet("a", { name: "Everyday" })]} />);
-    expect(screen.getByRole("button", { name: /Archive Everyday/ })).toBeDisabled();
-    expect(screen.getByText(/need at least one wallet/i)).toBeInTheDocument();
+
+    swipeLeft(screen.getByRole("listitem", { name: "Everyday" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/need at least one wallet/i);
   });
 
-  it("enables Archive once a second wallet exists", () => {
+  it("allows archiving once a second wallet exists", () => {
     render(<WalletList currentUserId={ME} wallets={[wallet("a", { name: "Everyday" }), wallet("b", { name: "Savings" })]} />);
-    expect(screen.getByRole("button", { name: /Archive Everyday/ })).toBeEnabled();
-    expect(screen.getByRole("button", { name: /Archive Savings/ })).toBeEnabled();
-    expect(screen.queryByText(/need at least one wallet/i)).not.toBeInTheDocument();
+
+    swipeLeft(screen.getByRole("listitem", { name: "Everyday" }));
+
+    expect(screen.getByRole("dialog", { name: "Archive Everyday?" })).toBeInTheDocument();
   });
 
-  it("archives the wallet whose button was pressed, not the first one", async () => {
+  it("archives the wallet that was swiped, not the first one", async () => {
     const user = userEvent.setup();
     render(<WalletList currentUserId={ME} wallets={[wallet("a", { name: "Everyday" }), wallet("b", { name: "Savings" })]} />);
-    await user.click(screen.getByRole("button", { name: /Archive Savings/ }));
+
+    swipeLeft(screen.getByRole("listitem", { name: "Savings" }));
+    await user.click(screen.getByRole("button", { name: "Archive" }));
+
     expect(archiveWallet).toHaveBeenCalledExactlyOnceWith("b");
   });
 
@@ -115,7 +128,10 @@ describe("WalletList", () => {
     vi.mocked(archiveWallet).mockResolvedValue({ error: "Could not archive wallet" });
     const user = userEvent.setup();
     render(<WalletList currentUserId={ME} wallets={[wallet("a", { name: "Everyday" }), wallet("b", { name: "Savings" })]} />);
-    await user.click(screen.getByRole("button", { name: /Archive Savings/ }));
+
+    swipeLeft(screen.getByRole("listitem", { name: "Savings" }));
+    await user.click(screen.getByRole("button", { name: "Archive" }));
+
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not archive wallet");
   });
 
@@ -146,10 +162,11 @@ describe("WalletList", () => {
         ]}
       />,
     );
-    // Positive pairing: the control still exists for the wallet they DO
-    // own, so this is an ownership filter, not Archive disappearing.
-    expect(screen.getByRole("button", { name: /Archive Everyday/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Archive Household/ })).not.toBeInTheDocument();
+    // Positive pairing: the gesture still works on the wallet they DO own,
+    // so this is an ownership filter, not archiving disappearing. Two
+    // wallets exist, so the last-wallet guard is not what decides either.
+    swipeLeft(screen.getByRole("listitem", { name: "Household" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   /**
@@ -168,8 +185,10 @@ describe("WalletList", () => {
         ]}
       />,
     );
-    expect(screen.getByRole("button", { name: /Archive Everyday/ })).toBeDisabled();
-    expect(screen.getByText(/need at least one wallet/i)).toBeInTheDocument();
+    swipeLeft(screen.getByRole("listitem", { name: "Everyday" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/need at least one wallet/i);
   });
 
   it("enables Archive once the user owns a second wallet, shared wallets aside", () => {
@@ -183,8 +202,12 @@ describe("WalletList", () => {
         ]}
       />,
     );
-    expect(screen.getByRole("button", { name: /Archive Everyday/ })).toBeEnabled();
-    expect(screen.getByRole("button", { name: /Archive Savings/ })).toBeEnabled();
+    // Two OWNED wallets, so the guard lifts even though one of the three
+    // rows belongs to somebody else — the count that matters is ownership,
+    // which is what archiveWallet itself counts.
+    swipeLeft(screen.getByRole("listitem", { name: "Everyday" }));
+
+    expect(screen.getByRole("dialog", { name: "Archive Everyday?" })).toBeInTheDocument();
     expect(screen.queryByText(/need at least one wallet/i)).not.toBeInTheDocument();
   });
 });
@@ -374,6 +397,151 @@ describe("WalletList — search", () => {
     const user = userEvent.setup();
     render(<WalletList wallets={many} currentUserId={ME} />);
     await user.type(screen.getByLabelText(/Search wallets/i), "Travel");
-    expect(screen.getByRole("button", { name: "Archive Travel" })).toBeEnabled();
+
+    swipeLeft(screen.getByRole("listitem", { name: "Travel" }));
+
+    expect(screen.getByRole("dialog", { name: "Archive Travel?" })).toBeInTheDocument();
+  });
+});
+
+
+/**
+ * Swipe-to-archive and its confirmation (2026-08-29). The Archive text
+ * button came off the row to give wallet names their width back on a
+ * phone; a swipe replaced it, and Archive also moved into the edit dialog
+ * so the function is not reachable ONLY by a gesture — a swipe cannot be
+ * performed by keyboard or on a desktop at all.
+ */
+function swipeLeft(row: HTMLElement, distance = 120) {
+  fireEvent.touchStart(row, { touches: [{ clientX: 300, clientY: 40 }] });
+  fireEvent.touchMove(row, { touches: [{ clientX: 300 - distance, clientY: 40 }] });
+  fireEvent.touchEnd(row, { changedTouches: [{ clientX: 300 - distance, clientY: 40 }] });
+}
+
+describe("WalletList — archiving", () => {
+  const two = [wallet("a", { name: "Test" }), wallet("b", { name: "Citi" })];
+
+  it("no longer spends row width on an Archive button", () => {
+    render(<WalletList wallets={two} currentUserId={ME} />);
+
+    // The width this frees is the entire point of the change — a wallet
+    // name was being truncated on a phone to make room for it.
+    expect(screen.queryByRole("button", { name: "Archive Test" })).not.toBeInTheDocument();
+  });
+
+  it("asks before archiving, naming the wallet and promising its transactions", () => {
+    render(<WalletList wallets={two} currentUserId={ME} />);
+
+    swipeLeft(screen.getByRole("listitem", { name: "Test" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Archive Test?" });
+    expect(dialog).toBeInTheDocument();
+    // Archiving keeps every transaction (archived_at is a soft flag) and
+    // saying so is what makes the confirmation honest rather than scary.
+    expect(dialog).toHaveTextContent(/transactions are kept/i);
+  });
+
+  it("does nothing at all until the confirmation is accepted", async () => {
+    const user = userEvent.setup();
+    render(<WalletList wallets={two} currentUserId={ME} />);
+
+    swipeLeft(screen.getByRole("listitem", { name: "Test" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(archiveWallet).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("archives the swiped wallet once confirmed", async () => {
+    vi.mocked(archiveWallet).mockResolvedValue({});
+    const user = userEvent.setup();
+    render(<WalletList wallets={two} currentUserId={ME} />);
+
+    swipeLeft(screen.getByRole("listitem", { name: "Citi" }));
+    await user.click(screen.getByRole("button", { name: "Archive" }));
+
+    // The SWIPED wallet, not merely some wallet — a shared confirm dialog
+    // makes carrying the right id the thing most likely to go wrong.
+    await waitFor(() => expect(archiveWallet).toHaveBeenCalledWith("b"));
+  });
+
+  it("ignores a short drag, so a scroll is not an archive", () => {
+    render(<WalletList wallets={two} currentUserId={ME} />);
+
+    swipeLeft(screen.getByRole("listitem", { name: "Test" }), 20);
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  /**
+   * The guard that stops a scroll becoming an archive. On a phone almost
+   * every vertical drag carries some horizontal drift, so distance alone
+   * is not enough to tell "swiping this row" from "scrolling the list" —
+   * the finger's DOMINANT axis is. Without this, flicking down a long
+   * wallet list would open a confirmation dialog at random.
+   */
+  it("ignores a mostly-vertical drag, so scrolling is not archiving", () => {
+    render(<WalletList wallets={two} currentUserId={ME} />);
+    const target = screen.getByRole("listitem", { name: "Test" });
+
+    // 80px left, but 160px down: far enough left to clear the distance
+    // threshold, and unmistakably a scroll.
+    fireEvent.touchStart(target, { touches: [{ clientX: 300, clientY: 40 }] });
+    fireEvent.touchMove(target, { touches: [{ clientX: 220, clientY: 200 }] });
+    fireEvent.touchEnd(target, { changedTouches: [{ clientX: 220, clientY: 200 }] });
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("ignores a swipe to the RIGHT", () => {
+    render(<WalletList wallets={two} currentUserId={ME} />);
+    const target = screen.getByRole("listitem", { name: "Test" });
+
+    fireEvent.touchStart(target, { touches: [{ clientX: 100, clientY: 40 }] });
+    fireEvent.touchMove(target, { touches: [{ clientX: 260, clientY: 40 }] });
+    fireEvent.touchEnd(target, { changedTouches: [{ clientX: 260, clientY: 40 }] });
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  /**
+   * A gesture is not an affordance: it is invisible, undiscoverable, and
+   * impossible to perform with a keyboard or a mouse. Archive therefore
+   * also lives in the edit dialog, which is reachable both ways.
+   */
+  it("also offers Archive inside the edit dialog, for keyboard and desktop", async () => {
+    const user = userEvent.setup();
+    render(<WalletList wallets={two} currentUserId={ME} editActions={{ a: noopAction }} />);
+
+    await user.click(screen.getByRole("button", { name: "Edit Test" }));
+    await user.click(screen.getByRole("button", { name: /Archive this wallet/i }));
+
+    expect(screen.getByRole("dialog", { name: "Archive Test?" })).toBeInTheDocument();
+  });
+
+  /**
+   * The app needs one active wallet — (app)/layout.tsx sends a user with
+   * none to /onboarding. The old UI disabled the button; a gesture cannot
+   * be disabled, so the refusal has to be stated after the fact instead of
+   * silently doing nothing, which would read as a broken swipe.
+   */
+  it("refuses to archive a lone wallet, and says why", () => {
+    render(<WalletList wallets={[wallet("a", { name: "Only" })]} currentUserId={ME} />);
+
+    swipeLeft(screen.getByRole("listitem", { name: "Only" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/need at least one wallet/i);
+    expect(archiveWallet).not.toHaveBeenCalled();
+  });
+
+  it("offers no swipe on a wallet somebody else owns", () => {
+    render(<WalletList wallets={[...two, wallet("c", { name: "Shared", owner_id: PARTNER })]} currentUserId={ME} />);
+
+    swipeLeft(screen.getByRole("listitem", { name: "Shared" }));
+
+    // archiveWallet is owner-scoped; a member's archive would match zero
+    // rows and be reported as success. Same reasoning as the absent button.
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });

@@ -1,14 +1,18 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import Link from "next/link";
-import { Landmark, CreditCard } from "lucide-react";
+import { Landmark, CreditCard, Settings, User } from "lucide-react";
 import { archiveWallet, type WalletState } from "@/server/actions/wallets";
 import { formatAmountInput, formatMoney, minorUnitFor } from "@/lib/money";
 import { slotVar } from "@/lib/palette";
 import { Modal } from "@/components/Modal";
 import { WalletForm } from "@/components/WalletForm";
 import type { WalletWithBalance } from "./wallet-rows";
+
+/** How far a finger must travel left before it counts as a swipe rather
+ *  than a tap that wandered. */
+const SWIPE_MIN_PX = 60;
 
 const FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
@@ -93,10 +97,15 @@ export function WalletList({
    *  than a per-wallet map: only one modal can be open at a time, and a map
    *  would let two dialogs be "open" at once with only z-order deciding
    *  which the user could reach. */
-  const [dialog, setDialog] = useState<{ walletId: string; view: "members" | "edit" } | null>(
-    null,
-  );
+  const [dialog, setDialog] = useState<{
+    walletId: string;
+    view: "members" | "edit" | "archive";
+  } | null>(null);
   const [query, setQuery] = useState("");
+  /** Where the current touch began, per row. A ref, not state: this changes
+   *  on every touchmove and nothing on screen depends on it, so re-rendering
+   *  the whole list mid-gesture would be pure cost. */
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
 
   // The app requires at least one active wallet to function: (app)/layout.tsx
   // redirects a user with zero active wallets to /onboarding. Archiving the
@@ -127,6 +136,22 @@ export function WalletList({
      box while a dialog is open must not unmount the dialog and strand the
      user's half-finished edit. */
   const dialogWallet = dialog ? wallets.find((w) => w.id === dialog.walletId) : undefined;
+
+  /**
+   * Where a swipe and the edit dialog's Archive both land. The last-wallet
+   * refusal is stated rather than silently ignored: the old UI could
+   * DISABLE a button, but a gesture has no disabled state, so a swipe that
+   * quietly did nothing would read as a broken swipe.
+   */
+  function requestArchive(w: WalletWithBalance) {
+    if (w.owner_id !== currentUserId) return;
+    if (isLastWallet) {
+      setError("You need at least one wallet. Add another before archiving this one.");
+      return;
+    }
+    setError(null);
+    setDialog({ walletId: w.id, view: "archive" });
+  }
 
   function archive(id: string) {
     setError(null);
@@ -187,13 +212,41 @@ export function WalletList({
         {visible.map((w) => {
           const Icon = WALLET_ICON_COMPONENTS[w.icon as keyof typeof WALLET_ICON_COMPONENTS] ??
             (w.kind === "card" ? CreditCard : Landmark);
+          // The confirmation dialog closes as soon as Archive is pressed,
+          // so without this the row would sit unchanged while the request
+          // is in flight and the press would read as having done nothing.
           const archiving = pendingId === w.id;
-          const isOwner = w.owner_id === currentUserId;
           return (
             <li
               key={w.id}
-              className="mb-2 flex items-center gap-3 rounded-lg border px-3 py-2"
-              style={{ borderColor: "var(--grid)" }}
+              aria-label={w.name}
+              /* Swipe-left to archive, touch only. A mouse drag is
+                 deliberately not wired: it fights text selection and
+                 misfires, and desktop/keyboard reach the same action
+                 through the edit dialog instead.
+
+                 The vertical check is what stops this stealing scrolls —
+                 a finger travelling mostly down the page is scrolling a
+                 list, not swiping a row, and on a phone almost every
+                 horizontal movement carries some vertical drift. */
+              onTouchStart={(e) => {
+                const t = e.touches[0]!;
+                touchStart.current = { x: t.clientX, y: t.clientY };
+              }}
+              onTouchEnd={(e) => {
+                const from = touchStart.current;
+                touchStart.current = null;
+                if (!from) return;
+                const t = e.changedTouches[0]!;
+                const dx = t.clientX - from.x;
+                const dy = t.clientY - from.y;
+                if (dx > -SWIPE_MIN_PX) return;
+                if (Math.abs(dy) > Math.abs(dx)) return;
+                requestArchive(w);
+              }}
+              className="mb-2 flex items-center gap-2 rounded-lg border px-3 py-2 transition-opacity"
+              style={{ borderColor: "var(--grid)", opacity: archiving ? 0.5 : 1 }}
+              aria-busy={archiving || undefined}
             >
               {/* Colour is never the only cue (spec §6.1/§6.3): the slot
                   colour tints the glyph, but the glyph shape and the name
@@ -241,15 +294,25 @@ export function WalletList({
                   text alone they are indistinguishable to anyone navigating
                   by accessible name — the same reasoning the old inline
                   Members toggle already documented. */}
+              {/* Icons, not text links. Two words per row ("Edit",
+                  "Members", and formerly "Archive") were eating the width a
+                  wallet name needs on a phone, truncating the one thing
+                  that identifies the row. The accessible names are
+                  unchanged and still name the wallet, so nothing a screen
+                  reader or a test relies on moved.
+
+                  h-11 w-11 is a 44px target — the size WCAG 2.5.8 and both
+                  platform guidelines ask for, and a real improvement on the
+                  ~16px text links these replace. */}
               {editActions?.[w.id] && (
                 <button
                   type="button"
                   aria-label={`Edit ${w.name}`}
                   onClick={() => setDialog({ walletId: w.id, view: "edit" })}
-                  className={`shrink-0 rounded-sm text-xs underline ${FOCUS_RING}`}
+                  className={`grid h-11 w-11 shrink-0 place-items-center rounded-md ${FOCUS_RING}`}
                   style={{ color: "var(--ink-2)" }}
                 >
-                  Edit
+                  <Settings size={18} aria-hidden />
                 </button>
               )}
 
@@ -258,29 +321,13 @@ export function WalletList({
                   type="button"
                   aria-label={`Members of ${w.name}`}
                   onClick={() => setDialog({ walletId: w.id, view: "members" })}
-                  className={`shrink-0 rounded-sm text-xs underline ${FOCUS_RING}`}
+                  className={`grid h-11 w-11 shrink-0 place-items-center rounded-md ${FOCUS_RING}`}
                   style={{ color: "var(--ink-2)" }}
                 >
-                  Members
+                  <User size={18} aria-hidden />
                 </button>
               )}
 
-              {/* Absent for a non-owner, not disabled — the convention this
-                  codebase already applies to a control that can never
-                  succeed. A disabled Archive would also read as "you could
-                  archive this if something changed", which is false. */}
-              {isOwner && (
-                <button
-                  type="button"
-                  aria-label={`Archive ${w.name}`}
-                  disabled={isLastWallet || archiving}
-                  onClick={() => archive(w.id)}
-                  className={`shrink-0 rounded-sm text-xs underline disabled:opacity-60 ${FOCUS_RING}`}
-                  style={{ color: "var(--ink-2)" }}
-                >
-                  {archiving ? "Archiving…" : "Archive"}
-                </button>
-              )}
             </li>
           );
         })}
@@ -305,11 +352,55 @@ export function WalletList({
         <Modal
           open
           title={
-            dialog!.view === "edit" ? `Edit ${dialogWallet.name}` : `Members of ${dialogWallet.name}`
+            dialog!.view === "edit"
+              ? `Edit ${dialogWallet.name}`
+              : dialog!.view === "archive"
+                ? `Archive ${dialogWallet.name}?`
+                : `Members of ${dialogWallet.name}`
           }
           onClose={() => setDialog(null)}
         >
-          {dialog!.view === "edit" && editActions?.[dialogWallet.id] ? (
+          {dialog!.view === "archive" ? (
+            <div className="flex flex-col gap-4">
+              <p className="text-sm" style={{ color: "var(--ink)" }}>
+                {dialogWallet.name} will be hidden from your wallets.{" "}
+                {/* Stated because it is the question a confirmation dialog
+                    actually has to answer. `archived_at` is a soft flag and
+                    nothing cascades, so the history genuinely survives —
+                    saying so is what keeps this from reading as a delete. */}
+                <strong style={{ color: "var(--ink)" }}>Its transactions are kept</strong> and stay
+                in your reports.
+              </p>
+              {dialogWallet.balanceMinor !== null && (
+                <p className="text-sm" style={{ color: "var(--ink-2)" }}>
+                  Balance: {formatMoney(dialogWallet.balanceMinor, dialogWallet.currency_code)}
+                </p>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDialog(null)}
+                  className={`rounded-md border px-4 py-2 text-sm ${FOCUS_RING}`}
+                  style={{ borderColor: "var(--ink-2)", color: "var(--ink)" }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={pendingId === dialogWallet.id}
+                  onClick={() => {
+                    const id = dialogWallet.id;
+                    setDialog(null);
+                    archive(id);
+                  }}
+                  className={`rounded-md px-4 py-2 text-sm font-medium disabled:opacity-60 ${FOCUS_RING}`}
+                  style={{ background: "var(--neg)", color: "var(--surface)" }}
+                >
+                  Archive
+                </button>
+              </div>
+            </div>
+          ) : dialog!.view === "edit" && editActions?.[dialogWallet.id] ? (
             <WalletForm
               action={editActions[dialogWallet.id]!}
               submitLabel="Save changes"
@@ -329,7 +420,27 @@ export function WalletList({
               lockCurrency
               onSuccess={() => setDialog(null)}
             />
-          ) : (
+          ) : null}
+
+          {/* Archive's keyboard and desktop route. The swipe gesture is a
+              shortcut, not the only way in: a gesture cannot be performed
+              with a keyboard or a mouse, and hiding a function entirely
+              behind one would put it out of reach for anyone not on a
+              touchscreen. Both paths open the same confirmation. */}
+          {dialog!.view === "edit" && dialogWallet.owner_id === currentUserId && (
+            <div className="mt-4 border-t pt-4" style={{ borderColor: "var(--grid)" }}>
+              <button
+                type="button"
+                onClick={() => requestArchive(dialogWallet)}
+                className={`rounded-sm text-sm underline ${FOCUS_RING}`}
+                style={{ color: "var(--neg)" }}
+              >
+                Archive this wallet
+              </button>
+            </div>
+          )}
+
+          {dialog!.view === "members" && (
             memberSections?.[dialogWallet.id]
           )}
         </Modal>
