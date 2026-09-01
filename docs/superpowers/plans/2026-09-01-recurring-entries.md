@@ -162,7 +162,25 @@ describe("occurrencesFor", () => {
       "2026-09-15",
     );
     expect(dates).toHaveLength(24);
-    expect(dates[dates.length - 1]).toBe("2026-09-15");
+    // 2026-09-14, NOT 2026-09-15: 52 weeks is 364 days, one short of a year,
+    // so the last occurrence on or before today falls the day before it.
+    expect(dates[dates.length - 1]).toBe("2026-09-14");
+    expect(olderDropped).toBe(true);
+  });
+
+  /**
+   * The case a bounded iterate-from-the-anchor loop silently fails: a weekly
+   * rule anchored long ago needs far more steps to reach the floor than any
+   * sane runaway guard allows, so the loop returns EMPTY while occurrences
+   * are genuinely due. Iteration must start at the floor, not the anchor.
+   */
+  it("finds current occurrences for a rule anchored many years ago", () => {
+    const { dates, olderDropped } = occurrencesFor(
+      { anchorOn: "2000-01-05", intervalUnit: "weekly", endsOn: null },
+      "2026-09-15",
+    );
+    expect(dates).toHaveLength(24);
+    expect(dates[dates.length - 1] >= "2026-09-08").toBe(true);
     expect(olderDropped).toBe(true);
   });
 
@@ -293,24 +311,66 @@ function nth(rule: RecurrenceRule, n: number): string {
   }
 }
 
+/** Whole days from `a` to `b`, both `YYYY-MM-DD`. UTC-only, so no DST or
+ *  offset can shift the count. */
+function daysBetween(a: string, b: string): number {
+  const pa = parse(a);
+  const pb = parse(b);
+  const ms = Date.UTC(pb.y, pb.m - 1, pb.d) - Date.UTC(pa.y, pa.m - 1, pa.d);
+  return Math.round(ms / 86_400_000);
+}
+
+/** Whole calendar months from `a` to `b`, ignoring day-of-month. */
+function monthsBetween(a: string, b: string): number {
+  const pa = parse(a);
+  const pb = parse(b);
+  return (pb.y - pa.y) * 12 + (pb.m - pa.m);
+}
+
+/**
+ * Index of the first occurrence at or after `floor`, computed rather than
+ * found by iterating.
+ *
+ * Iterating up from n = 0 under a fixed bound looks equivalent and is not: a
+ * WEEKLY rule anchored in 2000 needs ~1350 steps to reach a 2026 floor, so a
+ * bounded loop exits having collected nothing and reports "older dropped"
+ * over an empty list — silently hiding every occurrence actually due. The
+ * bound reads as a runaway guard and behaves as a correctness bug.
+ *
+ * The estimate can be one short after month-end clamping, so it is nudged
+ * forward until it genuinely lands on or after the floor. That loop runs at
+ * most twice.
+ */
+function firstIndexAtOrAfter(rule: RecurrenceRule, floor: string): number {
+  if (floor <= rule.anchorOn) return 0;
+  const step = rule.intervalUnit;
+  let n =
+    step === "weekly"
+      ? Math.floor(daysBetween(rule.anchorOn, floor) / 7)
+      : step === "fortnightly"
+        ? Math.floor(daysBetween(rule.anchorOn, floor) / 14)
+        : step === "monthly"
+          ? monthsBetween(rule.anchorOn, floor)
+          : Math.floor(monthsBetween(rule.anchorOn, floor) / 12);
+  if (n < 0) n = 0;
+  while (nth(rule, n) < floor) n++;
+  return n;
+}
+
 export function occurrencesFor(rule: RecurrenceRule, today: string): Occurrences {
   const floorDate = addMonthsClamped(today, -LOOKBACK_MONTHS);
   const floor = floorDate > rule.anchorOn ? floorDate : rule.anchorOn;
 
+  const n0 = firstIndexAtOrAfter(rule, floor);
   const kept: string[] = [];
-  let dropped = false;
 
-  // Bounded independently of the loop condition: a corrupt anchor must not
-  // spin forever. Twelve months of a weekly rule is ~53, so 600 is far above
-  // anything reachable while still being finite.
-  for (let n = 0; n < 600; n++) {
-    const d = nth(rule, n);
+  // Bounded at 100: twelve months of a WEEKLY rule is ~53 occurrences, so
+  // this cannot truncate a legitimate result now that iteration starts at the
+  // floor rather than at the anchor.
+  for (let i = 0; i < 100; i++) {
+    const d = nth(rule, n0 + i);
     if (d > today) break;
     if (rule.endsOn !== null && d > rule.endsOn) break;
-    if (d < floor) {
-      dropped = true;
-      continue;
-    }
     kept.push(d);
   }
 
@@ -319,7 +379,8 @@ export function occurrencesFor(rule: RecurrenceRule, today: string): Occurrences
     // hide last week's occurrence behind one from ten months ago.
     return { dates: kept.slice(-MAX_OCCURRENCES), olderDropped: true };
   }
-  return { dates: kept, olderDropped: dropped };
+  // `n0 > 0` means the floor itself withheld older occurrences.
+  return { dates: kept, olderDropped: n0 > 0 };
 }
 
 /**
