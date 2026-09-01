@@ -42,7 +42,6 @@ export type DueRuleInput = {
    *  before the pause must still be SHOWN, with that reason, rather than
    *  silently vanishing the moment the rule is paused. */
   archivedAt: string | null;
-  walletId: string;
   walletName: string;
   walletCurrencyCode: string;
   walletArchivedAt: string | null;

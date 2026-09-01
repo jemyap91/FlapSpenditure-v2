@@ -9,14 +9,17 @@
  * mixed with a UTC read of the same value — src/lib/month-range.ts documents
  * a shipped Critical bug from mixing those two directions on a single value.
  *
- * The single, canonical definition. Previously duplicated byte-for-byte: a
- * private `todayLocalDate()` inside `src/components/TransactionForm.tsx`
- * (seeding the add-transaction date field) and a private `todayLocal()`
- * inside `src/server/actions/recurring.ts` (`recordOccurrence`'s
- * is-this-actually-due check). Two divergent notions of "today" in one
- * ledger app is precisely the bug class this project has already been
- * bitten by twice (see month-range.ts's own history) — both call sites now
- * import this one function instead.
+ * The single, canonical definition. Previously duplicated under two
+ * different names with the identical body (the four lines below this
+ * comment, unchanged): a private `todayLocalDate()` inside
+ * `src/components/TransactionForm.tsx` (seeding the add-transaction date
+ * field) and a private `todayLocal()` inside
+ * `src/server/actions/recurring.ts` (`recordOccurrence`'s
+ * is-this-actually-due check) — the names and surrounding doc comments had
+ * diverged, but the logic itself had not. Two divergent notions of "today"
+ * in one ledger app is precisely the bug class this project has already
+ * been bitten by twice (see month-range.ts's own history) — both call
+ * sites now import this one function instead.
  *
  * On the SERVER (a Server Component, or a Server Function such as
  * `recordOccurrence`), this resolves in the SERVER's own timezone, not

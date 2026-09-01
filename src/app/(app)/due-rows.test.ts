@@ -20,7 +20,6 @@ function rule(overrides: Partial<DueRuleInput> = {}): DueRuleInput {
     intervalUnit: "monthly",
     endsOn: null,
     archivedAt: null,
-    walletId: "wallet-1",
     walletName: "Everyday",
     walletCurrencyCode: "SGD",
     walletArchivedAt: null,
@@ -172,5 +171,33 @@ describe("buildDueRows", () => {
     const { rows, olderDropped } = buildDueRows({ rules: [], skips: [], recorded: [] }, "2026-09-01");
     expect(rows).toEqual([]);
     expect(olderDropped).toBe(false);
+  });
+
+  it("keeps a different rule's identical-date occurrence due when only one rule's is recorded (fix round 1, I6)", () => {
+    // Rent and Salary, both on the 1st, is the commonest possible pairing of
+    // two rules sharing a due date. The handled set MUST be scoped per rule
+    // id: keying it by a shared/constant key instead — recording Rent's 1
+    // September would then also mark Salary's 1 September handled — is a
+    // mutation every other test in this file passes under, because every
+    // other test uses either one rule, or two rules with empty skips/
+    // recorded. This is the one test that actually discriminates: it fails
+    // under that mutation and passes under the correct per-rule keying.
+    const rent = rule({ id: "rent", name: "Rent", kind: "expense", categoryKind: "expense", anchorOn: "2026-09-01" });
+    const salary = rule({
+      id: "salary",
+      name: "Salary",
+      kind: "income",
+      categoryKind: "income",
+      anchorOn: "2026-09-01",
+    });
+    const input = {
+      rules: [rent, salary],
+      skips: [],
+      // Only Rent's 1 September occurrence is recorded.
+      recorded: [handled("rent", "2026-09-01")],
+    };
+    const { rows } = buildDueRows(input, "2026-09-01");
+    // Salary's identical-date occurrence must still be due.
+    expect(rows.map((r) => [r.ruleId, r.occurrenceOn])).toEqual([["salary", "2026-09-01"]]);
   });
 });

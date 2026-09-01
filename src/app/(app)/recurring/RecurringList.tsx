@@ -67,7 +67,13 @@ function parseIso(iso: string): { y: number; m: number; d: number } {
   return { y: y!, m: m!, d: d! };
 }
 
-function shortDate(iso: string, withYear: boolean): string {
+/**
+ * "1 Jul" or "1 Jul 2026" — exported (fix round 1, I2) so `DueList.tsx` can
+ * consolidate on this ONE date formatter rather than keep a second,
+ * differently-abbreviated one of its own (`DueList`'s previous "1 July" vs
+ * this file's "1 Jul") purely because both files needed "a short date".
+ */
+export function shortDate(iso: string, withYear: boolean): string {
   const { y, m, d } = parseIso(iso);
   return withYear ? `${d} ${MONTH_ABBR[m - 1]} ${y}` : `${d} ${MONTH_ABBR[m - 1]}`;
 }

@@ -151,12 +151,34 @@ function firstIndexAtOrAfter(rule: RecurrenceRule, floor: string): number {
   throw new RangeError(`firstIndexAtOrAfter failed to converge for floor ${JSON.stringify(floor)}`);
 }
 
+/**
+ * The lookback floor `occurrencesFor` computes internally (twelve months
+ * before `today`, clamped) — exported so a caller that needs to BOUND A
+ * DATABASE READ to "everything `occurrencesFor`/`dueOccurrences` could
+ * possibly consult" can match that floor exactly, rather than re-deriving a
+ * possibly-drifting approximation of the same date (fix round 1, I5: the
+ * dashboard's due-list reads of `recurring_skips`/`transactions` were
+ * unbounded, and PostgREST's `max_rows` truncates silently).
+ *
+ * Deliberately NOT clamped to any rule's own `anchorOn` the way
+ * `occurrencesFor`'s internal `floor` is (`floorDate > rule.anchorOn ?
+ * floorDate : rule.anchorOn`) — a per-rule bound would be tighter for a
+ * rule anchored more recently, but a caller bounding a READ across MANY
+ * rules at once needs the loosest floor that is still safe for all of
+ * them, and this unclamped date is exactly that: every rule's actual floor
+ * is this date or later, so nothing any rule could need is ever excluded.
+ */
+export function lookbackFloor(today: string): string {
+  assertIsoDate("today", today);
+  return addMonthsClamped(today, -LOOKBACK_MONTHS);
+}
+
 export function occurrencesFor(rule: RecurrenceRule, today: string): Occurrences {
   assertIsoDate("anchorOn", rule.anchorOn);
   assertIsoDate("today", today);
   if (rule.endsOn !== null) assertIsoDate("endsOn", rule.endsOn);
 
-  const floorDate = addMonthsClamped(today, -LOOKBACK_MONTHS);
+  const floorDate = lookbackFloor(today);
   const floor = floorDate > rule.anchorOn ? floorDate : rule.anchorOn;
 
   const n0 = firstIndexAtOrAfter(rule, floor);

@@ -8,7 +8,7 @@ import { monthRange } from "@/lib/month-range";
 import { todayLocalDate } from "@/lib/today";
 import type { BudgetStatusRow } from "@/lib/budget-status";
 import { buildDueRows, type DueRuleInput, type HandledOccurrence } from "./due-rows";
-import type { RecurInterval } from "@/lib/recurrence";
+import { lookbackFloor, type RecurInterval } from "@/lib/recurrence";
 
 /**
  * Task 21's dashboard — the first thing a returning user sees. Replaces
@@ -153,11 +153,44 @@ export default async function DashboardPage() {
   // category kind/archived) has to arrive already joined, for it to state a
   // blocked row's reason without duplicating that validation.
   //
+  // The USER'S local calendar day, never the server's `new Date()` read via
+  // a UTC round trip -- see `src/lib/today.ts`'s own doc comment for the
+  // Kuwait/UTC+3 example. This is still, unavoidably, the SERVER's own
+  // local timezone: `todayLocalDate()` reads `new Date()`, and this page is
+  // a Server Component, so "today" resolves wherever this process is
+  // deployed, not wherever the person looking at the dashboard actually is.
+  // A request filed just after local midnight in one timezone but not the
+  // other can disagree about what day it is -- the exact same limitation
+  // `monthRange()` above already carries (see that module's own doc
+  // comment) and, like that one, out of scope here: fixing it needs the
+  // viewer's own timezone to reach the server, which nothing in this
+  // codebase currently sends up. Computed once and reused below for both
+  // `buildDueRows` and the two `.gte(...)` read bounds, and passed down to
+  // `DueList` itself (for its own date-label year decision) -- one value,
+  // never re-derived, so nothing downstream can disagree with it about what
+  // day "today" is.
+  const today = todayLocalDate();
   // `recurring_skips` and the recorded-occurrence half of `transactions`
-  // are both fetched UNFILTERED by rule — RLS (`recurring_skips_member`,
-  // `transactions_member`) already scopes each to the caller's own
-  // wallets, matching every other read on this page's convention of
-  // scoping defensively anyway.
+  // are both scoped by RLS (`recurring_skips_member`, `transactions_member`)
+  // to the caller's own wallets, matching every other read on this page's
+  // convention of scoping defensively anyway -- but, fix round 1 (I5), NOT
+  // otherwise bounded before this: both were read in full, and
+  // `supabase/config.toml`'s `max_rows = 1000` makes PostgREST truncate
+  // silently past that, with no `ORDER BY` so survivors are roughly
+  // insertion order -- the OLDEST rows survive and recent recordings/skips
+  // are the ones dropped, exactly backwards from what `buildDueRows` needs.
+  // A household crossing ~1000 lifetime recorded occurrences would see
+  // already-recorded ones reappear as due, on every reload, forever.
+  //
+  // `.gte(...)` bounds both reads to `lookbackFloor(today)` -- the same
+  // 12-month floor `buildDueRows` (via `dueOccurrences`/`occurrencesFor`)
+  // already applies -- so nothing outside the window either function could
+  // ever consult is fetched, and the 1000-row cap has that much more room
+  // before it can silently bite at all. Matches this codebase's sibling
+  // convention of pairing a bound with an explicit read
+  // (`transactions/page.tsx`, `wallets/[id]/page.tsx` pair `.order()` with
+  // `.limit(100)`) rather than leaving a table scan open-ended.
+  const dueFloor = lookbackFloor(today);
   const [
     { data: dueRuleRows, error: dueRulesError },
     { data: dueSkipRows, error: dueSkipsError },
@@ -166,10 +199,10 @@ export default async function DashboardPage() {
     supabase
       .from("recurring_rules")
       .select(
-        "id, wallet_id, name, kind, amount_minor, currency_code, interval_unit, anchor_on, ends_on, archived_at, wallets(name, currency_code, archived_at), categories(kind, archived_at)",
+        "id, name, kind, amount_minor, currency_code, interval_unit, anchor_on, ends_on, archived_at, wallets(name, currency_code, archived_at), categories(kind, archived_at)",
       )
       .order("created_at"),
-    supabase.from("recurring_skips").select("rule_id, occurrence_on"),
+    supabase.from("recurring_skips").select("rule_id, occurrence_on").gte("occurrence_on", dueFloor),
     // `deleted_at is null`: a soft-deleted transaction must not count as
     // "already recorded" — TransactionList's own undo-based deletion
     // (Task 4) means a recurring occurrence's transaction can be deleted
@@ -178,7 +211,8 @@ export default async function DashboardPage() {
       .from("transactions")
       .select("recurring_id, occurred_on")
       .not("recurring_id", "is", null)
-      .is("deleted_at", null),
+      .is("deleted_at", null)
+      .gte("occurred_on", dueFloor),
   ]);
   // Same "error is not emptiness" rule as every other read on this page.
   if (dueRulesError) throw new Error("Failed to load recurring rules");
@@ -190,7 +224,6 @@ export default async function DashboardPage() {
   // pattern, rather than casting inline inside the map below.
   type JoinedDueRule = {
     id: string;
-    wallet_id: string;
     name: string;
     kind: "expense" | "income";
     amount_minor: number;
@@ -213,7 +246,6 @@ export default async function DashboardPage() {
     intervalUnit: r.interval_unit,
     endsOn: r.ends_on,
     archivedAt: r.archived_at,
-    walletId: r.wallet_id,
     walletName: r.wallets?.name ?? "",
     walletCurrencyCode: r.wallets?.currency_code ?? "",
     walletArchivedAt: r.wallets?.archived_at ?? null,
@@ -238,21 +270,9 @@ export default async function DashboardPage() {
     occurrenceOn: t.occurred_on,
   }));
 
-  // The USER'S local calendar day, never the server's `new Date()` read via
-  // a UTC round trip -- see `src/lib/today.ts`'s own doc comment for the
-  // Kuwait/UTC+3 example. This is still, unavoidably, the SERVER's own
-  // local timezone: `todayLocalDate()` reads `new Date()`, and this page is
-  // a Server Component, so "today" resolves wherever this process is
-  // deployed, not wherever the person looking at the dashboard actually is.
-  // A request filed just after local midnight in one timezone but not the
-  // other can disagree about what day it is -- the exact same limitation
-  // `monthRange()` above already carries (see that module's own doc
-  // comment) and, like that one, out of scope here: fixing it needs the
-  // viewer's own timezone to reach the server, which nothing in this
-  // codebase currently sends up.
   const { rows: dueRows, olderDropped: dueOlderDropped } = buildDueRows(
     { rules: dueRuleInputs, skips: dueSkips, recorded: dueRecorded },
-    todayLocalDate(),
+    today,
   );
 
   const rows: BreakdownRow[] = breakdown ?? [];
@@ -279,7 +299,7 @@ export default async function DashboardPage() {
           unconditionally: `DueList` itself renders nothing at all when
           `dueRows` is empty, which is most opens of this dashboard -- there
           is no wrapping empty state to add or omit here. */}
-      <DueList rows={dueRows} olderDropped={dueOlderDropped} />
+      <DueList rows={dueRows} olderDropped={dueOlderDropped} today={today} />
       <header>
         {/* An `<h1>`, not a `<p>`: this page had no level-one heading at
             all, so its first heading was CategoryBreakdown's `<h2>` and
