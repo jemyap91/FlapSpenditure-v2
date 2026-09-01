@@ -8,6 +8,7 @@ import { CategoryPicker, type Category } from "./CategoryPicker";
 import { createTransaction, createTransfer } from "@/server/actions/transactions";
 import { appendDigit, clampAmountInput, minorUnitFor, parseAmountInput } from "@/lib/money";
 import { parseOrigin } from "@/lib/origin";
+import { todayLocalDate } from "@/lib/today";
 
 type Wallet = { id: string; name: string; currency_code: string };
 type Kind = "expense" | "income" | "transfer";
@@ -23,22 +24,6 @@ const FOCUS_RING =
 
 const CHIP_BORDER =
   `rounded-full border px-3 py-1 text-sm ${FOCUS_RING}`;
-
-/**
- * Today's date as `YYYY-MM-DD` in the USER'S LOCAL calendar day, for the
- * `date` field's initial value — matches what `<input type="date">` itself
- * expects and displays. `new Date().toISOString()` is UTC, not local: at
- * 01:00 in Kuwait (UTC+3) that would slice off *yesterday's* date, which is
- * wrong for a till-side entry screen where "today" means the user's own
- * calendar day, not Greenwich's.
- */
-function todayLocalDate(): string {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
 
 /**
  * Task 19's add-transaction screen — spec §5.1's "amount-first" flow (the

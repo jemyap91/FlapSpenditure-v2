@@ -6,6 +6,7 @@ import { recurringInput, type RecurringField } from "@/lib/validation/recurring"
 import { parseAmountInput, minorUnitFor } from "@/lib/money";
 import { signedAmount, nonTransferKind } from "@/lib/validation/transaction";
 import { occurrencesFor } from "@/lib/recurrence";
+import { todayLocalDate } from "@/lib/today";
 import { z } from "zod";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
@@ -202,33 +203,6 @@ async function checkWalletCurrency(
     };
   }
   return null;
-}
-
-/**
- * The server's own local calendar date, formatted `YYYY-MM-DD`, for
- * `recordOccurrence`'s "is this actually a due occurrence" check (fix round
- * 1, Important finding) — `occurrencesFor` needs a `today` to bound its
- * output the same way it would for the not-yet-built due list.
- *
- * Read via LOCAL getters (`getFullYear`/`getMonth`/`getDate`), never via
- * `.toISOString().slice(0, 10)` (UTC): src/lib/month-range.ts documents a
- * shipped Critical bug from mixing those two directions on a single value.
- * There is only one `Date` here and one direction of conversion, so there is
- * nothing left to mismatch.
- *
- * This is still NOT the caller's own calendar date — the server's timezone
- * and the browser's are unrelated, and a request filed just after local
- * midnight in one but not the other can disagree with the caller about what
- * day it is. That limitation is known, out of scope for this action, and
- * already recorded against the dashboard's not-yet-built due-list task,
- * which will need the identical `today` and inherits the identical caveat.
- */
-function todayLocal(): string {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
 }
 
 /**
@@ -462,8 +436,8 @@ export async function archiveRule(id: string): Promise<RecurringState> {
  * refused (a paused rule -- spec §5's "pause" -- stays fully recordable by
  * direct POST otherwise), and `occurrenceOn` must appear in
  * `occurrencesFor`'s output for `{anchorOn, intervalUnit, endsOn}` as of the
- * server's own `today` (`todayLocal`) -- `occurrencesFor` is the most
- * heavily tested function on this branch (35 tests, brute-force
+ * server's own `today` (`todayLocalDate`, src/lib/today.ts) -- `occurrencesFor`
+ * is the most heavily tested function on this branch (35 tests, brute-force
  * cross-checked), so this leans on it rather than reimplementing any part of
  * the schedule logic. This closes the future-occurrence gap: without it,
  * recording a date the rule has not reached yet makes the ledger assert
@@ -522,7 +496,7 @@ export async function recordOccurrence(ruleId: string, occurrenceOn: string): Pr
 
   const schedule = occurrencesFor(
     { anchorOn: rule.anchor_on, intervalUnit: rule.interval_unit, endsOn: rule.ends_on },
-    todayLocal(),
+    todayLocalDate(),
   );
   if (!schedule.dates.includes(occurrenceOn)) {
     return { error: "That date isn't a due occurrence of this rule." };
