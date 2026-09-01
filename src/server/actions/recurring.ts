@@ -7,6 +7,8 @@ import { parseAmountInput, minorUnitFor } from "@/lib/money";
 import { signedAmount } from "@/lib/validation/transaction";
 import type { z } from "zod";
 
+type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
+
 export type RecurringState = { error?: string; field?: RecurringField };
 
 /** Which field a failed parse's first issue is about, for `aria-invalid` —
@@ -78,6 +80,63 @@ function toSignedMinor(
 }
 
 /**
+ * Verifies the chosen category belongs to the rule's own wallet, is not
+ * archived, and its `kind` agrees with the rule's `kind` — mirroring
+ * src/server/actions/transactions.ts's `createTransaction` (its comment
+ * block above `.from("categories")`) closely, including its exact
+ * "Choose a category" / "That category doesn't match this transaction
+ * type" wording, so a user sees identical text whichever form caught the
+ * same mistake.
+ *
+ * Both checks exist for the same reason 0015's own
+ * `recurring_rules_category_same_wallet` FK exists: a rule that PASSES
+ * creation/edit but can never be recorded is a worse failure than a
+ * rejected form, because it strands the user far from the form that
+ * actually caused it — every later attempt to record an occurrence would
+ * insert a transaction with this rule's fixed kind and category, and
+ * `createTransaction`'s own identical checks would refuse it, every single
+ * time. `category_kind` and `txn_kind` are distinct Postgres enum types
+ * (0002 vs 0003), so the composite-FK mechanism that already protects
+ * cross-wallet categories cannot be extended to also protect kind — this
+ * check is the only practical place left to catch it.
+ *
+ * Archived is rejected here on BOTH create and edit — a deliberate choice,
+ * not merely mirroring transactions.ts (whose own comment defers the
+ * archived-on-edit question as "a different, not-yet-built action" for a
+ * *transaction*, which records something that already happened). A
+ * recurring rule is different: it exists entirely to be recorded again in
+ * the future, so "hides it from pickers" for anything NEW (spec §5.3)
+ * applies to every write that keeps a rule pointed at an archived category,
+ * not just its first — saving an edit that leaves one in place would strand
+ * the rule exactly as permanently un-recordable as a kind mismatch would.
+ *
+ * Scoped by `.eq("wallet_id", walletId)`, like `createTransaction`'s
+ * identical query: `categories_member` RLS stops a stranger's category but
+ * not a cross-wallet one of the caller's own, so without this the category
+ * would reach the write and die on 0015's `recurring_rules_category_same_wallet`
+ * FK instead, surfacing as the generic "Could not create/update rule"
+ * message rather than this actionable one.
+ */
+async function checkCategory(
+  supabase: SupabaseServerClient,
+  categoryId: string,
+  walletId: string,
+  kind: "expense" | "income",
+): Promise<RecurringState | null> {
+  const { data: category } = await supabase
+    .from("categories")
+    .select("kind, archived_at")
+    .eq("id", categoryId)
+    .eq("wallet_id", walletId)
+    .single();
+  if (!category || category.archived_at) return { error: "Choose a category", field: "category_id" };
+  if (category.kind !== kind) {
+    return { error: "That category doesn't match this transaction type", field: "category_id" };
+  }
+  return null;
+}
+
+/**
  * Creates a recurring rule. Not consumed by any page yet — this task builds
  * validation and the actions themselves; a later task wires up the /recurring
  * form and the "record an occurrence" flow described in the design spec.
@@ -99,6 +158,9 @@ export async function createRule(
 
   const { wallet_id, name, kind, amount, currency_code, category_id, interval_unit, anchor_on, ends_on } =
     parsed.data;
+
+  const categoryError = await checkCategory(supabase, category_id, wallet_id, kind);
+  if (categoryError) return categoryError;
 
   const signed = toSignedMinor(amount, currency_code, kind);
   if ("error" in signed) return { error: signed.error, field: "amount" };
@@ -154,6 +216,25 @@ export async function updateRule(
   if (!user) return { error: "Not signed in" };
 
   const { name, kind, amount, currency_code, category_id, interval_unit, anchor_on, ends_on } = parsed.data;
+
+  // The rule's OWN wallet_id, never the posted one: wallet_id cannot be
+  // changed via UPDATE (this file's module doc comment — the database's
+  // own column-scoped grant denies writing it at all), so trusting a
+  // client-supplied wallet_id here would validate the category against a
+  // value that might not even be what is actually stored. This SELECT is
+  // itself scoped by `recurring_rules_member` RLS, so it doubles as the
+  // existence/membership check — a rule the caller can't see comes back
+  // `null` here and is reported "Rule not found" immediately, rather than
+  // surfacing later as an opaque category-lookup miss.
+  const { data: rule } = await supabase
+    .from("recurring_rules")
+    .select("wallet_id")
+    .eq("id", id)
+    .single();
+  if (!rule) return { error: "Rule not found" };
+
+  const categoryError = await checkCategory(supabase, category_id, rule.wallet_id, kind);
+  if (categoryError) return categoryError;
 
   const signed = toSignedMinor(amount, currency_code, kind);
   if ("error" in signed) return { error: signed.error, field: "amount" };

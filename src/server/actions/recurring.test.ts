@@ -11,38 +11,52 @@ import { createRule, updateRule, archiveRule } from "./recurring";
 
 const OWNER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const WALLET_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const OTHER_WALLET_ID = "cccccccc-cccc-4ccc-8ccc-ccccccccc999";
 const CATEGORY_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const RULE_ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 
 /**
  * `vi.hoisted` because `vi.mock` factories are hoisted above this file's own
  * top-level `const`s (see the identical note in src/server/actions/
- * wallets.test.ts). Two spies, one per statement shape this module issues:
- * `insertSpy` captures `createRule`'s INSERT payload (the sign-application
- * assertions below depend on seeing exactly what reached the table),
- * `updateSpy` captures `updateRule`'s and `archiveRule`'s UPDATE payload
- * (whether `wallet_id`/`created_by` ever appear in it is the whole point of
- * this file's module doc comment).
+ * wallets.test.ts).
  *
- * The fake builder does NOT filter, the same deliberate choice
- * wallets.test.ts's fake makes: `updateRule`/`archiveRule`'s own `.eq("id",
- * ...)` is what Postgres and RLS would actually filter on, and the defect
- * those actions guard against is precisely that a zero-row UPDATE is not an
- * error in Postgres. So the fake reports the outcome directly —
- * `insertResult` for the INSERT, `updateResult` for the UPDATE — and the
- * assertions are on each action's return value, which is the only thing the
- * user ever sees.
+ * Three tables are faked: `recurring_rules` (insert/update, plus
+ * `updateRule`'s standalone SELECT of the rule's own `wallet_id`) and
+ * `categories` (the kind/archived lookup `checkCategory` performs). The
+ * fake builders do NOT filter — same deliberate choice wallets.test.ts's
+ * fake makes: the actions' own `.eq(...)` calls are what Postgres/RLS would
+ * actually filter on, and every defect under test here is precisely about
+ * what the ACTION does with a result, not about reimplementing a database.
+ * So each fake reports the outcome it's told to report, and the assertions
+ * are on each action's return value and the payloads/arguments captured by
+ * the spies — the only things a real caller (or a real query) could ever
+ * observe.
  */
-const { getUser, insertResult, insertSpy, updateResult, updateSpy, revalidatePath } = vi.hoisted(
-  () => ({
-    getUser: vi.fn(),
-    insertResult: { error: null as unknown },
-    insertSpy: vi.fn(),
-    updateResult: { data: null as { id: string }[] | null, error: null as unknown },
-    updateSpy: vi.fn(),
-    revalidatePath: vi.fn(),
-  }),
-);
+const {
+  getUser,
+  insertResult,
+  insertSpy,
+  updateResult,
+  updateSpy,
+  ruleLookupResult,
+  categoryResult,
+  categoryEqSpy,
+  revalidatePath,
+} = vi.hoisted(() => ({
+  getUser: vi.fn(),
+  insertResult: { error: null as unknown },
+  insertSpy: vi.fn(),
+  updateResult: { data: null as { id: string }[] | null, error: null as unknown },
+  updateSpy: vi.fn(),
+  ruleLookupResult: { data: null as { wallet_id: string } | null },
+  categoryResult: { data: null as { kind: string; archived_at: string | null } | null },
+  // Captures every `.eq(col, val)` the categories lookup makes — the
+  // "scopes to the rule's OWN wallet_id, not the posted one" test below
+  // depends on seeing exactly which wallet_id reached the query, which the
+  // action's return value alone can't reveal.
+  categoryEqSpy: vi.fn(),
+  revalidatePath: vi.fn(),
+}));
 
 vi.mock("next/cache", () => ({ revalidatePath }));
 
@@ -50,8 +64,26 @@ vi.mock("@/lib/supabase/server", () => ({
   createClient: async () => ({
     auth: { getUser },
     from: (table: string) => {
+      if (table === "categories") {
+        const builder: Record<string, unknown> = {
+          select: () => builder,
+          eq: (col: string, val: unknown) => {
+            categoryEqSpy(col, val);
+            return builder;
+          },
+          single: () => builder,
+          then: (resolve: (v: unknown) => void) => resolve(categoryResult),
+        };
+        return builder;
+      }
       if (table !== "recurring_rules") throw new Error(`unexpected table ${table}`);
-      let mode: "insert" | "update" = "insert";
+      // "lookup" is the default and stays in effect for `updateRule`'s
+      // standalone `.select("wallet_id").eq("id", id).single()`, which
+      // never calls `.insert` or `.update`. `createRule`'s `.insert(...)`
+      // and `updateRule`/`archiveRule`'s `.update(...).eq(...).select(...)`
+      // each switch the mode explicitly, the same way wallets.test.ts's
+      // fake switches between its own "count" and "update" modes.
+      let mode: "lookup" | "insert" | "update" = "lookup";
       const builder: Record<string, unknown> = {
         insert: (payload: unknown) => {
           mode = "insert";
@@ -65,13 +97,13 @@ vi.mock("@/lib/supabase/server", () => ({
         },
         eq: () => builder,
         select: () => builder,
+        single: () => builder,
         // Real supabase-js builders are thenable at every stage of the
-        // chain: `createRule` awaits the builder right after `.insert(...)`
-        // (no `.select()`), while `updateRule`/`archiveRule` await it after
-        // `.eq(...).select(...)`. Both are satisfied by making every stage
-        // resolve to the outcome for the mode currently in effect.
+        // chain (wallets.test.ts's identical comment) — the same object
+        // resolves correctly whether it's awaited right after `.insert(...)`
+        // or several `.eq`/`.select`/`.single` calls later.
         then: (resolve: (v: unknown) => void) =>
-          resolve(mode === "insert" ? insertResult : updateResult),
+          resolve(mode === "insert" ? insertResult : mode === "update" ? updateResult : ruleLookupResult),
       };
       return builder;
     },
@@ -84,6 +116,10 @@ beforeEach(() => {
   insertResult.error = null;
   updateResult.data = [{ id: RULE_ID }];
   updateResult.error = null;
+  ruleLookupResult.data = { wallet_id: WALLET_ID };
+  // Matches `form()`'s default `kind: "expense"` below, so every test that
+  // doesn't care about the category check can ignore it entirely.
+  categoryResult.data = { kind: "expense", archived_at: null };
 });
 
 function form(overrides: Record<string, string> = {}) {
@@ -113,6 +149,8 @@ describe("createRule", () => {
   });
 
   it("stores an income amount as POSITIVE minor units", async () => {
+    categoryResult.data = { kind: "income", archived_at: null };
+
     const result = await createRule({}, form({ kind: "income", amount: "3200.00" }));
 
     expect(result).toEqual({});
@@ -173,10 +211,55 @@ describe("createRule", () => {
     expect(revalidatePath).toHaveBeenCalledWith("/", "layout");
     expect(revalidatePath).toHaveBeenCalledWith("/recurring");
   });
+
+  /**
+   * Fix round 1 (task-3-fix-1): the review's Critical finding. Without this
+   * check, an expense rule pointed at an income category (or vice versa)
+   * was created successfully and then permanently un-recordable — every
+   * later attempt to record an occurrence inserts a transaction with the
+   * rule's fixed kind/category, and `createTransaction`'s own identical
+   * check (transactions.ts:147) refuses it, forever. Message text is
+   * copied verbatim from that check, not reinvented.
+   */
+  it("rejects a category whose kind doesn't match the rule's kind, with transactions.ts's exact message", async () => {
+    categoryResult.data = { kind: "income", archived_at: null };
+
+    const result = await createRule({}, form({ kind: "expense" }));
+
+    expect(result.error).toBe("That category doesn't match this transaction type");
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
+
+  it("accepts a category whose kind matches the rule's kind", async () => {
+    categoryResult.data = { kind: "expense", archived_at: null };
+
+    const result = await createRule({}, form({ kind: "expense" }));
+
+    expect(result).toEqual({});
+    expect(insertSpy).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The task-3-fix-1 decision on archived categories: rejected on create,
+   * same as transactions.ts's `createTransaction` rejects one for a brand
+   * new transaction (spec §5.3 — archiving "hides it from pickers" for
+   * anything NEW). A brand-new rule pointed at an already-archived category
+   * would be exactly as permanently un-recordable as a kind mismatch.
+   */
+  it("rejects an archived category, even if its kind matches", async () => {
+    categoryResult.data = { kind: "expense", archived_at: "2026-01-01T00:00:00Z" };
+
+    const result = await createRule({}, form({ kind: "expense" }));
+
+    expect(result.error).toBe("Choose a category");
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe("updateRule", () => {
   it("writes the amount as signed minor units and never writes wallet_id or created_by", async () => {
+    categoryResult.data = { kind: "income", archived_at: null };
+
     const result = await updateRule(RULE_ID, {}, form({ kind: "income", amount: "3200.00" }));
 
     expect(result).toEqual({});
@@ -219,6 +302,71 @@ describe("updateRule", () => {
 
     expect(result).toEqual({ error: "Not signed in" });
     expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns 'Rule not found' when the rule's own wallet_id can't be looked up", async () => {
+    ruleLookupResult.data = null;
+
+    const result = await updateRule(RULE_ID, {}, form());
+
+    expect(result).toEqual({ error: "Rule not found" });
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Fix round 1 (task-3-fix-1): same Critical gap as `createRule`'s, on the
+   * edit path. Message text copied verbatim from transactions.ts:147.
+   */
+  it("rejects a category whose kind doesn't match the rule's kind, with transactions.ts's exact message", async () => {
+    categoryResult.data = { kind: "income", archived_at: null };
+
+    const result = await updateRule(RULE_ID, {}, form({ kind: "expense" }));
+
+    expect(result.error).toBe("That category doesn't match this transaction type");
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("accepts a category whose kind matches the rule's kind", async () => {
+    categoryResult.data = { kind: "expense", archived_at: null };
+
+    const result = await updateRule(RULE_ID, {}, form({ kind: "expense" }));
+
+    expect(result).toEqual({});
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * task-3-fix-1's decision, applied to edit too (deliberately NOT deferred
+   * the way transactions.ts's own comment defers the archived-on-edit
+   * question for a *transaction*): a rule exists to be recorded again in
+   * the future, so saving an edit that leaves it pointed at an archived
+   * category would strand it exactly as permanently un-recordable as a
+   * kind mismatch would.
+   */
+  it("rejects an archived category, even if its kind matches", async () => {
+    categoryResult.data = { kind: "expense", archived_at: "2026-01-01T00:00:00Z" };
+
+    const result = await updateRule(RULE_ID, {}, form({ kind: "expense" }));
+
+    expect(result.error).toBe("Choose a category");
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The security property `checkCategory`'s call site in `updateRule` exists
+   * for: `wallet_id` cannot be changed via UPDATE (0015's column-scoped
+   * grant), so the category lookup must be scoped by the rule's OWN
+   * (looked-up) wallet_id, never the one posted in the form — otherwise a
+   * caller could post an unrelated wallet_id whose categories happen to
+   * satisfy the kind check while the row itself stays on its real wallet.
+   */
+  it("scopes the category lookup to the rule's own wallet_id, not the posted one", async () => {
+    ruleLookupResult.data = { wallet_id: OTHER_WALLET_ID };
+
+    await updateRule(RULE_ID, {}, form({ wallet_id: WALLET_ID }));
+
+    expect(categoryEqSpy).toHaveBeenCalledWith("wallet_id", OTHER_WALLET_ID);
+    expect(categoryEqSpy).not.toHaveBeenCalledWith("wallet_id", WALLET_ID);
   });
 });
 
