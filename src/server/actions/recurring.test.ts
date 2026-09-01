@@ -7,7 +7,7 @@
 // uses, and the reason this suite exercises `createRule`/`updateRule`/
 // `archiveRule`'s real logic rather than a stand-in.
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { createRule, updateRule, archiveRule } from "./recurring";
+import { createRule, updateRule, archiveRule, recordOccurrence, skipOccurrence, unskipOccurrence } from "./recurring";
 
 const OWNER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const WALLET_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -38,7 +38,10 @@ const {
   insertSpy,
   updateResult,
   updateSpy,
+  deleteResult,
+  deleteSpy,
   ruleLookupResult,
+  walletRow,
   categoryResult,
   categoryEqSpy,
   revalidatePath,
@@ -48,7 +51,31 @@ const {
   insertSpy: vi.fn(),
   updateResult: { data: null as { id: string }[] | null, error: null as unknown },
   updateSpy: vi.fn(),
-  ruleLookupResult: { data: null as { wallet_id: string } | null },
+  // `unskipOccurrence`'s DELETE from `recurring_skips` — a separate
+  // spy/result from `updateResult` because a DELETE has no affected-row
+  // payload to assert on the way an UPDATE's `.select("id")` does; only
+  // whether it errored matters here.
+  deleteResult: { error: null as unknown },
+  deleteSpy: vi.fn(),
+  // Shared by every `recurring_rules` SELECT-by-id lookup: `updateRule`
+  // only ever reads `.wallet_id` off it, so the extra fields
+  // `recordOccurrence` needs (kind/amount_minor/currency_code/category_id)
+  // are optional rather than required — the "scopes the category lookup to
+  // the rule's own wallet_id" test below assigns a wallet_id-only object.
+  ruleLookupResult: {
+    data: null as {
+      wallet_id: string;
+      kind?: string;
+      amount_minor?: number;
+      currency_code?: string;
+      category_id?: string;
+    } | null,
+  },
+  // `recordOccurrence`'s wallet-active check. A plain mutable object (not a
+  // `{ data, error }` result) because the "refuses to record against an
+  // archived wallet" test mutates `walletRow.archived_at` in place, the same
+  // way `updateResult.data` is reassigned elsewhere in this file.
+  walletRow: { archived_at: null as string | null },
   categoryResult: { data: null as { kind: string; archived_at: string | null } | null },
   // Captures every `.eq(col, val)` the categories lookup makes — the
   // "scopes to the rule's OWN wallet_id, not the posted one" test below
@@ -76,14 +103,35 @@ vi.mock("@/lib/supabase/server", () => ({
         };
         return builder;
       }
-      if (table !== "recurring_rules") throw new Error(`unexpected table ${table}`);
-      // "lookup" is the default and stays in effect for `updateRule`'s
-      // standalone `.select("wallet_id").eq("id", id).single()`, which
-      // never calls `.insert` or `.update`. `createRule`'s `.insert(...)`
-      // and `updateRule`/`archiveRule`'s `.update(...).eq(...).select(...)`
-      // each switch the mode explicitly, the same way wallets.test.ts's
-      // fake switches between its own "count" and "update" modes.
-      let mode: "lookup" | "insert" | "update" = "lookup";
+      if (table === "wallets") {
+        // `recordOccurrence`'s wallet-active check. No mode switching
+        // needed — this table is only ever SELECTed here, never
+        // inserted/updated/deleted.
+        const builder: Record<string, unknown> = {
+          select: () => builder,
+          eq: () => builder,
+          single: () => builder,
+          then: (resolve: (v: unknown) => void) => resolve({ data: walletRow, error: null }),
+        };
+        return builder;
+      }
+      if (!["recurring_rules", "transactions", "recurring_skips"].includes(table)) {
+        throw new Error(`unexpected table ${table}`);
+      }
+      // One shared shape for all three tables — same deliberate choice this
+      // file's module comment makes for `categories`: the fakes don't
+      // reimplement per-table behaviour, they just report whichever outcome
+      // a test told them to. "lookup" is the default and stays in effect
+      // for `updateRule`/`recordOccurrence`'s standalone SELECTs, which
+      // never call `.insert`/`.update`/`.delete`. `createRule`'s
+      // `.insert(...)` (on `recurring_rules`), `recordOccurrence`'s
+      // `.insert(...)` (on `transactions`) and `skipOccurrence`'s
+      // `.insert(...)` (on `recurring_skips`) all switch to "insert" and
+      // resolve via the SAME `insertResult`/`insertSpy` — there is nothing
+      // table-specific about how an insert error is translated, so a single
+      // pair suffices and lets `skipOccurrence`'s idempotent-23505 test
+      // reuse the identical `insertResult` the record-duplicate test does.
+      let mode: "lookup" | "insert" | "update" | "delete" = "lookup";
       const builder: Record<string, unknown> = {
         insert: (payload: unknown) => {
           mode = "insert";
@@ -95,6 +143,11 @@ vi.mock("@/lib/supabase/server", () => ({
           updateSpy(payload);
           return builder;
         },
+        delete: () => {
+          mode = "delete";
+          deleteSpy();
+          return builder;
+        },
         eq: () => builder,
         select: () => builder,
         single: () => builder,
@@ -103,7 +156,15 @@ vi.mock("@/lib/supabase/server", () => ({
         // resolves correctly whether it's awaited right after `.insert(...)`
         // or several `.eq`/`.select`/`.single` calls later.
         then: (resolve: (v: unknown) => void) =>
-          resolve(mode === "insert" ? insertResult : mode === "update" ? updateResult : ruleLookupResult),
+          resolve(
+            mode === "insert"
+              ? insertResult
+              : mode === "update"
+                ? updateResult
+                : mode === "delete"
+                  ? deleteResult
+                  : ruleLookupResult,
+          ),
       };
       return builder;
     },
@@ -116,7 +177,19 @@ beforeEach(() => {
   insertResult.error = null;
   updateResult.data = [{ id: RULE_ID }];
   updateResult.error = null;
-  ruleLookupResult.data = { wallet_id: WALLET_ID };
+  deleteResult.error = null;
+  // Full default row, matching `form()`'s defaults below (1500.00 expense
+  // SGD -> -150000 minor units) — `recordOccurrence`'s tests can rely on
+  // this without re-stating it, the same way `createRule`'s tests rely on
+  // `categoryResult`'s default.
+  ruleLookupResult.data = {
+    wallet_id: WALLET_ID,
+    kind: "expense",
+    amount_minor: -150000,
+    currency_code: "SGD",
+    category_id: CATEGORY_ID,
+  };
+  walletRow.archived_at = null;
   // Matches `form()`'s default `kind: "expense"` below, so every test that
   // doesn't care about the category check can ignore it entirely.
   categoryResult.data = { kind: "expense", archived_at: null };
@@ -418,5 +491,197 @@ describe("archiveRule", () => {
 
     expect(result).toEqual({ error: "Not signed in" });
     expect(updateSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("recordOccurrence", () => {
+  it("dates the transaction to the OCCURRENCE, not to today", async () => {
+    // The whole of spec §1.3 rests on this. Recording July's rent in
+    // September must produce a 1 July transaction, or "each lands on its
+    // own date" is cosmetic and July's report is still wrong.
+    await recordOccurrence(RULE_ID, "2026-07-01");
+
+    expect(insertSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ occurred_on: "2026-07-01", recurring_id: RULE_ID }),
+    );
+  });
+
+  it("copies the rule's kind, amount, currency, category and wallet", async () => {
+    await recordOccurrence(RULE_ID, "2026-07-01");
+
+    expect(insertSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "expense",
+        amount_minor: -150000,
+        currency_code: "SGD",
+        category_id: CATEGORY_ID,
+        wallet_id: WALLET_ID,
+      }),
+    );
+  });
+
+  it("writes created_by from the session, never from the caller", async () => {
+    await recordOccurrence(RULE_ID, "2026-07-01");
+
+    expect(insertSpy).toHaveBeenCalledWith(expect.objectContaining({ created_by: OWNER_ID }));
+  });
+
+  it("refuses to record against an archived wallet, with a readable reason", async () => {
+    walletRow.archived_at = "2026-06-01T00:00:00Z";
+
+    const res = await recordOccurrence(RULE_ID, "2026-07-01");
+
+    expect(res.error).toMatch(/archived/i);
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
+
+  it("reports a duplicate record as already done, not as a crash", async () => {
+    // The partial unique index is the real guard (two tabs, a double tap, a
+    // retry). The user must see something sane rather than a Postgres error.
+    insertResult.error = { code: "23505", message: "duplicate key" };
+
+    const res = await recordOccurrence(RULE_ID, "2026-07-01");
+
+    expect(res.error).toMatch(/already recorded/i);
+  });
+
+  it("returns an error, never throws, when the INSERT fails for a reason other than a duplicate", async () => {
+    insertResult.error = { code: "XX000", message: "boom" };
+
+    const res = await recordOccurrence(RULE_ID, "2026-07-01");
+
+    // App-authored text, not the provider's — this module's own convention.
+    expect(res).toEqual({ error: "Could not record this occurrence. Please try again." });
+  });
+
+  it("rejects a category whose kind no longer matches the rule's kind", async () => {
+    // The rule's own kind/category pairing was validated at create/edit
+    // time, but the category can change (or be re-pointed) afterward —
+    // this is the same defence-in-depth checkCategory exists for there.
+    categoryResult.data = { kind: "income", archived_at: null };
+
+    const res = await recordOccurrence(RULE_ID, "2026-07-01");
+
+    expect(res.error).toBe("That category doesn't match this transaction type");
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects an archived category", async () => {
+    categoryResult.data = { kind: "expense", archived_at: "2026-01-01T00:00:00Z" };
+
+    const res = await recordOccurrence(RULE_ID, "2026-07-01");
+
+    expect(res.error).toBe("Choose a category");
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns 'Rule not found' when the rule can't be looked up (RLS or a bad id)", async () => {
+    ruleLookupResult.data = null;
+
+    const res = await recordOccurrence(RULE_ID, "2026-07-01");
+
+    expect(res).toEqual({ error: "Rule not found" });
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns an error when there is no session", async () => {
+    getUser.mockResolvedValue({ data: { user: null } });
+
+    const res = await recordOccurrence(RULE_ID, "2026-07-01");
+
+    expect(res).toEqual({ error: "Not signed in" });
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
+
+  it("revalidates the layout on success", async () => {
+    await recordOccurrence(RULE_ID, "2026-07-01");
+
+    expect(revalidatePath).toHaveBeenCalledWith("/", "layout");
+  });
+});
+
+describe("skipOccurrence", () => {
+  it("inserts a skip row for the rule and occurrence", async () => {
+    const res = await skipOccurrence(RULE_ID, "2026-07-01");
+
+    expect(res).toEqual({});
+    expect(insertSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ rule_id: RULE_ID, occurrence_on: "2026-07-01" }),
+    );
+  });
+
+  it("skips idempotently", async () => {
+    insertResult.error = { code: "23505", message: "duplicate key" };
+
+    const res = await skipOccurrence(RULE_ID, "2026-07-01");
+
+    // Skipping twice is the same as skipping once — the composite PK says
+    // so, and the user should not see an error for reaching the state they
+    // wanted.
+    expect(res).toEqual({});
+  });
+
+  it("returns an error, never throws, when the INSERT fails for a reason other than a duplicate", async () => {
+    insertResult.error = { code: "XX000", message: "boom" };
+
+    const res = await skipOccurrence(RULE_ID, "2026-07-01");
+
+    expect(res).toEqual({ error: "Could not skip this occurrence. Please try again." });
+  });
+
+  it("returns an error when there is no session", async () => {
+    getUser.mockResolvedValue({ data: { user: null } });
+
+    const res = await skipOccurrence(RULE_ID, "2026-07-01");
+
+    expect(res).toEqual({ error: "Not signed in" });
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
+
+  it("revalidates the layout on success", async () => {
+    await skipOccurrence(RULE_ID, "2026-07-01");
+
+    expect(revalidatePath).toHaveBeenCalledWith("/", "layout");
+  });
+});
+
+describe("unskipOccurrence", () => {
+  it("deletes the skip row for the rule and occurrence", async () => {
+    const res = await unskipOccurrence(RULE_ID, "2026-07-01");
+
+    expect(res).toEqual({});
+    expect(deleteSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats deleting a row that isn't skipped as success, not an error", async () => {
+    // Symmetric with skipOccurrence's idempotence: un-skipping an
+    // already-unskipped (or never-skipped) period is already the state the
+    // caller asked for.
+    const res = await unskipOccurrence(RULE_ID, "2026-07-01");
+
+    expect(res).toEqual({});
+  });
+
+  it("returns an error, never throws, when the DELETE itself fails", async () => {
+    deleteResult.error = { code: "XX000", message: "boom" };
+
+    const res = await unskipOccurrence(RULE_ID, "2026-07-01");
+
+    expect(res).toEqual({ error: "Could not undo the skip. Please try again." });
+  });
+
+  it("returns an error when there is no session", async () => {
+    getUser.mockResolvedValue({ data: { user: null } });
+
+    const res = await unskipOccurrence(RULE_ID, "2026-07-01");
+
+    expect(res).toEqual({ error: "Not signed in" });
+    expect(deleteSpy).not.toHaveBeenCalled();
+  });
+
+  it("revalidates the layout on success", async () => {
+    await unskipOccurrence(RULE_ID, "2026-07-01");
+
+    expect(revalidatePath).toHaveBeenCalledWith("/", "layout");
   });
 });

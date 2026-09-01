@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { recurringInput, type RecurringField } from "@/lib/validation/recurring";
 import { parseAmountInput, minorUnitFor } from "@/lib/money";
-import { signedAmount } from "@/lib/validation/transaction";
+import { signedAmount, nonTransferKind } from "@/lib/validation/transaction";
 import type { z } from "zod";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
@@ -307,5 +307,163 @@ export async function archiveRule(id: string): Promise<RecurringState> {
 
   revalidatePath("/", "layout");
   revalidatePath("/recurring");
+  return {};
+}
+
+/**
+ * Records one occurrence of a recurring rule as a real transaction, dated to
+ * the OCCURRENCE (`occurrenceOn`) rather than to today -- the entire premise
+ * spec §1.3 rests on ("each occurrence lands on its own date") is cosmetic
+ * unless the row itself carries the date it actually happened on: July's
+ * rent recorded in September must produce a 1 July transaction, not a 1
+ * September one. `occurred_on` is set directly from the caller's argument,
+ * never from `new Date()`.
+ *
+ * The rule is loaded scoped by RLS (`recurring_rules_member`), the same
+ * pattern `updateRule` uses: a rule the caller can't see comes back `null`
+ * here and is reported "Rule not found" rather than surfacing later as an
+ * opaque insert failure. The wallet-active and category-kind/archived
+ * checks mirror `src/server/actions/transactions.ts`'s `createTransaction`
+ * (its wallet lookup around line 104, its category lookup around line 147)
+ * for the identical reason theirs exist: the rule's wallet or category can
+ * have been archived, or the category's kind changed, at any point AFTER
+ * the rule was created, and the composite FKs alone would only surface that
+ * as a raw constraint violation at insert time. `checkCategory` is reused
+ * rather than reimplemented, exactly as `createRule`/`updateRule` do.
+ *
+ * Unlike `createTransaction`'s wallet check -- which reports a uniform
+ * "Wallet not found" for both a nonexistent wallet and an archived one,
+ * deliberately, so an adversarial direct POST naming an arbitrary wallet id
+ * learns nothing about wallets it can't otherwise see -- this check can
+ * safely name "archived" specifically: the rule itself only reached this
+ * point via an RLS-scoped SELECT the caller already passed, so the caller
+ * already knows this wallet exists and that they belong to it. There is no
+ * adversarial party being told anything new, and a clearer message is more
+ * useful than the uniform one would be here.
+ *
+ * Postgres `23505` (the partial unique index `transactions_recurring_
+ * occurrence` on `(recurring_id, occurred_on) where recurring_id is not
+ * null and deleted_at is null`) is translated to a readable "already
+ * recorded" message rather than surfaced verbatim -- the index exists
+ * precisely to absorb a double tap, a retried request, or a second tab, and
+ * the user needs to see that the occurrence is already in the ledger, not a
+ * driver error.
+ */
+export async function recordOccurrence(ruleId: string, occurrenceOn: string): Promise<RecurringState> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in" };
+
+  const { data: rule } = await supabase
+    .from("recurring_rules")
+    .select("wallet_id, kind, amount_minor, currency_code, category_id")
+    .eq("id", ruleId)
+    .single();
+  if (!rule) return { error: "Rule not found" };
+
+  // `recurring_rules.kind` is DB-typed as the full `txn_kind` enum
+  // (expense|income|transfer), same as `transactions.kind` — the generated
+  // Supabase types have no way to encode 0015's own `rule_kind_not_transfer`
+  // CHECK constraint, which is what actually guarantees this value is never
+  // "transfer". Re-parsing with `nonTransferKind` (rather than an unchecked
+  // cast) turns "the database enforced this" into a checked fact `
+  // checkCategory` can rely on, the same defence-in-depth reasoning this
+  // file already applies via `checkCategory` itself.
+  const kindParsed = nonTransferKind.safeParse(rule.kind);
+  if (!kindParsed.success) return { error: "Rule not found" };
+  const kind = kindParsed.data;
+
+  const { data: wallet } = await supabase
+    .from("wallets")
+    .select("archived_at")
+    .eq("id", rule.wallet_id)
+    .single();
+  if (!wallet || wallet.archived_at) return { error: "This wallet has been archived." };
+
+  const categoryError = await checkCategory(supabase, rule.category_id, rule.wallet_id, kind);
+  if (categoryError) return categoryError;
+
+  const { error } = await supabase.from("transactions").insert({
+    wallet_id: rule.wallet_id,
+    created_by: user.id,
+    kind,
+    amount_minor: rule.amount_minor,
+    currency_code: rule.currency_code,
+    category_id: rule.category_id,
+    occurred_on: occurrenceOn,
+    recurring_id: ruleId,
+    note: null,
+  });
+  if (error) {
+    if (error.code === "23505") return { error: "This occurrence is already recorded." };
+    return { error: "Could not record this occurrence. Please try again." };
+  }
+
+  revalidatePath("/", "layout");
+  return {};
+}
+
+/**
+ * Marks one occurrence as explicitly declined, by inserting into
+ * `recurring_skips`. The composite primary key `(rule_id, occurrence_on)`
+ * IS the idempotency guarantee (0015's own comment on the table): a second
+ * skip of the same period raises `23505`, which is treated as SUCCESS here
+ * rather than an error -- the caller asked for a state ("this period is
+ * skipped") they are already in, and reporting that as a failure would be
+ * wrong, not merely unhelpful.
+ *
+ * No separate rule-existence/membership check is needed before the insert:
+ * `recurring_skips_member`'s `WITH CHECK` (0015) already fails a rule the
+ * caller can't see with `42501`, which is neither `undefined` nor `23505`
+ * and so falls through to the generic error below -- correct, since a
+ * caller with no route to a rule shouldn't be told the difference between
+ * "no such rule" and "not your rule" any more than the RLS policy itself
+ * reveals it.
+ */
+export async function skipOccurrence(ruleId: string, occurrenceOn: string): Promise<RecurringState> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in" };
+
+  const { error } = await supabase.from("recurring_skips").insert({
+    rule_id: ruleId,
+    occurrence_on: occurrenceOn,
+    created_by: user.id,
+  });
+  if (error && error.code !== "23505") {
+    return { error: "Could not skip this occurrence. Please try again." };
+  }
+
+  revalidatePath("/", "layout");
+  return {};
+}
+
+/**
+ * Reverses `skipOccurrence` by deleting that row. Symmetric with the skip
+ * side's idempotence: deleting a row that doesn't exist (already unskipped,
+ * or never skipped) affects zero rows without Postgres raising an error, and
+ * that is treated as success too -- the caller again ends up in the state
+ * they asked for ("this period is not skipped"), which un-skipping an
+ * already-unskipped period already is.
+ */
+export async function unskipOccurrence(ruleId: string, occurrenceOn: string): Promise<RecurringState> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in" };
+
+  const { error } = await supabase
+    .from("recurring_skips")
+    .delete()
+    .eq("rule_id", ruleId)
+    .eq("occurrence_on", occurrenceOn);
+  if (error) return { error: "Could not undo the skip. Please try again." };
+
+  revalidatePath("/", "layout");
   return {};
 }
