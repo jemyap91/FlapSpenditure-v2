@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { occurrencesFor, dueOccurrences, type RecurrenceRule } from "./recurrence";
+import { occurrencesFor, dueOccurrences, type RecurrenceRule, type RecurInterval } from "./recurrence";
 
 const monthly = (anchorOn: string, endsOn: string | null = null): RecurrenceRule => ({
   anchorOn,
@@ -112,6 +112,146 @@ describe("occurrencesFor", () => {
   it("does not claim older ones were dropped when none were", () => {
     expect(occurrencesFor(monthly("2026-07-01"), "2026-09-01").olderDropped).toBe(false);
   });
+
+  it("includes the anchor itself when endsOn equals anchorOn", () => {
+    // Pins the `d > rule.endsOn` comparison at the boundary: endsOn is
+    // inclusive, so a rule that ends the same day it starts still yields
+    // exactly the anchor, not an empty list.
+    const { dates } = occurrencesFor(monthly("2026-09-01", "2026-09-01"), "2026-09-01");
+    expect(dates).toEqual(["2026-09-01"]);
+  });
+});
+
+describe("malformed input", () => {
+  it("throws rather than spinning forever on an empty anchorOn", () => {
+    expect(() =>
+      occurrencesFor({ anchorOn: "", intervalUnit: "monthly", endsOn: null }, "2026-09-01"),
+    ).toThrow(RangeError);
+  });
+
+  // The four malformed forms named by the review: an empty string, a shape
+  // mismatch, and two well-formed-looking but impossible calendar dates.
+  // Each must throw rather than silently producing a garbage occurrence list.
+  it.each([
+    ["", "empty string"],
+    ["not-a-date", "not a date at all"],
+    ["2026-13-01", "month 13 does not exist"],
+    ["2026-02-30", "February has no 30th"],
+    ["2026-2-1", "unpadded shape mismatch"],
+  ])("rejects anchorOn %j (%s)", (bad) => {
+    expect(() =>
+      occurrencesFor({ anchorOn: bad, intervalUnit: "monthly", endsOn: null }, "2026-09-01"),
+    ).toThrow(RangeError);
+  });
+
+  it.each([
+    ["", "empty string"],
+    ["not-a-date", "not a date at all"],
+    ["2026-13-01", "month 13 does not exist"],
+    ["2026-02-30", "February has no 30th"],
+    ["2026-2-1", "unpadded shape mismatch"],
+  ])("rejects today %j (%s)", (bad) => {
+    expect(() => occurrencesFor(monthly("2026-01-01"), bad)).toThrow(RangeError);
+  });
+
+  it.each([
+    ["", "empty string"],
+    ["not-a-date", "not a date at all"],
+    ["2026-13-01", "month 13 does not exist"],
+    ["2026-02-30", "February has no 30th"],
+    ["2026-2-1", "unpadded shape mismatch"],
+  ])("rejects a non-null endsOn %j (%s)", (bad) => {
+    expect(() => occurrencesFor(monthly("2026-01-01", bad), "2026-09-01")).toThrow(RangeError);
+  });
+
+  it("dueOccurrences inherits the guard via occurrencesFor", () => {
+    expect(() =>
+      dueOccurrences(
+        { anchorOn: "", intervalUnit: "monthly", endsOn: null },
+        "2026-09-01",
+        new Set(),
+      ),
+    ).toThrow(RangeError);
+  });
+});
+
+/**
+ * Cross-check against a naive, obviously-correct reference: iterate from
+ * n = 0 (never analytically estimating an index) and keep every occurrence
+ * on or after the twelve-month floor and on or before today. This is the
+ * proof, cited by the review, that `firstIndexAtOrAfter`'s analytic estimate
+ * never overshoots and silently skips a genuinely-due occurrence. It would
+ * fail if a future "optimisation" of that estimate skipped ahead too far.
+ */
+describe("firstIndexAtOrAfter does not overshoot (brute-force cross-check)", () => {
+  const naiveOccurrencesFor = (rule: RecurrenceRule, today: string): string[] => {
+    const addDaysLocal = (iso: string, days: number): string => {
+      const [y, m, d] = iso.split("-").map(Number) as [number, number, number];
+      const t = new Date(Date.UTC(y, m - 1, d + days));
+      return `${String(t.getUTCFullYear()).padStart(4, "0")}-${String(t.getUTCMonth() + 1).padStart(2, "0")}-${String(t.getUTCDate()).padStart(2, "0")}`;
+    };
+    const addMonthsLocal = (iso: string, months: number): string => {
+      const [y, m, d] = iso.split("-").map(Number) as [number, number, number];
+      const total = y * 12 + (m - 1) + months;
+      const ny = Math.floor(total / 12);
+      const nm = (total % 12) + 1;
+      const lastDay = new Date(Date.UTC(ny, nm, 0)).getUTCDate();
+      const nd = Math.min(d, lastDay);
+      return `${String(ny).padStart(4, "0")}-${String(nm).padStart(2, "0")}-${String(nd).padStart(2, "0")}`;
+    };
+    const nthLocal = (n: number): string => {
+      switch (rule.intervalUnit) {
+        case "weekly":
+          return addDaysLocal(rule.anchorOn, 7 * n);
+        case "fortnightly":
+          return addDaysLocal(rule.anchorOn, 14 * n);
+        case "monthly":
+          return addMonthsLocal(rule.anchorOn, n);
+        case "yearly":
+          return addMonthsLocal(rule.anchorOn, 12 * n);
+      }
+    };
+    const [ty, tm, td] = today.split("-").map(Number) as [number, number, number];
+    const floorTotal = ty * 12 + (tm - 1) - 12;
+    const floorY = Math.floor(floorTotal / 12);
+    const floorM = (floorTotal % 12) + 1;
+    const floorLastDay = new Date(Date.UTC(floorY, floorM, 0)).getUTCDate();
+    const floorD = Math.min(td, floorLastDay);
+    const floorFromToday = `${String(floorY).padStart(4, "0")}-${String(floorM).padStart(2, "0")}-${String(floorD).padStart(2, "0")}`;
+    const floor = floorFromToday > rule.anchorOn ? floorFromToday : rule.anchorOn;
+
+    const kept: string[] = [];
+    for (let n = 0; n < 5000; n++) {
+      const d = nthLocal(n);
+      if (d > today) break;
+      if (rule.endsOn !== null && d > rule.endsOn) break;
+      if (d >= floor) kept.push(d);
+    }
+    return kept.length > 24 ? kept.slice(-24) : kept;
+  };
+
+  it("agrees with a naive from-zero iteration across intervals, anchors, and ends_on", () => {
+    const intervals: RecurInterval[] = ["weekly", "fortnightly", "monthly", "yearly"];
+    const anchorYears = [1995, 2000, 2005, 2010, 2015, 2020, 2022, 2024, 2026, 2028];
+    const todays = ["2026-01-15", "2026-06-30", "2026-09-15", "2026-12-31"];
+    let cases = 0;
+    for (const intervalUnit of intervals) {
+      for (const anchorYear of anchorYears) {
+        for (const today of todays) {
+          for (const endsOn of [null, "2027-06-15", "2020-01-01"] as const) {
+            const anchorOn = `${anchorYear}-03-17`;
+            if (anchorOn > today) continue;
+            const rule: RecurrenceRule = { anchorOn, intervalUnit, endsOn };
+            const expected = naiveOccurrencesFor(rule, today);
+            const actual = occurrencesFor(rule, today).dates;
+            expect(actual).toEqual(expected);
+            cases++;
+          }
+        }
+      }
+    }
+    expect(cases).toBeGreaterThan(300);
+  });
 });
 
 describe("dueOccurrences", () => {
@@ -141,5 +281,15 @@ describe("dueOccurrences", () => {
       new Set(["2026-08-01"]),
     );
     expect(dates).toEqual([]);
+  });
+
+  // Every other dueOccurrences test above uses a rule anchored within the
+  // twelve-month floor, where olderDropped is always false — so hardcoding
+  // `olderDropped: false` in the return would leave the whole suite green.
+  // This rule is anchored in 2020, old enough that the floor must withhold
+  // occurrences and olderDropped must be true.
+  it("passes olderDropped through from occurrencesFor rather than hardcoding it", () => {
+    const { olderDropped } = dueOccurrences(monthly("2020-01-15"), "2026-09-15", new Set());
+    expect(olderDropped).toBe(true);
   });
 });

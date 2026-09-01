@@ -38,6 +38,23 @@ function parse(iso: string): Parts {
   return { y: y!, m: m!, d: d! };
 }
 
+/** Accepts exactly `YYYY-MM-DD` naming a real calendar date. Rejects `""`,
+ *  shape mismatches (`"not-a-date"`, `"2026-2-1"`), and well-formed-looking
+ *  but impossible dates (`"2026-13-01"`, `"2026-02-30"`) by round-tripping
+ *  through a UTC Date and checking the fields survived unchanged. */
+function isIsoDate(s: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const { y, m, d } = parse(s);
+  const t = new Date(Date.UTC(y, m - 1, d));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+}
+
+function assertIsoDate(field: string, value: string): void {
+  if (!isIsoDate(value)) {
+    throw new RangeError(`${field} must be a valid YYYY-MM-DD date, got ${JSON.stringify(value)}`);
+  }
+}
+
 function format({ y, m, d }: Parts): string {
   return `${String(y).padStart(4, "0")}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 }
@@ -109,7 +126,7 @@ function monthsBetween(a: string, b: string): number {
  *
  * The estimate can be one short after month-end clamping, so it is nudged
  * forward until it genuinely lands on or after the floor. That loop runs at
- * most twice.
+ * most once.
  */
 function firstIndexAtOrAfter(rule: RecurrenceRule, floor: string): number {
   if (floor <= rule.anchorOn) return 0;
@@ -123,11 +140,22 @@ function firstIndexAtOrAfter(rule: RecurrenceRule, floor: string): number {
           ? monthsBetween(rule.anchorOn, floor)
           : Math.floor(monthsBetween(rule.anchorOn, floor) / 12);
   if (n < 0) n = 0;
-  while (nth(rule, n) < floor) n++;
-  return n;
+  // Structural backstop, independent of the validation callers are required
+  // to perform: the loop is proven to need at most ONE correction, so a
+  // bound of 4 is generous. Without this, a future input class nobody
+  // anticipated (e.g. a NaN estimate) would spin forever rather than fail.
+  for (let guard = 0; guard < 4; guard++) {
+    if (nth(rule, n) >= floor) return n;
+    n++;
+  }
+  throw new RangeError(`firstIndexAtOrAfter failed to converge for floor ${JSON.stringify(floor)}`);
 }
 
 export function occurrencesFor(rule: RecurrenceRule, today: string): Occurrences {
+  assertIsoDate("anchorOn", rule.anchorOn);
+  assertIsoDate("today", today);
+  if (rule.endsOn !== null) assertIsoDate("endsOn", rule.endsOn);
+
   const floorDate = addMonthsClamped(today, -LOOKBACK_MONTHS);
   const floor = floorDate > rule.anchorOn ? floorDate : rule.anchorOn;
 
