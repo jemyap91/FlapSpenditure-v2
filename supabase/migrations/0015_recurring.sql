@@ -141,6 +141,55 @@ create unique index transactions_recurring_occurrence
 -- reason on the sibling category FK.
 create index transactions_recurring on transactions (recurring_id);
 
+-- Fix round 2 (task-4-fix-2, CRITICAL) -- recordOccurrence's action-layer
+-- currency check (src/server/actions/recurring.ts) is a UI courtesy, not a
+-- boundary. `authenticated` holds a full-table INSERT grant on
+-- `transactions` (0004_rls.sql), and `transactions_member` RLS only checks
+-- `is_wallet_member(wallet_id)` -- nothing in either gate looks at
+-- `currency_code`. Proven live: an ordinary member's session JWT (not
+-- service-role -- exactly what a browser legitimately holds) POSTed a JPY
+-- transaction straight to PostgREST's /rest/v1/transactions against a USD
+-- wallet, got HTTP 201, and reproduced the exact balance corruption below,
+-- entirely bypassing recordOccurrence. This is what makes it damaging, not
+-- merely inconsistent: `get_wallet_balances` (0006_aggregates.sql) sums
+-- `amount_minor` across every currency a wallet's transactions carry with
+-- NO currency filter, and labels the resulting total with the wallet's own
+-- `currency_code` -- so a wrong-currency row does not sit inertly wrong,
+-- it silently misprices the displayed balance by whatever the two
+-- currencies' magnitudes happen to differ by.
+--
+-- Closed the same way `transactions_category_same_wallet` (0008) and
+-- `transactions_recurring_same_wallet` (above) already close their own
+-- same-wallet gaps: a composite FK resting on a composite UNIQUE constraint
+-- on the referenced table. `wallets_id_currency` is trivially satisfiable
+-- (id alone is already the primary key, so pairing it with currency_code
+-- can never collide) and exists purely to give
+-- `transactions_currency_matches_wallet` something to reference -- a
+-- transaction's (wallet_id, currency_code) must together match a real
+-- (id, currency_code) pair on wallets, so a transaction can only ever carry
+-- its own wallet's currency, full stop, regardless of which layer (this
+-- app's Server Functions, a direct POST, a future admin tool) produced the
+-- INSERT.
+--
+-- `on delete cascade` matches `transactions.wallet_id`'s own existing FK
+-- (0003_transactions.sql: `references wallets(id) on delete cascade`), so
+-- both composite FKs agree on what a wallet deletion does to its
+-- transactions -- deleting the wallet cascades to delete the transaction
+-- either way. Two CASCADE paths targeting the same row from the same
+-- parent delete are not a conflict: Postgres processes both FK actions for
+-- the deleted wallet row, and a row already removed by one cascade is
+-- simply not found by the other's scan -- there is nothing for a second
+-- CASCADE to do to an already-gone row, and no error results (verified
+-- live -- see the task-4-fix-2 report for the constraint test proving a
+-- wallet with a transaction still deletes cleanly).
+alter table wallets
+  add constraint wallets_id_currency unique (id, currency_code);
+
+alter table transactions
+  add constraint transactions_currency_matches_wallet
+  foreign key (wallet_id, currency_code) references wallets (id, currency_code)
+  on delete cascade;
+
 alter table recurring_rules enable row level security;
 alter table recurring_skips enable row level security;
 

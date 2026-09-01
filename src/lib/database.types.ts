@@ -376,6 +376,13 @@ export type Database = {
             referencedColumns: ["code"]
           },
           {
+            foreignKeyName: "transactions_currency_matches_wallet"
+            columns: ["wallet_id", "currency_code"]
+            isOneToOne: false
+            referencedRelation: "wallets"
+            referencedColumns: ["id", "currency_code"]
+          },
+          {
             foreignKeyName: "transactions_recurring_same_wallet"
             columns: ["recurring_id", "wallet_id"]
             isOneToOne: false

@@ -909,3 +909,65 @@ exception
       format('expected check_violation (23514) from recurring_rules_name_check, got SQLSTATE %s (constraint %s): %s',
              v_sqlstate, v_constraint, sqlerrm);
 end $$;
+
+\echo '--- Fix round 2 (task-4-fix-2): transactions_currency_matches_wallet rejects a transaction whose currency does not match its wallet''s ---'
+-- CRITICAL finding: src/server/actions/recurring.ts's own currency check is
+-- a UI courtesy, not a boundary -- `authenticated` holds a full-table
+-- INSERT grant on `transactions` and `transactions_member` RLS only checks
+-- membership, never currency, so an ordinary member's session (not
+-- service-role) can POST a wrong-currency row straight past the app
+-- entirely. This constraint is the actual boundary. The REJECT below is
+-- paired with a POSITIVE (a same-currency insert into the same wallet),
+-- following this file's own convention: a denial only proves something
+-- when paired with the corresponding permission.
+do $$
+declare v_sqlstate text; v_constraint text;
+begin
+  insert into public.transactions (wallet_id, kind, amount_minor, currency_code, category_id, occurred_on)
+  values ('ffffffff-0000-0000-0000-000000000002', 'expense', -999900, 'JPY',
+          'ffffffff-0000-0000-0000-000000000003', current_date);
+  raise exception 'CONSTRAINT BROKEN: transactions_currency_matches_wallet accepted a transaction whose currency does not match its wallet''s';
+exception
+  when foreign_key_violation then
+    get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+    assert v_sqlstate = '23503' and v_constraint = 'transactions_currency_matches_wallet',
+      format('expected foreign_key_violation (23503) from transactions_currency_matches_wallet, got SQLSTATE %s (constraint %s): %s',
+             v_sqlstate, v_constraint, sqlerrm);
+end $$;
+
+-- POSITIVE: the wallet's OWN currency is accepted. Without this, a
+-- constraint (or an insert path) that rejected EVERY currency_code would
+-- sail through the REJECT above -- the denial only means something paired
+-- with a permission.
+do $$
+declare n int;
+begin
+  insert into public.transactions (wallet_id, kind, amount_minor, currency_code, category_id, occurred_on)
+  values ('ffffffff-0000-0000-0000-000000000002', 'expense', -100, 'USD',
+          'ffffffff-0000-0000-0000-000000000003', current_date);
+
+  select count(*) into n from public.transactions
+  where wallet_id = 'ffffffff-0000-0000-0000-000000000002' and currency_code = 'USD' and amount_minor = -100;
+  assert n = 1,
+    format('CONSTRAINT BROKEN: transactions_currency_matches_wallet rejected the wallet''s OWN currency (%s row(s) landed)', n);
+end $$;
+
+\echo '--- Fix round 2: wallets_id_currency + transactions_currency_matches_wallet ON DELETE CASCADE agrees with transactions_wallet_id_fkey -- deleting a wallet with transactions must not error ---'
+do $$
+declare v_wallet uuid; v_owner uuid; v_cat uuid; n int;
+begin
+  insert into auth.users (id, email) values ('88888888-0000-0000-0000-000000000099','cascade-check@x.io')
+    returning id into v_owner;
+  insert into wallets (owner_id, name, kind, currency_code, color_slot, icon)
+    values (v_owner, 'Cascade Check Wallet', 'bank', 'USD', 3, 'landmark')
+    returning id into v_wallet;
+  select id into v_cat from categories where wallet_id = v_wallet and kind = 'expense' limit 1;
+  insert into transactions (wallet_id, kind, amount_minor, currency_code, category_id, occurred_on)
+    values (v_wallet, 'expense', -500, 'USD', v_cat, current_date);
+
+  delete from wallets where id = v_wallet;
+
+  select count(*) into n from transactions where wallet_id = v_wallet;
+  assert n = 0,
+    format('SAFETY BROKEN: deleting a wallet with transactions did not cascade-delete them (%s row(s) remain) -- transactions_currency_matches_wallet''s ON DELETE CASCADE disagrees with transactions_wallet_id_fkey''s', n);
+end $$;
