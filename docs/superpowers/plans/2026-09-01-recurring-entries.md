@@ -120,7 +120,11 @@ describe("occurrencesFor", () => {
   it("clamps 29 February to the 28th in a non-leap year", () => {
     const { dates } = occurrencesFor(
       { anchorOn: "2024-02-29", intervalUnit: "yearly", endsOn: null },
-      "2025-12-31",
+      // NOT 2025-12-31: that puts the twelve-month floor at 2024-12-31, which
+      // correctly excludes the 2024 occurrence as too old — so the test would
+      // be measuring the backstop while claiming to measure the leap clamp.
+      // 2025-02-28 puts the floor at 2024-02-28, just inside the anchor.
+      "2025-02-28",
     );
     expect(dates).toEqual(["2024-02-29", "2025-02-28"]);
   });
@@ -180,7 +184,7 @@ describe("occurrencesFor", () => {
       "2026-09-15",
     );
     expect(dates).toHaveLength(24);
-    expect(dates[dates.length - 1] >= "2026-09-08").toBe(true);
+    expect(dates[dates.length - 1]!>= "2026-09-08").toBe(true);
     expect(olderDropped).toBe(true);
   });
 
