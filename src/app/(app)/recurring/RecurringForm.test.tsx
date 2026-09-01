@@ -34,6 +34,10 @@ vi.mock("@/server/actions/categories", () => ({
 const WALLETS = [
   { id: "wallet-usd", name: "Everyday", currency_code: "USD" },
   { id: "wallet-sgd", name: "Travel", currency_code: "SGD" },
+  // KWD has 3 decimal places (src/lib/money.ts's MINOR_UNITS) — one more
+  // than USD's 2 — specifically to exercise the reclamp-on-wallet-change
+  // fix below.
+  { id: "wallet-kwd", name: "Kuwait", currency_code: "KWD" },
 ];
 
 const CATEGORIES: Category[] = [
@@ -122,6 +126,72 @@ describe("RecurringForm in create mode", () => {
     await user.click(screen.getByRole("button", { name: "Add rule" }));
 
     expect(seen[0]!.get("category_id")).toBe("");
+  });
+
+  /**
+   * Fix round 1 (task-5-fix-1, Important). Reproduced live by the
+   * reviewer: pick a KWD wallet (3 decimals), type 45.999, switch to a USD
+   * wallet (2 decimals) — before this fix the field kept showing 45.999
+   * and nothing reacted, so the eventual "USD allows up to 2 decimal
+   * places" rejection on submit had nothing on screen connecting it back
+   * to the wallet switch that caused it. `clampAmountInput` (src/lib/
+   * money.ts) truncates to the new currency's precision, matching
+   * TransactionForm's identical `handleWalletChange`.
+   */
+  it("clamps an over-precise amount when the new wallet's currency allows fewer decimal places", async () => {
+    const { action, seen } = boundAction();
+    const user = userEvent.setup();
+    render(
+      <RecurringForm
+        action={action}
+        submitLabel="Add rule"
+        pendingLabel="Adding…"
+        wallets={WALLETS}
+        categories={CATEGORIES}
+        defaultWalletId="wallet-kwd"
+      />,
+    );
+
+    const amountInput = screen.getByLabelText(/Amount \(KWD\)/i);
+    await user.clear(amountInput);
+    await user.type(amountInput, "45.999");
+    expect(amountInput).toHaveValue("45.999");
+
+    await user.selectOptions(screen.getByRole("combobox", { name: /wallet/i }), "wallet-usd");
+
+    // Truncated (45.99), not rounded (46.00) — parseAmountInput's own
+    // truncate-not-reject rule for an over-precise fraction, applied
+    // consistently here.
+    expect(screen.getByLabelText(/Amount \(USD\)/i)).toHaveValue("45.99");
+
+    await user.click(screen.getByRole("button", { name: "Add rule" }));
+    expect(seen[0]!.get("amount")).toBe("45.99");
+  });
+
+  it("leaves the amount untouched when the new wallet's currency allows the same or more decimal places", async () => {
+    const { action, seen } = boundAction();
+    const user = userEvent.setup();
+    render(
+      <RecurringForm
+        action={action}
+        submitLabel="Add rule"
+        pendingLabel="Adding…"
+        wallets={WALLETS}
+        categories={CATEGORIES}
+        defaultWalletId="wallet-usd"
+      />,
+    );
+
+    const amountInput = screen.getByLabelText(/Amount \(USD\)/i);
+    await user.clear(amountInput);
+    await user.type(amountInput, "45.5");
+
+    await user.selectOptions(screen.getByRole("combobox", { name: /wallet/i }), "wallet-kwd");
+
+    expect(screen.getByLabelText(/Amount \(KWD\)/i)).toHaveValue("45.5");
+
+    await user.click(screen.getByRole("button", { name: "Add rule" }));
+    expect(seen[0]!.get("amount")).toBe("45.5");
   });
 });
 

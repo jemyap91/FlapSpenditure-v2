@@ -1,7 +1,10 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { RecurringList, describeSchedule, type RecurringRuleRow } from "./RecurringList";
+import { archiveRule } from "@/server/actions/recurring";
 import type { RecurInterval } from "@/lib/recurrence";
+import type { Category } from "@/components/CategoryPicker";
 
 // `src/server/actions/recurring.ts` is a "use server" module that imports
 // `@/lib/supabase/server`, which throws at import time outside a configured
@@ -19,6 +22,22 @@ vi.mock("@/server/actions/recurring", () => ({
 vi.mock("@/server/actions/categories", () => ({
   createCategory: vi.fn(),
 }));
+
+beforeEach(() => {
+  vi.mocked(archiveRule).mockReset();
+  vi.mocked(archiveRule).mockResolvedValue({});
+});
+
+/** A stand-in for a bound `updateRule`. RecurringList only needs
+ *  SOMETHING action-shaped to render the form; what the action does is
+ *  recurring.test.ts's subject, not this file's — same convention as
+ *  WalletList.test.tsx's identical `noopAction`. */
+const noopAction = async () => ({});
+
+const WALLETS = [{ id: "wallet-1", name: "Everyday", currency_code: "USD" }];
+const CATEGORIES: Category[] = [
+  { id: "cat-1", name: "Bills", kind: "expense", color_slot: 1, icon: "circle", wallet_id: "wallet-1" },
+];
 
 /**
  * Task 5's failing-tests step (task-5-brief.md). The four scenarios below
@@ -140,5 +159,129 @@ describe("RecurringList", () => {
     );
     expect(screen.getByRole("button", { name: "Edit Rent" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Edit Spotify" })).not.toBeInTheDocument();
+  });
+
+  /**
+   * Fix round 1 (task-5-fix-1, Minor). `category_name` was fetched by
+   * page.tsx, plumbed through this row type, and seeded in this file's own
+   * `rule()` factory — but never rendered, so a user could not tell which
+   * category a rule posts to without opening Edit.
+   */
+  it("shows which category a rule posts to", () => {
+    render(<RecurringList rules={[rule({ name: "Rent", categoryName: "Housing" })]} />);
+    expect(screen.getByText(/Housing/)).toBeInTheDocument();
+  });
+});
+
+describe("RecurringList — edit dialog", () => {
+  it("opens the Edit dialog seeded for that rule", async () => {
+    const user = userEvent.setup();
+    render(
+      <RecurringList
+        rules={[rule({ id: "a", name: "Rent", amountMinor: -500 }), rule({ id: "b", name: "Spotify" })]}
+        wallets={WALLETS}
+        categories={CATEGORIES}
+        editActions={{ a: noopAction, b: noopAction }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Edit Rent" }));
+
+    // The dialog's own name is the only thing identifying WHICH rule is
+    // being changed once the row is behind a backdrop — same reasoning as
+    // WalletList's identical dialog naming.
+    expect(screen.getByRole("dialog", { name: "Edit Rent" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).toHaveValue("Rent");
+    // Seeded from the RULE's own amount (500 minor units, USD -> "5.00"),
+    // not left at the form's creation default of "0" — an unseeded form
+    // here would mean the dialog opened on the right rule but forgot its
+    // data.
+    expect(screen.getByLabelText(/Amount/i)).toHaveValue("5.00");
+  });
+
+  it("closes the edit dialog once the save succeeds", async () => {
+    const user = userEvent.setup();
+    render(
+      <RecurringList
+        rules={[rule({ id: "a", name: "Rent" })]}
+        wallets={WALLETS}
+        categories={CATEGORIES}
+        editActions={{ a: noopAction }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Edit Rent" }));
+    expect(screen.getByRole("dialog", { name: "Edit Rent" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  /** The other half: a REJECTED save must leave the dialog open, or the
+   *  user loses both the error message and everything they typed — same
+   *  reasoning as WalletList's identical test. */
+  it("keeps the edit dialog open when the save is refused", async () => {
+    const user = userEvent.setup();
+    render(
+      <RecurringList
+        rules={[rule({ id: "a", name: "Rent" })]}
+        wallets={WALLETS}
+        categories={CATEGORIES}
+        editActions={{ a: async () => ({ error: "Name is required" }) }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Edit Rent" }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(screen.getByText("Name is required")).toBeInTheDocument());
+    expect(screen.getByRole("dialog", { name: "Edit Rent" })).toBeInTheDocument();
+  });
+});
+
+describe("RecurringList — pause confirmation", () => {
+  it("asks for confirmation before pausing, without calling archiveRule yet", async () => {
+    const user = userEvent.setup();
+    render(<RecurringList rules={[rule({ id: "a", name: "Spotify" })]} />);
+
+    await user.click(screen.getByRole("button", { name: "Pause Spotify" }));
+
+    expect(screen.getByRole("dialog", { name: "Pause Spotify?" })).toBeInTheDocument();
+    expect(archiveRule).not.toHaveBeenCalled();
+  });
+
+  it("does nothing at all until the confirmation is accepted", async () => {
+    const user = userEvent.setup();
+    render(<RecurringList rules={[rule({ id: "a", name: "Spotify" })]} />);
+
+    await user.click(screen.getByRole("button", { name: "Pause Spotify" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(archiveRule).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("pauses the rule once confirmed", async () => {
+    const user = userEvent.setup();
+    render(<RecurringList rules={[rule({ id: "a", name: "Spotify" })]} />);
+
+    await user.click(screen.getByRole("button", { name: "Pause Spotify" }));
+    // The dialog's own confirm button — plain "Pause", distinct from the
+    // row's "Pause Spotify" by accessible name.
+    await user.click(screen.getByRole("button", { name: "Pause" }));
+
+    await waitFor(() => expect(archiveRule).toHaveBeenCalledExactlyOnceWith("a"));
+  });
+
+  it("surfaces a failed pause through the list-level alert", async () => {
+    vi.mocked(archiveRule).mockResolvedValue({ error: "Could not archive rule" });
+    const user = userEvent.setup();
+    render(<RecurringList rules={[rule({ id: "a", name: "Spotify" })]} />);
+
+    await user.click(screen.getByRole("button", { name: "Pause Spotify" }));
+    await user.click(screen.getByRole("button", { name: "Pause" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not archive rule");
   });
 });

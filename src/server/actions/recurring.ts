@@ -85,10 +85,22 @@ function toSignedMinor(
  * archived, and its `kind` agrees with the rule's `kind` — mirroring
  * src/server/actions/transactions.ts's `createTransaction` (its comment
  * block above `.from("categories")`) closely, including its exact
- * "Choose a category" / "That category doesn't match this transaction
- * type" wording, so a user sees identical text whichever form caught the
- * same mistake.
+ * "Choose a category" wording.
  *
+ * The KIND-mismatch message does NOT copy `createTransaction`'s wording
+ * verbatim, unlike "Choose a category" above. It originally did ("That
+ * category doesn't match this transaction type"), on the theory that
+ * identical text is what a user sees "whichever form caught the same
+ * mistake" — but that theory was written before /recurring (Task 5)
+ * existed, when this action's only caller was implicitly assumed to be a
+ * transaction-shaped form. /recurring's own copy never says "transaction"
+ * anywhere else on the screen, and a rule is not one (spec §1.2 draws that
+ * distinction explicitly) — so the verbatim-match benefit (consistency
+ * across the two forms) was actually costing contextual accuracy on this
+ * one. "That category doesn't match this type" says the same thing without
+ * asserting a noun this screen never uses.
+ *
+
  * Both checks exist for the same reason 0015's own
  * `recurring_rules_category_same_wallet` FK exists: a rule that PASSES
  * creation/edit but can never be recorded is a worse failure than a
@@ -132,7 +144,7 @@ async function checkCategory(
     .single();
   if (!category || category.archived_at) return { error: "Choose a category", field: "category_id" };
   if (category.kind !== kind) {
-    return { error: "That category doesn't match this transaction type", field: "category_id" };
+    return { error: "That category doesn't match this type", field: "category_id" };
   }
   return null;
 }

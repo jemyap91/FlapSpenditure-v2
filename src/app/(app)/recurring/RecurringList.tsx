@@ -229,9 +229,20 @@ export function RecurringList({
                 <span className="block truncate" style={{ color: "var(--ink)" }}>
                   {rule.name}
                 </span>
+                {/* Fix round 1 (task-5-fix-1, Minor): `category_name` was
+                    fetched and plumbed all the way down to this row without
+                    ever being rendered — a user could not tell which
+                    category a rule posts to without opening Edit. This is
+                    the natural place for it: the same subtitle line
+                    `describeSchedule`/`wallet_name` already occupy, joined
+                    with the same separator, and only present when there is
+                    something to say (`.filter(Boolean)` drops a missing
+                    category or wallet name rather than leaving a stray
+                    " · " where they'd have been). */}
                 <span className="block text-xs" style={{ color: "var(--ink-2)" }}>
-                  {describeSchedule(rule)}
-                  {rule.wallet_name ? ` · ${rule.wallet_name}` : ""}
+                  {[rule.category_name, describeSchedule(rule), rule.wallet_name || null]
+                    .filter(Boolean)
+                    .join(" · ")}
                 </span>
               </span>
               <span

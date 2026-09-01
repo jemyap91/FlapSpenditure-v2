@@ -374,15 +374,20 @@ describe("createRule", () => {
    * was created successfully and then permanently un-recordable — every
    * later attempt to record an occurrence inserts a transaction with the
    * rule's fixed kind/category, and `createTransaction`'s own identical
-   * check (transactions.ts:147) refuses it, forever. Message text is
-   * copied verbatim from that check, not reinvented.
+   * check (transactions.ts:147) refuses it, forever.
+   *
+   * Task 5 fix round 1: the message text no longer copies transactions.ts's
+   * wording verbatim ("That category doesn't match this transaction type")
+   * — /recurring's own UI copy never says "transaction," and a rule isn't
+   * one (spec §1.2). See `checkCategory`'s own doc comment for the full
+   * reasoning.
    */
-  it("rejects a category whose kind doesn't match the rule's kind, with transactions.ts's exact message", async () => {
+  it("rejects a category whose kind doesn't match the rule's kind", async () => {
     categoryResult.data = { kind: "income", archived_at: null };
 
     const result = await createRule({}, form({ kind: "expense" }));
 
-    expect(result.error).toBe("That category doesn't match this transaction type");
+    expect(result.error).toBe("That category doesn't match this type");
     expect(insertSpy).not.toHaveBeenCalled();
   });
 
@@ -486,14 +491,15 @@ describe("updateRule", () => {
 
   /**
    * Fix round 1 (task-3-fix-1): same Critical gap as `createRule`'s, on the
-   * edit path. Message text copied verbatim from transactions.ts:147.
+   * edit path. Task 5 fix round 1: message wording updated — see the
+   * identical comment above `createRule`'s own version of this test.
    */
-  it("rejects a category whose kind doesn't match the rule's kind, with transactions.ts's exact message", async () => {
+  it("rejects a category whose kind doesn't match the rule's kind", async () => {
     categoryResult.data = { kind: "income", archived_at: null };
 
     const result = await updateRule(RULE_ID, {}, form({ kind: "expense" }));
 
-    expect(result.error).toBe("That category doesn't match this transaction type");
+    expect(result.error).toBe("That category doesn't match this type");
     expect(updateSpy).not.toHaveBeenCalled();
   });
 
@@ -790,7 +796,7 @@ describe("recordOccurrence", () => {
 
     const res = await recordOccurrence(RULE_ID, "2026-07-01");
 
-    expect(res.error).toBe("That category doesn't match this transaction type");
+    expect(res.error).toBe("That category doesn't match this type");
     expect(insertSpy).not.toHaveBeenCalled();
   });
 

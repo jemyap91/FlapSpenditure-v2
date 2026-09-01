@@ -5,7 +5,7 @@ import { TrendingDown, TrendingUp } from "lucide-react";
 import type { RecurringState } from "@/server/actions/recurring";
 import { RECUR_INTERVALS } from "@/lib/validation/recurring";
 import type { RecurInterval } from "@/lib/recurrence";
-import { minorUnitFor } from "@/lib/money";
+import { clampAmountInput, minorUnitFor } from "@/lib/money";
 import { CategoryPicker, type Category } from "@/components/CategoryPicker";
 
 const KINDS = [
@@ -112,6 +112,13 @@ export function RecurringForm({
   const [kind, setKind] = useState<"expense" | "income">(defaults?.kind ?? "expense");
   const [intervalUnit, setIntervalUnit] = useState<RecurInterval>(defaults?.interval_unit ?? "monthly");
   const [categoryId, setCategoryId] = useState<string | null>(defaults?.category_id ?? null);
+  // Controlled (not the plain `defaultValue` text fields below use) purely
+  // so switching wallets can re-clamp it — see `handleWalletChange`. Routed
+  // through the same hidden-input pattern as `kind`/`interval_unit`/
+  // `wallet_id` (no `name` on the visible control) for uniformity with the
+  // rest of this file, even though a plain text input's `value` isn't known
+  // to suffer the native-reset bug those exist for.
+  const [amount, setAmount] = useState(defaults?.amount ?? "0");
 
   const errorId = useId();
   const errorRef = useRef<HTMLParagraphElement>(null);
@@ -119,6 +126,7 @@ export function RecurringForm({
   const intervalSelectRef = useRef<HTMLSelectElement>(null);
   const expenseRadioRef = useRef<HTMLInputElement>(null);
   const incomeRadioRef = useRef<HTMLInputElement>(null);
+  const amountInputRef = useRef<HTMLInputElement>(null);
 
   // Same technique as WalletForm/login/signup: move focus to the
   // always-mounted alert node whenever an error (re)appears.
@@ -147,7 +155,8 @@ export function RecurringForm({
     if (intervalSelectRef.current) intervalSelectRef.current.value = intervalUnit;
     if (expenseRadioRef.current) expenseRadioRef.current.checked = kind === "expense";
     if (incomeRadioRef.current) incomeRadioRef.current.checked = kind === "income";
-  }, [state, walletId, kind, intervalUnit]);
+    if (amountInputRef.current) amountInputRef.current.value = amount;
+  }, [state, walletId, kind, intervalUnit, amount]);
 
   const wallet = wallets.find((w) => w.id === walletId) ?? wallets[0];
   const currencyCode = wallet?.currency_code ?? "USD";
@@ -169,6 +178,7 @@ export function RecurringForm({
   }
 
   function handleWalletChange(next: string) {
+    const nextWallet = wallets.find((w) => w.id === next);
     setWalletId(next);
     // A category belongs to a wallet, and 0015's
     // `recurring_rules_category_same_wallet` composite FK refuses a
@@ -176,6 +186,20 @@ export function RecurringForm({
     // handleWalletChange, clearing here is what stops the user from ever
     // reaching that refusal in the first place.
     setCategoryId(null);
+    // Fix round 1 (task-5-fix-1, Important): the wallet just changed
+    // currency, possibly to a SMALLER `minorUnit` — an amount already typed
+    // under the OLD currency's precision can be over-precise for the new
+    // one (e.g. "45.999" typed against KWD's 3 decimals is invalid for
+    // USD's 2). Without this, the field silently kept showing the
+    // now-invalid value and the eventual "USD allows up to 2 decimal
+    // places" rejection had nothing on screen connecting it back to the
+    // wallet switch that caused it. `clampAmountInput` (src/lib/money.ts)
+    // truncates rather than rejects, matching TransactionForm's identical
+    // `handleWalletChange` — the one other place in this codebase a
+    // wallet switch can invalidate an already-typed amount.
+    if (nextWallet) {
+      setAmount((prev) => clampAmountInput(prev, minorUnitFor(nextWallet.currency_code)));
+    }
   }
 
   return (
@@ -185,6 +209,7 @@ export function RecurringForm({
       <input type="hidden" name="kind" value={kind} />
       <input type="hidden" name="interval_unit" value={intervalUnit} />
       <input type="hidden" name="category_id" value={categoryId ?? ""} />
+      <input type="hidden" name="amount" value={amount} />
 
       <label className="flex flex-col gap-1">
         <span className="text-sm" style={{ color: "var(--ink-2)" }}>
@@ -277,9 +302,12 @@ export function RecurringForm({
           Amount ({currencyCode})
         </span>
         <input
-          name="amount"
+          ref={amountInputRef}
+          // No `name` — submission goes through the hidden `amount` input
+          // above (see the state declaration's own comment for why).
           inputMode="decimal"
-          defaultValue={defaults?.amount ?? "0"}
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
           aria-describedby={errorId}
           aria-invalid={state.field === "amount" ? true : undefined}
           className={`rounded-md border px-3 py-2 ${FOCUS_RING}`}
