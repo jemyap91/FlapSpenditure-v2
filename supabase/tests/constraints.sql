@@ -671,3 +671,98 @@ begin;
       format('OVERLAP BROKEN: expected 2 distinct budgets for the same category/month over different sets, found %s', v_rows);
   end $$;
 commit;
+
+-- Recurring rules and skips (0015). Fresh fixtures: a user, a wallet, and a
+-- category, following this file's own convention of literal UUIDs and
+-- direct insert into wallets/categories inside a do $$ ... $$ block --
+-- there is no test_wallet_id()/test_category_id() helper in this file (see
+-- task-2-brief.md's own caveat that those names were placeholders).
+insert into auth.users (id, email) values
+  ('ffffffff-0000-0000-0000-000000000001', 'frank@x.io');
+insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+  values ('ffffffff-0000-0000-0000-000000000002',
+          'ffffffff-0000-0000-0000-000000000001', 'Frank Bank', 'bank', 'USD', 1, 'landmark');
+insert into categories (id, wallet_id, name, kind, color_slot, icon)
+  values ('ffffffff-0000-0000-0000-000000000003',
+          'ffffffff-0000-0000-0000-000000000002', 'Recurring Test Category', 'expense', 3, 'repeat');
+
+\echo '--- recurring_rules: sign must follow kind ---'
+do $$
+begin
+  begin
+    insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                                 category_id, interval_unit, anchor_on)
+    values ('ffffffff-0000-0000-0000-000000000002', 'Bad', 'expense', 500, 'USD',
+            'ffffffff-0000-0000-0000-000000000003', 'monthly', current_date);
+    raise exception 'expected rule_expense_is_negative to reject a positive expense';
+  exception when check_violation then
+    assert sqlerrm like '%rule_expense_is_negative%',
+      format('wrong constraint fired: %s', sqlerrm);
+  end;
+end $$;
+
+\echo '--- recurring_rules: a transfer rule is refused outright ---'
+do $$
+begin
+  begin
+    insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                                 category_id, interval_unit, anchor_on)
+    values ('ffffffff-0000-0000-0000-000000000002', 'Bad', 'transfer', -500, 'USD',
+            'ffffffff-0000-0000-0000-000000000003', 'monthly', current_date);
+    raise exception 'expected rule_kind_not_transfer to reject a transfer rule';
+  exception when check_violation then
+    assert sqlerrm like '%rule_kind_not_transfer%',
+      format('wrong constraint fired: %s', sqlerrm);
+  end;
+end $$;
+
+\echo '--- recurring_rules: ends_on cannot precede the anchor ---'
+do $$
+begin
+  begin
+    insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                                 category_id, interval_unit, anchor_on, ends_on)
+    values ('ffffffff-0000-0000-0000-000000000002', 'Bad', 'expense', -500, 'USD',
+            'ffffffff-0000-0000-0000-000000000003', 'monthly', '2026-06-01', '2026-05-01');
+    raise exception 'expected rule_ends_after_anchor to reject an earlier end';
+  exception when check_violation then
+    assert sqlerrm like '%rule_ends_after_anchor%',
+      format('wrong constraint fired: %s', sqlerrm);
+  end;
+end $$;
+
+\echo '--- one occurrence cannot be recorded twice ---'
+do $$
+declare r uuid;
+begin
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('ffffffff-0000-0000-0000-000000000002', 'Rent', 'expense', -150000, 'USD',
+          'ffffffff-0000-0000-0000-000000000003', 'monthly', '2026-01-01')
+  returning id into r;
+
+  insert into transactions (wallet_id, kind, amount_minor, currency_code,
+                            category_id, occurred_on, recurring_id)
+  values ('ffffffff-0000-0000-0000-000000000002', 'expense', -150000, 'USD',
+          'ffffffff-0000-0000-0000-000000000003', '2026-01-01', r);
+
+  begin
+    insert into transactions (wallet_id, kind, amount_minor, currency_code,
+                              category_id, occurred_on, recurring_id)
+    values ('ffffffff-0000-0000-0000-000000000002', 'expense', -150000, 'USD',
+            'ffffffff-0000-0000-0000-000000000003', '2026-01-01', r);
+    raise exception 'expected the partial unique index to refuse a second record';
+  exception when unique_violation then
+    assert sqlerrm like '%transactions_recurring_occurrence%',
+      format('wrong index fired: %s', sqlerrm);
+  end;
+
+  -- Soft-deleting the first frees the occurrence again: the index is partial
+  -- on deleted_at, which is what makes an undone Record re-recordable.
+  update transactions set deleted_at = now()
+   where recurring_id = r and occurred_on = '2026-01-01';
+  insert into transactions (wallet_id, kind, amount_minor, currency_code,
+                            category_id, occurred_on, recurring_id)
+  values ('ffffffff-0000-0000-0000-000000000002', 'expense', -150000, 'USD',
+          'ffffffff-0000-0000-0000-000000000003', '2026-01-01', r);
+end $$;
