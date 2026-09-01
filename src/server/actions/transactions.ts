@@ -360,7 +360,27 @@ async function setDeletedAt(id: string, value: string | null): Promise<MutationR
   const { data: updated, error } = row.transfer_id
     ? await query.eq("transfer_id", row.transfer_id).select("id")
     : await query.eq("id", id).select("id");
-  if (error) return { error: "Could not update transaction" };
+  if (error) {
+    // 23505 unique_violation on transactions_recurring_occurrence (the
+    // partial unique index supabase/migrations/0015_recurring.sql adds on
+    // (recurring_id, occurred_on) where recurring_id is not null and
+    // deleted_at is null) can only fire on a RESTORE (value === null,
+    // i.e. this is restoreTransaction): the index's own predicate excludes
+    // soft-deleted rows, so a soft DELETE always transitions a row OUT of
+    // it and can never collide, while un-deleting can newly collide with a
+    // live sibling that already occupies the same (recurring_id,
+    // occurred_on) pair. Real path this closes: a recorded rent row is
+    // deleted, the same occurrence is recorded again from the recurring
+    // card, and the user taps Undo on the ORIGINAL delete toast — without
+    // this branch that produced the generic message below, which gave no
+    // hint the row was unrecoverable via Undo and no path to fix it.
+    if (error.code === "23505") {
+      return {
+        error: "This occurrence has already been recorded again, so the deleted copy can't be restored.",
+      };
+    }
+    return { error: "Could not update transaction" };
+  }
   if (!updated || updated.length !== expectedCount) {
     return { error: "Only part of this transfer could be updated" };
   }

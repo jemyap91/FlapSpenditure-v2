@@ -766,3 +766,146 @@ begin
   values ('ffffffff-0000-0000-0000-000000000002', 'expense', -150000, 'USD',
           'ffffffff-0000-0000-0000-000000000003', '2026-01-01', r);
 end $$;
+
+-- Fix round 1 (task-2-fix-1) coverage. A second wallet/category, owned by
+-- the same fixture user (this file bypasses RLS and tests CHECK/FK shape,
+-- not membership -- see the header comment), is what makes "cross-wallet"
+-- a real distinction to test against below.
+insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+  values ('ffffffff-0000-0000-0000-000000000004',
+          'ffffffff-0000-0000-0000-000000000001', 'Frank Second Wallet', 'bank', 'USD', 2, 'wallet');
+insert into categories (id, wallet_id, name, kind, color_slot, icon)
+  values ('ffffffff-0000-0000-0000-000000000005',
+          'ffffffff-0000-0000-0000-000000000004', 'Second Wallet Category', 'expense', 4, 'basket');
+
+\echo '--- Fix 2: recurring_rules_category_same_wallet rejects a cross-wallet category ---'
+do $$
+declare v_sqlstate text; v_constraint text;
+begin
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('ffffffff-0000-0000-0000-000000000002', 'Bad', 'expense', -500, 'USD',
+          'ffffffff-0000-0000-0000-000000000005', 'monthly', current_date);
+  raise exception 'CONSTRAINT BROKEN: recurring_rules_category_same_wallet accepted a cross-wallet category';
+exception
+  when foreign_key_violation then
+    get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+    assert v_sqlstate = '23503' and v_constraint = 'recurring_rules_category_same_wallet',
+      format('expected foreign_key_violation (23503) from recurring_rules_category_same_wallet, got SQLSTATE %s (constraint %s): %s',
+             v_sqlstate, v_constraint, sqlerrm);
+end $$;
+
+\echo '--- Fix 3: transactions_recurring_same_wallet rejects cross-wallet occurrence squatting ---'
+do $$
+declare r uuid; v_sqlstate text; v_constraint text;
+begin
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('ffffffff-0000-0000-0000-000000000002', 'Squat Target', 'expense', -2000, 'USD',
+          'ffffffff-0000-0000-0000-000000000003', 'monthly', '2026-02-01')
+  returning id into r;
+
+  begin
+    -- A transaction in the OTHER wallet, carrying this rule's id -- the
+    -- squatting shape the reviewer proved live: nothing but this composite
+    -- FK ties recurring_id to the SAME wallet as the rule it names.
+    insert into transactions (wallet_id, kind, amount_minor, currency_code,
+                              category_id, occurred_on, recurring_id)
+    values ('ffffffff-0000-0000-0000-000000000004', 'expense', -2000, 'USD',
+            'ffffffff-0000-0000-0000-000000000005', '2026-02-01', r);
+    raise exception 'CONSTRAINT BROKEN: transactions_recurring_same_wallet accepted a cross-wallet recurring_id';
+  exception
+    when foreign_key_violation then
+      get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+      assert v_sqlstate = '23503' and v_constraint = 'transactions_recurring_same_wallet',
+        format('expected foreign_key_violation (23503) from transactions_recurring_same_wallet, got SQLSTATE %s (constraint %s): %s',
+               v_sqlstate, v_constraint, sqlerrm);
+  end;
+end $$;
+
+\echo '--- Fix 5: on delete set null -- deleting a rule must not delete recorded money ---'
+do $$
+declare r uuid; v_txn_id uuid; v_recurring_id uuid; v_wallet_id uuid; v_deleted_at timestamptz;
+begin
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('ffffffff-0000-0000-0000-000000000002', 'Doomed Rule', 'expense', -3000, 'USD',
+          'ffffffff-0000-0000-0000-000000000003', 'monthly', '2026-03-01')
+  returning id into r;
+
+  insert into transactions (wallet_id, kind, amount_minor, currency_code,
+                            category_id, occurred_on, recurring_id)
+  values ('ffffffff-0000-0000-0000-000000000002', 'expense', -3000, 'USD',
+          'ffffffff-0000-0000-0000-000000000003', '2026-03-01', r)
+  returning id into v_txn_id;
+
+  delete from recurring_rules where id = r;
+
+  select recurring_id, wallet_id, deleted_at into v_recurring_id, v_wallet_id, v_deleted_at
+    from transactions where id = v_txn_id;
+  assert found, 'SAFETY BROKEN: transactions.recurring_id ON DELETE SET NULL let the whole row disappear (found no row at all -- check for an accidental CASCADE)';
+  assert v_deleted_at is null,
+    'SAFETY BROKEN: deleting a recurring rule soft-deleted (or otherwise touched deleted_at on) a real recorded transaction';
+  assert v_recurring_id is null,
+    'SAFETY BROKEN: transactions.recurring_id was not nulled after its rule was deleted -- ON DELETE is not SET NULL any more';
+  assert v_wallet_id = 'ffffffff-0000-0000-0000-000000000002',
+    'SAFETY BROKEN: wallet_id was disturbed by the rule deletion (composite-FK SET NULL must only touch recurring_id)';
+end $$;
+
+\echo '--- Fix 5: rule_income_is_positive rejects a non-positive income rule ---'
+do $$
+declare v_sqlstate text; v_constraint text;
+begin
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('ffffffff-0000-0000-0000-000000000002', 'Bad Income', 'income', -500, 'USD',
+          'ffffffff-0000-0000-0000-000000000003', 'monthly', current_date);
+  raise exception 'CONSTRAINT BROKEN: rule_income_is_positive did not reject a negative income rule';
+exception
+  when check_violation then
+    get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+    assert v_sqlstate = '23514' and v_constraint = 'rule_income_is_positive',
+      format('expected check_violation (23514) from rule_income_is_positive, got SQLSTATE %s (constraint %s): %s',
+             v_sqlstate, v_constraint, sqlerrm);
+end $$;
+
+\echo '--- Fix 5: recurring_skips_pkey is the idempotency guarantee -- same (rule_id, occurrence_on) twice must raise ---'
+do $$
+declare r uuid; v_sqlstate text; v_constraint text;
+begin
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('ffffffff-0000-0000-0000-000000000002', 'Skip Me', 'expense', -750, 'USD',
+          'ffffffff-0000-0000-0000-000000000003', 'monthly', '2026-04-01')
+  returning id into r;
+
+  insert into recurring_skips (rule_id, occurrence_on) values (r, '2026-04-01');
+
+  begin
+    insert into recurring_skips (rule_id, occurrence_on) values (r, '2026-04-01');
+    raise exception 'CONSTRAINT BROKEN: recurring_skips_pkey did not reject a duplicate (rule_id, occurrence_on)';
+  exception
+    when unique_violation then
+      get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+      assert v_sqlstate = '23505' and v_constraint = 'recurring_skips_pkey',
+        format('expected unique_violation (23505) from recurring_skips_pkey, got SQLSTATE %s (constraint %s): %s',
+               v_sqlstate, v_constraint, sqlerrm);
+  end;
+end $$;
+
+\echo '--- Fix 5: recurring_rules_name_check rejects a whitespace-only name ---'
+do $$
+declare v_sqlstate text; v_constraint text;
+begin
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('ffffffff-0000-0000-0000-000000000002', '   ', 'expense', -500, 'USD',
+          'ffffffff-0000-0000-0000-000000000003', 'monthly', current_date);
+  raise exception 'CONSTRAINT BROKEN: recurring_rules_name_check accepted a whitespace-only name';
+exception
+  when check_violation then
+    get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+    assert v_sqlstate = '23514' and v_constraint = 'recurring_rules_name_check',
+      format('expected check_violation (23514) from recurring_rules_name_check, got SQLSTATE %s (constraint %s): %s',
+             v_sqlstate, v_constraint, sqlerrm);
+end $$;
