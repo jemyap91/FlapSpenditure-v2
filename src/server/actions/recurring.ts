@@ -5,7 +5,8 @@ import { createClient } from "@/lib/supabase/server";
 import { recurringInput, type RecurringField } from "@/lib/validation/recurring";
 import { parseAmountInput, minorUnitFor } from "@/lib/money";
 import { signedAmount, nonTransferKind } from "@/lib/validation/transaction";
-import type { z } from "zod";
+import { occurrencesFor } from "@/lib/recurrence";
+import { z } from "zod";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
@@ -137,6 +138,88 @@ async function checkCategory(
 }
 
 /**
+ * Verifies a wallet's OWN currency agrees with the currency a rule proposes
+ * to carry — spec §4's third re-validation for Record ("the wallet's
+ * currency matches the rule's"), applied here at Create/Edit time too so the
+ * user learns about a mismatch at the form that caused it rather than only
+ * at Record, the same "stranded far from the form" shape `checkCategory`'s
+ * own doc comment describes for Task 2's cross-wallet category bug and Task
+ * 3's kind mismatch.
+ *
+ * This check exists at all because `recurringInput.currency_code` is a free
+ * field, unlike `createTransaction`, which never accepts a currency from the
+ * caller and instead always writes the WALLET's own — manual entry is
+ * therefore structurally unable to produce this mismatch, while a recurring
+ * rule can (fix round 1, Critical finding): nothing in `recurringInput`'s
+ * Zod schema or in `0015_recurring.sql`'s CHECK constraints ties a rule's
+ * currency to its wallet's, so a rule saved with the wrong one sits
+ * un-recordable forever, and — proven live by the reviewer — a mismatched
+ * rule that WAS recorded corrupts `get_wallet_balances` silently, because
+ * that view sums `amount_minor` across every currency with no filter and
+ * labels the total with the wallet's own code.
+ *
+ * Refuses rather than substituting the wallet's currency for the rule's:
+ * silently re-denominating the amount (treating a JPY figure as the
+ * wallet's SGD, say) would misprice the rule by orders of magnitude and is
+ * worse than leaving the rule un-recordable.
+ *
+ * `"Wallet not found"` on a missing row mirrors `createTransaction`'s own
+ * wallet lookup (`transactions.ts`, its comment on the archived-wallet
+ * check) for the identical reason there: `createRule`'s `walletId` is
+ * caller-supplied form input, exactly like `createTransaction`'s, so the
+ * uniform message applies here — this is NOT `recordOccurrence`'s situation
+ * (an RLS-scoped, already-owned rule), where a more specific message is
+ * safe. See `recordOccurrence`'s own wallet check for why those two cases
+ * are allowed to differ.
+ */
+async function checkWalletCurrency(
+  supabase: SupabaseServerClient,
+  walletId: string,
+  currencyCode: string,
+): Promise<RecurringState | null> {
+  const { data: wallet } = await supabase
+    .from("wallets")
+    .select("currency_code")
+    .eq("id", walletId)
+    .single();
+  if (!wallet) return { error: "Wallet not found" };
+  if (wallet.currency_code !== currencyCode) {
+    return {
+      error: `This wallet's currency is ${wallet.currency_code}, not ${currencyCode}.`,
+      field: "currency_code",
+    };
+  }
+  return null;
+}
+
+/**
+ * The server's own local calendar date, formatted `YYYY-MM-DD`, for
+ * `recordOccurrence`'s "is this actually a due occurrence" check (fix round
+ * 1, Important finding) — `occurrencesFor` needs a `today` to bound its
+ * output the same way it would for the not-yet-built due list.
+ *
+ * Read via LOCAL getters (`getFullYear`/`getMonth`/`getDate`), never via
+ * `.toISOString().slice(0, 10)` (UTC): src/lib/month-range.ts documents a
+ * shipped Critical bug from mixing those two directions on a single value.
+ * There is only one `Date` here and one direction of conversion, so there is
+ * nothing left to mismatch.
+ *
+ * This is still NOT the caller's own calendar date — the server's timezone
+ * and the browser's are unrelated, and a request filed just after local
+ * midnight in one but not the other can disagree with the caller about what
+ * day it is. That limitation is known, out of scope for this action, and
+ * already recorded against the dashboard's not-yet-built due-list task,
+ * which will need the identical `today` and inherits the identical caveat.
+ */
+function todayLocal(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+/**
  * Creates a recurring rule. Not consumed by any page yet — this task builds
  * validation and the actions themselves; a later task wires up the /recurring
  * form and the "record an occurrence" flow described in the design spec.
@@ -158,6 +241,9 @@ export async function createRule(
 
   const { wallet_id, name, kind, amount, currency_code, category_id, interval_unit, anchor_on, ends_on } =
     parsed.data;
+
+  const currencyError = await checkWalletCurrency(supabase, wallet_id, currency_code);
+  if (currencyError) return currencyError;
 
   const categoryError = await checkCategory(supabase, category_id, wallet_id, kind);
   if (categoryError) return categoryError;
@@ -232,6 +318,9 @@ export async function updateRule(
     .eq("id", id)
     .single();
   if (!rule) return { error: "Rule not found" };
+
+  const currencyError = await checkWalletCurrency(supabase, rule.wallet_id, currency_code);
+  if (currencyError) return currencyError;
 
   const categoryError = await checkCategory(supabase, category_id, rule.wallet_id, kind);
   if (categoryError) return categoryError;
@@ -322,14 +411,21 @@ export async function archiveRule(id: string): Promise<RecurringState> {
  * The rule is loaded scoped by RLS (`recurring_rules_member`), the same
  * pattern `updateRule` uses: a rule the caller can't see comes back `null`
  * here and is reported "Rule not found" rather than surfacing later as an
- * opaque insert failure. The wallet-active and category-kind/archived
- * checks mirror `src/server/actions/transactions.ts`'s `createTransaction`
- * (its wallet lookup around line 104, its category lookup around line 147)
- * for the identical reason theirs exist: the rule's wallet or category can
- * have been archived, or the category's kind changed, at any point AFTER
- * the rule was created, and the composite FKs alone would only surface that
- * as a raw constraint violation at insert time. `checkCategory` is reused
- * rather than reimplemented, exactly as `createRule`/`updateRule` do.
+ * opaque insert failure. Re-validates exactly the three things spec §4 lists
+ * for Record, each mirroring what manual entry (`transactions.ts`) already
+ * validates for the identical reason -- the rule's wallet, category or
+ * currency pairing can all have drifted out of agreement at any point AFTER
+ * the rule was created, and the composite FKs/CHECKs alone would only
+ * surface that as a raw constraint violation (or, for currency, nothing at
+ * all -- see `checkWalletCurrency`'s doc comment) at insert time:
+ *
+ * - the wallet is active (`wallet.archived_at`);
+ * - the category's kind matches (`checkCategory`, reused rather than
+ *   reimplemented, exactly as `createRule`/`updateRule` do);
+ * - the wallet's currency matches the rule's (`checkWalletCurrency`'s sibling
+ *   check, inlined here rather than calling that helper directly, since this
+ *   function already needs `archived_at` off the same wallet row and a
+ *   second SELECT would be redundant).
  *
  * Unlike `createTransaction`'s wallet check -- which reports a uniform
  * "Wallet not found" for both a nonexistent wallet and an archived one,
@@ -339,7 +435,33 @@ export async function archiveRule(id: string): Promise<RecurringState> {
  * point via an RLS-scoped SELECT the caller already passed, so the caller
  * already knows this wallet exists and that they belong to it. There is no
  * adversarial party being told anything new, and a clearer message is more
- * useful than the uniform one would be here.
+ * useful than the uniform one would be here. The `!wallet` branch is kept
+ * separate from the `archived_at` branch (fix round 1) because they are not
+ * the same fact: a missing row here means the lookup itself failed (a
+ * transient error, or data corruption), never "this wallet is archived",
+ * and reporting the latter for the former would be false and unactionable.
+ *
+ * `occurrenceOn` is shape-validated with `z.iso.date()` (fix round 1,
+ * Important finding) -- the same reasoning `transaction.ts`'s `occurred_on`
+ * and this file's own `anchor_on`/`ends_on` already carry: a bare
+ * `\d{4}-\d{2}-\d{2}` regex lets a calendar-invalid string like
+ * `"2026-02-30"` through to Postgres as a raw driver error. It is then
+ * checked against the schedule itself: the rule's own `archived_at` is
+ * refused (a paused rule -- spec §5's "pause" -- stays fully recordable by
+ * direct POST otherwise), and `occurrenceOn` must appear in
+ * `occurrencesFor`'s output for `{anchorOn, intervalUnit, endsOn}` as of the
+ * server's own `today` (`todayLocal`) -- `occurrencesFor` is the most
+ * heavily tested function on this branch (35 tests, brute-force
+ * cross-checked), so this leans on it rather than reimplementing any part of
+ * the schedule logic. This closes the future-occurrence gap: without it,
+ * recording a date the rule has not reached yet makes the ledger assert
+ * October's rent was paid in September, contradicting spec §1.1 ("balance
+ * keeps meaning money that actually moved") and §3.3 ("Occurrences are never
+ * generated in the future") -- reachable from a stale tab or a
+ * clock-skewed client, not only by malice. It is NOT a cross-tenant hole
+ * either way: bounded to the caller's own (RLS-scoped) wallet, and the slot
+ * is never permanently consumed (the unique index's predicate is
+ * `deleted_at is null`).
  *
  * Postgres `23505` (the partial unique index `transactions_recurring_
  * occurrence` on `(recurring_id, occurred_on) where recurring_id is not
@@ -347,9 +469,16 @@ export async function archiveRule(id: string): Promise<RecurringState> {
  * recorded" message rather than surfaced verbatim -- the index exists
  * precisely to absorb a double tap, a retried request, or a second tab, and
  * the user needs to see that the occurrence is already in the ledger, not a
- * driver error.
+ * driver error. This mapping is safe only because `transactions` currently
+ * has exactly one OTHER unique constraint (`transactions_pkey`, on `id`,
+ * which this insert cannot violate) -- a future unique index added to this
+ * table would need this branch revisited, since `23505` alone doesn't say
+ * which index fired.
  */
 export async function recordOccurrence(ruleId: string, occurrenceOn: string): Promise<RecurringState> {
+  const dateCheck = z.iso.date().safeParse(occurrenceOn);
+  if (!dateCheck.success) return { error: "Enter a valid date" };
+
   const supabase = await createClient();
   const {
     data: { user },
@@ -358,32 +487,63 @@ export async function recordOccurrence(ruleId: string, occurrenceOn: string): Pr
 
   const { data: rule } = await supabase
     .from("recurring_rules")
-    .select("wallet_id, kind, amount_minor, currency_code, category_id")
+    .select("wallet_id, kind, amount_minor, currency_code, category_id, anchor_on, interval_unit, ends_on, archived_at")
     .eq("id", ruleId)
     .single();
   if (!rule) return { error: "Rule not found" };
+  if (rule.archived_at) return { error: "This rule has been paused." };
 
   // `recurring_rules.kind` is DB-typed as the full `txn_kind` enum
   // (expense|income|transfer), same as `transactions.kind` — the generated
   // Supabase types have no way to encode 0015's own `rule_kind_not_transfer`
   // CHECK constraint, which is what actually guarantees this value is never
   // "transfer". Re-parsing with `nonTransferKind` (rather than an unchecked
-  // cast) turns "the database enforced this" into a checked fact `
-  // checkCategory` can rely on, the same defence-in-depth reasoning this
-  // file already applies via `checkCategory` itself.
+  // cast) turns "the database enforced this" into a checked fact
+  // `checkCategory` can rely on, the same defence-in-depth reasoning this
+  // file already applies via `checkCategory` itself. A failed parse here
+  // means the row itself is malformed (not that it's missing — `!rule`
+  // above already handled that), so it gets its own message rather than
+  // reusing "Rule not found".
   const kindParsed = nonTransferKind.safeParse(rule.kind);
-  if (!kindParsed.success) return { error: "Rule not found" };
+  if (!kindParsed.success) return { error: "This rule's data is invalid and can't be recorded." };
   const kind = kindParsed.data;
+
+  const schedule = occurrencesFor(
+    { anchorOn: rule.anchor_on, intervalUnit: rule.interval_unit, endsOn: rule.ends_on },
+    todayLocal(),
+  );
+  if (!schedule.dates.includes(occurrenceOn)) {
+    return { error: "That date isn't a due occurrence of this rule." };
+  }
 
   const { data: wallet } = await supabase
     .from("wallets")
-    .select("archived_at")
+    .select("currency_code, archived_at")
     .eq("id", rule.wallet_id)
     .single();
-  if (!wallet || wallet.archived_at) return { error: "This wallet has been archived." };
+  if (!wallet) return { error: "Could not look up this rule's wallet. Please try again." };
+  if (wallet.archived_at) return { error: "This wallet has been archived." };
+  if (wallet.currency_code !== rule.currency_code) {
+    return {
+      error: `This rule's currency (${rule.currency_code}) doesn't match the wallet's currency (${wallet.currency_code}).`,
+    };
+  }
 
   const categoryError = await checkCategory(supabase, rule.category_id, rule.wallet_id, kind);
-  if (categoryError) return categoryError;
+  if (categoryError) {
+    // `checkCategory`'s "Choose a category" wording assumes a screen with a
+    // picker to redirect the user to — `createRule`/`updateRule` both have
+    // one; the Record surface (a due-items list) does not. Spec §4: a
+    // rule's due items "render with the reason stated", so this path gets
+    // its own wording for the archived case (the only realistic way
+    // `checkCategory` fails here without also being a kind mismatch, which
+    // already has its own distinct message — `category_id` is `on delete
+    // restrict`, so a category this rule references cannot have been
+    // deleted out from under it, only archived).
+    return categoryError.error === "Choose a category"
+      ? { error: "This rule's category has been archived." }
+      : categoryError;
+  }
 
   const { error } = await supabase.from("transactions").insert({
     wallet_id: rule.wallet_id,
@@ -421,6 +581,13 @@ export async function recordOccurrence(ruleId: string, occurrenceOn: string): Pr
  * caller with no route to a rule shouldn't be told the difference between
  * "no such rule" and "not your rule" any more than the RLS policy itself
  * reveals it.
+ *
+ * Treating `23505` as success is safe only because `recurring_skips`
+ * currently has exactly one unique constraint -- its own composite primary
+ * key `(rule_id, occurrence_on)`, the very idempotency guarantee this
+ * function relies on. A future unique index added to this table would need
+ * this branch revisited, since `23505` alone doesn't say which constraint
+ * fired.
  */
 export async function skipOccurrence(ruleId: string, occurrenceOn: string): Promise<RecurringState> {
   const supabase = await createClient();
