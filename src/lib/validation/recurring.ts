@@ -20,7 +20,7 @@ import { nonTransferKind } from "@/lib/validation/transaction";
  * instead of surfacing as a silent runtime mismatch between what this form
  * accepts and what recurrence.ts knows how to compute.
  */
-const RECUR_INTERVALS: readonly RecurInterval[] = Constants.public.Enums.recur_interval;
+export const RECUR_INTERVALS: readonly RecurInterval[] = Constants.public.Enums.recur_interval;
 
 /** Same shape parseAmountInput itself checks (src/lib/money.ts) — digits,
  * optionally one decimal point, no sign. Used here only to decide whether

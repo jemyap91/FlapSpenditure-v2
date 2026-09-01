@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { TransactionList, type Row } from "@/components/TransactionList";
 import { resolveCreatedByNames, anyRowShared } from "./attribution";
@@ -196,9 +197,25 @@ export default async function TransactionsPage() {
 
   return (
     <div className="mx-auto max-w-2xl">
-      <h1 className="p-4 text-2xl font-semibold" style={{ color: "var(--ink)" }}>
-        Transactions
-      </h1>
+      <div className="flex items-center justify-between gap-3 p-4">
+        <h1 className="text-2xl font-semibold" style={{ color: "var(--ink)" }}>
+          Transactions
+        </h1>
+        {/* /recurring's permanent home (Task 5's own brief): the
+            dashboard's not-yet-built "due" list (Task 6) disappears
+            whenever nothing is due, which is exactly when a user goes
+            looking to CREATE a rule, so it cannot be the only entry point.
+            A plain link, not a TabBar/Sidebar item — the mobile tab bar
+            was just cut from six items to five to stop wallet names
+            truncating. */}
+        <Link
+          href="/recurring"
+          className="shrink-0 rounded-sm text-sm underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]"
+          style={{ color: "var(--ink-2)" }}
+        >
+          Recurring
+        </Link>
+      </div>
       <TransactionList rows={rows} showAttribution={showAttribution} />
     </div>
   );
