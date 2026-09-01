@@ -268,16 +268,35 @@ occurrence to be recorded again. Skipping is undoable by deleting the skip row.
 
 ## 5. Surfaces
 
-- **`/transactions`** gains a DUE section above the recorded list: rule name,
-  occurrence date, amount, and Record / Skip per row. Absent entirely when
-  nothing is due — an empty "Due" heading is noise on the screen a user opens
-  most.
+- **The dashboard (`/`)** carries the DUE section, above the hero total: rule
+  name, occurrence date, amount, and Record / Skip per row. It is the signed-in
+  landing screen, so a bill that needs recording is seen without navigating to
+  it — which is the whole point of surfacing it at all.
+
+  **Absent entirely when nothing is due.** Not an empty state, not a "You're
+  all caught up" card: the dashboard is opened many times a day and most of
+  those times there will be nothing owed, so the section must cost zero space
+  in the common case.
+
+  Due items are actionable content on a screen that is otherwise a set of
+  read-only summaries. That is the point — the dashboard already answers "how
+  am I doing"; this adds "and here is what needs recording".
+
 - **`/recurring`** manages rules: list, create, edit, pause (archive). Reached
-  by a link from `/transactions`, **not a nav tab.** The mobile tab bar was
-  just reduced from six items to five to stop wallet names truncating; adding
+  by a link from the DUE section on the dashboard, and — because that section
+  is absent when nothing is due — also from `/transactions`, so the management
+  screen is never unreachable. **Not a nav tab:** the mobile tab bar was just
+  reduced from six items to five to stop wallet names truncating, and adding
   Recurring would undo that.
-- **Dashboard** — unchanged. Due occurrences are not spending until recorded,
-  so nothing on the dashboard should move.
+
+- **`/transactions`** — unchanged apart from that link. Recorded occurrences
+  appear there as ordinary transactions, which is exactly what they are.
+
+- **Dashboard figures are unchanged.** The hero total, category breakdown and
+  cash flow all count transactions, and a due occurrence is not one until
+  recorded. The DUE section sits above them without altering any of them —
+  recording an item is what moves the numbers, which is the correct causality
+  and needs no special-casing anywhere.
 
 ---
 
@@ -314,8 +333,11 @@ occurrence to be recorded again. Skipping is undoable by deleting the skip row.
 - **Constraints, SQL** — the sign checks, `kind <> 'transfer'`, `ends_on >=
   anchor_on`, and the partial unique index refusing a second transaction for
   one occurrence.
-- **E2E** — create a rule, see it due, record it, and assert the resulting
-  transaction is dated **the occurrence's date, not today**. That assertion is
+- **E2E** — create a rule, see it due ON THE DASHBOARD, record it, and assert
+  the resulting transaction is dated **the occurrence's date, not today**.
+  Assert too that the dashboard's own figures move only AFTER recording, and
+  that the section is absent when nothing is due — the common case, and the
+  one where a stray empty card would be most annoying. That assertion is
   load-bearing: a test that only checked a transaction appeared would pass with
   the whole of §1.3 broken.
 
