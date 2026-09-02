@@ -82,6 +82,11 @@ describe("transferEditInput", () => {
     expect(r.success).toBe(false);
   });
 
+  it("accepts a merchant at exactly 120 characters", () => {
+    const r = transferEditInput.safeParse({ ...baseTransferEdit, merchant: "x".repeat(120) });
+    expect(r.success).toBe(true);
+  });
+
   it("refuses a malformed date", () => {
     expect(
       transferEditInput.safeParse({ ...baseTransferEdit, occurred_on: "2026-02-30" }).success,

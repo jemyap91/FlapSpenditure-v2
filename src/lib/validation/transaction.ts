@@ -127,17 +127,33 @@ export function precisionError(
     : `${currencyCode} allows up to ${minorUnit} decimal place${minorUnit === 1 ? "" : "s"}.`;
 }
 
+/**
+ * Free-text amount input shared by every schema in this file — checked only
+ * for "is this non-empty text", not yet parsed as a number: `parseAmountInput`
+ * (src/lib/money.ts) does the real parsing once the field reaches an action,
+ * and `precisionError` above checks decimal-place limits once the wallet's
+ * currency is known. Factored out (Task 2 fix round) so the message and
+ * shape can't drift between the create and edit schemas — before this it
+ * was four copy-pasted literals, one per schema below.
+ */
+const amountField = z.string().trim().min(1, "Enter an amount");
+
+/**
+ * Stricter than a `\d{4}-\d{2}-\d{2}` regex: z.iso.date() rejects
+ * calendar-invalid strings like "2023-02-30" (verified — JS's own
+ * `Date.parse` silently rolls that over to March 2 instead of failing, so a
+ * plain regex would let it through to Postgres and surface as a raw driver
+ * error instead of a validation message). Shared by every schema below for
+ * the same drift-prevention reason as `amountField`.
+ */
+const dateField = z.iso.date("Enter a valid date");
+
 export const transactionInput = z.object({
   wallet_id: z.uuid(),
   kind: nonTransferKind,
-  amount: z.string().trim().min(1, "Enter an amount"),
+  amount: amountField,
   category_id: z.uuid("Choose a category"),
-  // Stricter than a `\d{4}-\d{2}-\d{2}` regex: z.iso.date() rejects
-  // calendar-invalid strings like "2023-02-30" (verified — JS's own
-  // `Date.parse` silently rolls that over to March 2 instead of failing,
-  // so a plain regex would let it through to Postgres and surface as a raw
-  // driver error instead of a validation message).
-  occurred_on: z.iso.date("Enter a valid date"),
+  occurred_on: dateField,
   note: z.string().trim().max(280, "Note is too long").optional().or(z.literal("")),
 });
 
@@ -145,12 +161,12 @@ export const transferInput = z
   .object({
     from_wallet_id: z.uuid(),
     to_wallet_id: z.uuid(),
-    amount: z.string().trim().min(1, "Enter an amount"),
+    amount: amountField,
     // Only meaningful for a cross-currency transfer — see the check in
     // createTransfer. Omitted, the destination is assumed to receive
     // exactly what the source sent, which only makes sense same-currency.
     amount_in: z.string().trim().optional(),
-    occurred_on: z.iso.date("Enter a valid date"),
+    occurred_on: dateField,
     note: z.string().trim().max(280, "Note is too long").optional().or(z.literal("")),
   })
   .refine((v) => v.from_wallet_id !== v.to_wallet_id, {
@@ -183,20 +199,33 @@ function editableText(max: number, tooLongMessage: string) {
 
 /**
  * Editing an existing (non-transfer) transaction. Modeled on
- * `transactionInput` above: `amount` and `occurred_on` are the exact same
- * fields, and `note`/`merchant` reuse `note`'s own trim+cap shape via
- * `editableText`. Two things are deliberately different from
- * `transactionInput`:
+ * `transactionInput` above: `amount` and `occurred_on` share the same
+ * `amountField`/`dateField` schemas, and `note`/`merchant` reuse `note`'s
+ * own trim+cap shape via `editableText`. Two things are deliberately
+ * different from `transactionInput`:
  *
- * - No `wallet_id` and no `kind`. Neither is editable — 0016_editable_
- *   transactions.sql's `grant update (...)` list on `transactions` excludes
- *   `wallet_id` on purpose (closing a proven privilege-escalation path: a
- *   member reassigning a row to a wallet they don't belong to), and `kind`
- *   is absent from that grant too. A field that isn't in this schema can't
- *   appear in `parsed.data`, and `parsed.data` is what the edit action will
- *   send as the UPDATE's column set — so leaving them out here is what
- *   keeps them out of that statement, not a check the action has to
- *   remember to add later.
+ * - No `wallet_id` and no `kind`. Neither is editable, but they are NOT
+ *   blocked the same way — Postgres GRANTs are additive across migrations,
+ *   not replacements, so 0016_editable_transactions.sql's
+ *   `grant update (merchant)` only ADDS to 0004_rls.sql:83's original
+ *   `grant update (kind, amount_minor, currency_code, category_id,
+ *   occurred_on, note, deleted_at, updated_at)`; it revokes nothing.
+ *     - `wallet_id` genuinely is blocked at both layers: it has never
+ *       appeared in any `grant update (...)` list on `transactions`, so it
+ *       isn't grantable regardless of what this schema does. That closes a
+ *       proven privilege-escalation path (a member reassigning a row to a
+ *       wallet they don't belong to) twice over.
+ *     - `kind`, by contrast, IS in the effective grant today (via 0004,
+ *       never revoked) — there is no database backstop for it. This
+ *       schema's omission is the ONLY thing keeping `kind` out of an edit:
+ *       a field absent here is absent from `parsed.data`, and the edit
+ *       action builds its UPDATE field-by-field from `parsed.data` (the
+ *       same pattern `setDeletedAt` already uses —
+ *       src/server/actions/transactions.ts, `.update({ deleted_at: ...,
+ *       updated_at: ... })` — rather than spreading `parsed.data` whole),
+ *       so a field this schema never names never reaches that statement.
+ *       Do not shorten this back to "excluded from the grant" without
+ *       rechecking 0004's grant list — that was wrong once already.
  * - `category_id` is nullable, unlike `transactionInput`'s required
  *   `z.uuid("Choose a category")`. That requirement is `TransactionForm`'s
  *   own creation-flow UX choice, not a database one — the `transactions`
@@ -211,8 +240,8 @@ function editableText(max: number, tooLongMessage: string) {
  */
 export const transactionEditInput = z.object({
   id: z.uuid(),
-  amount: z.string().trim().min(1, "Enter an amount"),
-  occurred_on: z.iso.date("Enter a valid date"),
+  amount: amountField,
+  occurred_on: dateField,
   category_id: z.uuid("Choose a category").nullable(),
   note: editableText(280, "Note is too long"),
   merchant: editableText(120, "Merchant is too long"),
@@ -221,7 +250,8 @@ export const transactionEditInput = z.object({
 /**
  * Editing an existing transfer leg. Modeled on `transferInput` above the
  * same way `transactionEditInput` is modeled on `transactionInput`: `amount`
- * and `occurred_on` are reused as-is, `note`/`merchant` reuse `editableText`.
+ * and `occurred_on` share `amountField`/`dateField`, `note`/`merchant`
+ * share `editableText`.
  *
  * No `from_wallet_id`/`to_wallet_id` (wallets aren't editable — same reason
  * as `transactionEditInput`'s missing `wallet_id`) and, unlike
@@ -233,8 +263,8 @@ export const transactionEditInput = z.object({
  */
 export const transferEditInput = z.object({
   transfer_id: z.uuid(),
-  amount: z.string().trim().min(1, "Enter an amount"),
-  occurred_on: z.iso.date("Enter a valid date"),
+  amount: amountField,
+  occurred_on: dateField,
   note: editableText(280, "Note is too long"),
   merchant: editableText(120, "Merchant is too long"),
 });
