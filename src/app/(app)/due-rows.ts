@@ -57,11 +57,16 @@ export type DueRuleInput = {
 };
 
 /** One `(rule_id, occurrence_on)` pair that is already handled — either a
- *  `recurring_skips` row or a recorded (non-deleted) transaction's
- *  `(recurring_id, occurred_on)`. The two sources are handed over
- *  separately (see `buildDueRows`'s `input` parameter) because page.tsx
- *  reads them from two different tables, but they mean the same thing
- *  here: "do not offer this occurrence again." */
+ *  `recurring_skips` row (whose own `occurrence_on` IS its identity) or a
+ *  recorded (non-deleted) transaction's `(recurring_id,
+ *  recurring_occurrence_on)` -- the SCHEDULED date a recorded row
+ *  satisfies (0016_editable_transactions.sql), not its `occurred_on` (the
+ *  actual date money moved, independently editable since that migration).
+ *  Keying this on `occurred_on` would make correcting a transaction's date
+ *  un-record whichever occurrence it used to satisfy. The two sources are
+ *  handed over separately (see `buildDueRows`'s `input` parameter) because
+ *  page.tsx reads them from two different tables, but they mean the same
+ *  thing here: "do not offer this occurrence again." */
 export type HandledOccurrence = { ruleId: string; occurrenceOn: string };
 
 /** One due occurrence, ready to render. */

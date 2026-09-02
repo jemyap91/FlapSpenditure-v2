@@ -42,6 +42,15 @@ alter table transactions
 
 -- merchant joins the existing editable column list (0004_rls.sql:83).
 -- recurring_occurrence_on deliberately does NOT: it is an occurrence's
--- identity, set once at Record time, and a user editing a transaction must not
--- be able to reassign which occurrence it satisfies.
+-- identity, and this UPDATE grant is what stops a user's EDIT of an existing
+-- transaction from reassigning which occurrence it satisfies. That is
+-- narrower than "set once at Record time" -- INSERT and DELETE on
+-- transactions are still plain table-level grants (0004_rls.sql), not
+-- column-scoped, so a caller can still delete a recorded row and insert a
+-- replacement carrying a different recurring_occurrence_on for the same
+-- rule. That is not a privilege escalation (RLS still confines it to the
+-- caller's own wallet, and it is the exact recorded-money-stays-safe shape
+-- 0015's ON DELETE SET NULL and this migration's own one-directional CHECK
+-- both already accept), so it is left as is rather than closed here; the
+-- guarantee this grant actually provides is only about UPDATE.
 grant update (merchant) on transactions to authenticated;

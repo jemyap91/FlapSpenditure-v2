@@ -207,12 +207,24 @@ export default async function DashboardPage() {
     // "already recorded" — TransactionList's own undo-based deletion
     // (Task 4) means a recurring occurrence's transaction can be deleted
     // and the occurrence genuinely becomes due again.
+    //
+    // `recurring_occurrence_on`, not `occurred_on` (0016_editable_
+    // transactions.sql): this is the occurrence's IDENTITY -- which due
+    // date a recorded row satisfies -- and `occurred_on` is now only the
+    // ACTUAL date money moved, editable independently. Selecting/bounding
+    // on `occurred_on` here would make correcting a paid date un-record the
+    // occurrence it satisfies (it would vanish from `dueRecorded` below and
+    // reappear as due), exactly the bug this migration exists to prevent --
+    // both the mapping into `HandledOccurrence` below and this `.gte` bound
+    // (which must stay aligned with the SAME schedule-date window
+    // `buildDueRows` consults, per the comment above `dueFloor`) have to
+    // track the scheduled date, not the actual one.
     supabase
       .from("transactions")
-      .select("recurring_id, occurred_on")
+      .select("recurring_id, recurring_occurrence_on")
       .not("recurring_id", "is", null)
       .is("deleted_at", null)
-      .gte("occurred_on", dueFloor),
+      .gte("recurring_occurrence_on", dueFloor),
   ]);
   // Same "error is not emptiness" rule as every other read on this page.
   if (dueRulesError) throw new Error("Failed to load recurring rules");
@@ -264,10 +276,14 @@ export default async function DashboardPage() {
   // `.not("recurring_id", "is", null)` above guarantees every row here has
   // a non-null `recurring_id` -- the `!` asserts what the query already
   // enforces, matching this file's convention of casting ONCE at the data
-  // boundary rather than re-deriving the same fact inline.
+  // boundary rather than re-deriving the same fact inline. The same holds
+  // for `recurring_occurrence_on!`: `recurring_occurrence_needs_rule`
+  // (0016_editable_transactions.sql) guarantees it is never null whenever
+  // `recurring_id` isn't, so this is asserting a database-enforced fact,
+  // not introducing an unchecked one.
   const dueRecorded: HandledOccurrence[] = (dueRecordedRows ?? []).map((t) => ({
     ruleId: t.recurring_id!,
-    occurrenceOn: t.occurred_on,
+    occurrenceOn: t.recurring_occurrence_on!,
   }));
 
   const { rows: dueRows, olderDropped: dueOlderDropped } = buildDueRows(

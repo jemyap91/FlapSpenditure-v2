@@ -362,18 +362,25 @@ async function setDeletedAt(id: string, value: string | null): Promise<MutationR
     : await query.eq("id", id).select("id");
   if (error) {
     // 23505 unique_violation on transactions_recurring_occurrence (the
-    // partial unique index supabase/migrations/0015_recurring.sql adds on
-    // (recurring_id, occurred_on) where recurring_id is not null and
-    // deleted_at is null) can only fire on a RESTORE (value === null,
-    // i.e. this is restoreTransaction): the index's own predicate excludes
-    // soft-deleted rows, so a soft DELETE always transitions a row OUT of
-    // it and can never collide, while un-deleting can newly collide with a
-    // live sibling that already occupies the same (recurring_id,
-    // occurred_on) pair. Real path this closes: a recorded rent row is
-    // deleted, the same occurrence is recorded again from the recurring
-    // card, and the user taps Undo on the ORIGINAL delete toast — without
-    // this branch that produced the generic message below, which gave no
-    // hint the row was unrecoverable via Undo and no path to fix it.
+    // partial unique index supabase/migrations/0015_recurring.sql adds,
+    // moved by 0016_editable_transactions.sql onto (recurring_id,
+    // recurring_occurrence_on) -- the occurrence's SCHEDULED date, not its
+    // occurred_on -- where recurring_id is not null and deleted_at is
+    // null) can only fire on a RESTORE (value === null, i.e. this is
+    // restoreTransaction): the index's own predicate excludes soft-deleted
+    // rows, so a soft DELETE always transitions a row OUT of it and can
+    // never collide, while un-deleting can newly collide with a live
+    // sibling that already occupies the same (recurring_id,
+    // recurring_occurrence_on) pair. Real path this closes: a recorded
+    // rent row is deleted, the same occurrence is recorded again from the
+    // recurring card, and the user taps Undo on the ORIGINAL delete toast
+    // — without this branch that produced the generic message below,
+    // which gave no hint the row was unrecoverable via Undo and no path
+    // to fix it. This logic needs no change for the split -- both the
+    // deleted row and its live replacement still share the same
+    // recurring_occurrence_on regardless of what either one's occurred_on
+    // says, so the collision this branch explains still fires exactly
+    // when it used to.
     if (error.code === "23505") {
       return {
         error: "This occurrence has already been recorded again, so the deleted copy can't be restored.",

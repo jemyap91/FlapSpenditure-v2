@@ -36,7 +36,12 @@ const { walletsData, rulesData, skipsData, transactionsData } = vi.hoisted(() =>
   walletsData: [] as { id: string; currency_code: string; created_at: string }[],
   rulesData: [] as Record<string, unknown>[],
   skipsData: [] as { rule_id: string; occurrence_on: string }[],
-  transactionsData: [] as { recurring_id: string | null; occurred_on: string; deleted_at: string | null }[],
+  transactionsData: [] as {
+    recurring_id: string | null;
+    occurred_on: string;
+    recurring_occurrence_on: string;
+    deleted_at: string | null;
+  }[],
 }));
 
 vi.mock("@/lib/supabase/server", () => ({
@@ -89,7 +94,13 @@ vi.mock("@/lib/supabase/server", () => ({
         // `buildDueRows`'s (already covered in due-rows.test.ts).
         let excludeNullRecurringId = false;
         let requireDeletedAtNull = false;
-        let occurredOnGte: string | undefined;
+        // Named for the COLUMN page.tsx now bounds and selects on
+        // (0016_editable_transactions.sql / fix round 1, CRITICAL 2):
+        // `recurring_occurrence_on`, the occurrence's SCHEDULED-date
+        // identity, not `occurred_on` (the actual date money moved, edited
+        // independently). `occurred_on` still lives on each row below
+        // purely so tests can prove the two diverging doesn't matter.
+        let occurrenceOnGte: string | undefined;
         const builder = {
           select: () => builder,
           not: (col: string, op: string, val: unknown) => {
@@ -101,16 +112,18 @@ vi.mock("@/lib/supabase/server", () => ({
             return builder;
           },
           gte: (col: string, val: string) => {
-            if (col === "occurred_on") occurredOnGte = val;
+            if (col === "recurring_occurrence_on") occurrenceOnGte = val;
             return builder;
           },
-          then: (resolve: (v: { data: { recurring_id: string; occurred_on: string }[]; error: null }) => void) => {
+          then: (
+            resolve: (v: { data: { recurring_id: string; recurring_occurrence_on: string }[]; error: null }) => void,
+          ) => {
             let rows = transactionsData;
             if (excludeNullRecurringId) rows = rows.filter((r) => r.recurring_id !== null);
             if (requireDeletedAtNull) rows = rows.filter((r) => r.deleted_at === null);
-            if (occurredOnGte) rows = rows.filter((r) => r.occurred_on >= occurredOnGte!);
+            if (occurrenceOnGte) rows = rows.filter((r) => r.recurring_occurrence_on >= occurrenceOnGte!);
             resolve({
-              data: rows.map((r) => ({ recurring_id: r.recurring_id!, occurred_on: r.occurred_on })),
+              data: rows.map((r) => ({ recurring_id: r.recurring_id!, recurring_occurrence_on: r.recurring_occurrence_on })),
               error: null,
             });
           },
@@ -168,11 +181,41 @@ describe("DashboardPage — due list (I8: a deleted transaction returns its occu
     // (TransactionList's own undo-based deletion) — `deleted_at` is set,
     // not null. The occurrence must come back to due, not stay hidden
     // behind a transaction that no longer counts.
-    transactionsData.push({ recurring_id: RULE_ID, occurred_on: "2026-09-01", deleted_at: "2026-08-20T00:00:00Z" });
+    transactionsData.push({
+      recurring_id: RULE_ID,
+      occurred_on: "2026-09-01",
+      recurring_occurrence_on: "2026-09-01",
+      deleted_at: "2026-08-20T00:00:00Z",
+    });
 
     const ui = await DashboardPage();
     render(ui);
 
     expect(screen.getByRole("button", { name: "Record Rent for 1 Sep" })).toBeInTheDocument();
+  });
+
+  /**
+   * Fix round 1 (0016 fix round 1, CRITICAL 2): the migration's whole
+   * reason for existing (spec §1.2) — verbatim the scenario the reviewer
+   * proved live before this fix: page.tsx still selected/mapped
+   * `occurred_on` for the handled set, so correcting a paid date away from
+   * its scheduled date un-recorded the occurrence and offered it as due
+   * again. 1 September's rent is recorded (`recurring_occurrence_on`
+   * stays "2026-09-01", its identity), but the money actually moved on the
+   * 3rd (`occurred_on` = "2026-09-03") — a user-initiated date edit,
+   * post-Record. The Record button must NOT reappear.
+   */
+  it("still treats an occurrence as handled after its actual paid date is edited away from its scheduled identity", async () => {
+    transactionsData.push({
+      recurring_id: RULE_ID,
+      occurred_on: "2026-09-03",
+      recurring_occurrence_on: "2026-09-01",
+      deleted_at: null,
+    });
+
+    const ui = await DashboardPage();
+    render(ui);
+
+    expect(screen.queryByRole("button", { name: "Record Rent for 1 Sep" })).not.toBeInTheDocument();
   });
 });

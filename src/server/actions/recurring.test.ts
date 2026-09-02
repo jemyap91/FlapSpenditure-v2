@@ -667,6 +667,27 @@ describe("recordOccurrence", () => {
     );
   });
 
+  /**
+   * Fix round 1 (0016 fix round 1, CRITICAL): this is the class of test
+   * that should have caught the production defect — the sibling test above
+   * uses `objectContaining`, a PARTIAL matcher, so it stayed green with
+   * `recurring_occurrence_on` entirely absent from the insert. Once
+   * `recurring_occurrence_needs_rule` (0016_editable_transactions.sql)
+   * existed on the real table, that omission made every single Record tap
+   * fail live with a 23514 the old handler couldn't translate ("Could not
+   * record this occurrence. Please try again." — advice that could never
+   * work), and no test here said so. `recurring_occurrence_on` is the
+   * occurrence's IDENTITY, written equal to `occurrenceOn` at Record time
+   * — see this function's own doc comment.
+   */
+  it("writes recurring_occurrence_on equal to the occurrence date, not just occurred_on", async () => {
+    await recordOccurrence(RULE_ID, "2026-07-01");
+
+    expect(insertSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ recurring_occurrence_on: "2026-07-01" }),
+    );
+  });
+
   it("copies the rule's kind, amount, currency, category and wallet", async () => {
     await recordOccurrence(RULE_ID, "2026-07-01");
 
@@ -835,6 +856,26 @@ describe("recordOccurrence", () => {
 
     // App-authored text, not the provider's — this module's own convention.
     expect(res).toEqual({ error: "Could not record this occurrence. Please try again." });
+  });
+
+  /**
+   * Fix round 1 (0016 fix round 1): 23514 is `recurring_occurrence_needs_rule`
+   * (0016_editable_transactions.sql) — unreachable given this insert's own
+   * shape (see the doc comment above `recordOccurrence`), but mapped to its
+   * own readable message rather than falling through to the generic retry
+   * advice above, which could never fix a check-constraint violation. This
+   * is defence in depth against exactly the class of drift that produced
+   * the CRITICAL finding above: if a future edit ever drops
+   * `recurring_occurrence_on` from the insert again, a real user sees an
+   * accurate message instead of "try again" advice that can't work.
+   */
+  it("maps a check-constraint violation (23514) to a readable message, not the generic retry advice", async () => {
+    insertResult.error = { code: "23514", message: "new row violates check constraint" };
+
+    const res = await recordOccurrence(RULE_ID, "2026-07-01");
+
+    expect(res.error).toMatch(/invalid/i);
+    expect(res.error).not.toBe("Could not record this occurrence. Please try again.");
   });
 
   it("rejects a category whose kind no longer matches the rule's kind", async () => {

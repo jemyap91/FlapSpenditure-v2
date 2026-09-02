@@ -763,8 +763,13 @@ begin
 
   -- Soft-deleting the first frees the occurrence again: the index is partial
   -- on deleted_at, which is what makes an undone Record re-recordable.
+  -- Predicate deliberately still keyed on occurred_on, not
+  -- recurring_occurrence_on: both columns hold '2026-01-01' for this row
+  -- either way, but this pins which column the UPDATE is filtering by
+  -- rather than letting a fix-round edit quietly stop exercising this
+  -- pre-0016 test's own original shape.
   update transactions set deleted_at = now()
-   where recurring_id = r and recurring_occurrence_on = '2026-01-01';
+   where recurring_id = r and occurred_on = '2026-01-01';
   insert into transactions (wallet_id, kind, amount_minor, currency_code,
                             category_id, occurred_on, recurring_id, recurring_occurrence_on)
   values ('ffffffff-0000-0000-0000-000000000002', 'expense', -150000, 'USD',
@@ -1155,4 +1160,39 @@ begin
   where id in (v_id1, v_id2) and occurred_on = '2026-08-15' and deleted_at is null;
   assert n = 2,
     format('SPLIT BROKEN: two occurrences with distinct recurring_occurrence_on could not share an occurred_on (%s row(s) landed)', n);
+end $$;
+
+-- 0016 fix round 1, CRITICAL 1: every fixture above writes
+-- recurring_occurrence_on BY HAND, which is exactly why this suite could
+-- not see that src/server/actions/recurring.ts's recordOccurrence still
+-- inserted without it -- every one of its own inserts violated
+-- recurring_occurrence_needs_rule (23514) in production, with the 23505-only
+-- handler falling through to "Could not record this occurrence. Please try
+-- again.", advice that could never work. Fixed there; this asserts the
+-- SAME column set that function's insert now uses -- wallet_id, created_by,
+-- kind, amount_minor, currency_code, category_id, occurred_on, recurring_id,
+-- recurring_occurrence_on, note -- actually succeeds, so a future edit to
+-- either the function or this migration that reintroduces the mismatch
+-- fails HERE, not silently in production.
+\echo '--- 0016 fix round 1: a recordOccurrence-shaped insert (exact column set, recurring_occurrence_on included) succeeds ---'
+do $$
+declare r uuid; v_id uuid;
+begin
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('90909090-0000-0000-0000-000000000002', 'Record Shape Rule', 'expense', -1999, 'USD',
+          '90909090-0000-0000-0000-000000000003', 'monthly', '2026-10-01')
+  returning id into r;
+
+  insert into transactions (wallet_id, created_by, kind, amount_minor, currency_code,
+                            category_id, occurred_on, recurring_id, recurring_occurrence_on, note)
+  values ('90909090-0000-0000-0000-000000000002', '90909090-0000-0000-0000-000000000001',
+          'expense', -1999, 'USD', '90909090-0000-0000-0000-000000000003',
+          '2026-10-01', r, '2026-10-01', null)
+  returning id into v_id;
+
+  assert v_id is not null,
+    'CONSTRAINT BROKEN: a recordOccurrence-shaped insert (with recurring_occurrence_on set) was rejected';
+  assert (select recurring_occurrence_on from transactions where id = v_id) = '2026-10-01',
+    'CONSTRAINT BROKEN: recurring_occurrence_on did not persist as inserted on a recordOccurrence-shaped row';
 end $$;

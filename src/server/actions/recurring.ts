@@ -450,16 +450,31 @@ export async function archiveRule(id: string): Promise<RecurringState> {
  * `deleted_at is null`).
  *
  * Postgres `23505` (the partial unique index `transactions_recurring_
- * occurrence` on `(recurring_id, occurred_on) where recurring_id is not
- * null and deleted_at is null`) is translated to a readable "already
- * recorded" message rather than surfaced verbatim -- the index exists
- * precisely to absorb a double tap, a retried request, or a second tab, and
- * the user needs to see that the occurrence is already in the ledger, not a
- * driver error. This mapping is safe only because `transactions` currently
- * has exactly one OTHER unique constraint (`transactions_pkey`, on `id`,
- * which this insert cannot violate) -- a future unique index added to this
- * table would need this branch revisited, since `23505` alone doesn't say
- * which index fired.
+ * occurrence`, moved by 0016_editable_transactions.sql onto
+ * `(recurring_id, recurring_occurrence_on) where recurring_id is not null
+ * and deleted_at is null` -- SCHEDULED date, not the actual one) is
+ * translated to a readable "already recorded" message rather than surfaced
+ * verbatim -- the index exists precisely to absorb a double tap, a retried
+ * request, or a second tab, and the user needs to see that the occurrence
+ * is already in the ledger, not a driver error. This mapping is safe only
+ * because `transactions` currently has exactly one OTHER unique constraint
+ * (`transactions_pkey`, on `id`, which this insert cannot violate) -- a
+ * future unique index added to this table would need this branch
+ * revisited, since `23505` alone doesn't say which index fired.
+ *
+ * `recurring_occurrence_on` is written below equal to `occurrenceOn` --
+ * the two necessarily agree at the moment a row is first recorded (this is
+ * the only place either column is ever set); they can diverge afterwards
+ * only if `updateTransaction` (a later task) edits `occurred_on` to the
+ * ACTUAL date money moved, which is exactly the case
+ * 0016_editable_transactions.sql's split exists to keep this occurrence
+ * "already recorded" through. `23514` (`recurring_occurrence_needs_rule`,
+ * same migration) is mapped to its own readable message below for defence
+ * in depth even though this insert cannot trip it in practice -- `ruleId`
+ * and `occurrenceOn` are both required, non-null arguments by this
+ * function's own signature and `occurrenceOn` is already shape-validated
+ * above, so `recurring_occurrence_on` is always supplied whenever
+ * `recurring_id` is.
  */
 export async function recordOccurrence(ruleId: string, occurrenceOn: string): Promise<RecurringState> {
   const dateCheck = z.iso.date().safeParse(occurrenceOn);
@@ -551,10 +566,20 @@ export async function recordOccurrence(ruleId: string, occurrenceOn: string): Pr
     category_id: rule.category_id,
     occurred_on: occurrenceOn,
     recurring_id: ruleId,
+    // The occurrence's IDENTITY (0016_editable_transactions.sql) -- equal to
+    // occurrenceOn here, at the moment it's first set; see this function's
+    // own doc comment for why the two are written identically and can only
+    // diverge later, via a separate edit to occurred_on.
+    recurring_occurrence_on: occurrenceOn,
     note: null,
   });
   if (error) {
     if (error.code === "23505") return { error: "This occurrence is already recorded." };
+    // 23514 (recurring_occurrence_needs_rule): see this function's own doc
+    // comment -- unreachable given this insert's own shape, but mapped to a
+    // readable message rather than the generic retry advice below, which
+    // could never fix a check-constraint violation.
+    if (error.code === "23514") return { error: "This occurrence's data is invalid and can't be recorded." };
     return { error: "Could not record this occurrence. Please try again." };
   }
 
