@@ -206,7 +206,11 @@ function txn(id: string, over: Record<string, unknown> = {}) {
 }
 
 function wallet(id: string, over: Record<string, unknown> = {}) {
-  return { id, name: "Everyday", currency_code: "USD", ...over };
+  // `archived_at` defaults to null (task 8, item 2) so every pre-existing
+  // fixture keeps rendering the FORM — the archived cases have to opt in,
+  // which is what makes the archived tests below discriminating rather than
+  // the ambient state of this file.
+  return { id, name: "Everyday", currency_code: "USD", archived_at: null, ...over };
 }
 
 function category(id: string, over: Record<string, unknown> = {}) {
@@ -448,5 +452,111 @@ describe("EditTransactionPage — seeds a transfer", () => {
     expect(screen.getAllByLabelText("Amount")).toHaveLength(2);
     // No category control on a transfer.
     expect(screen.queryByLabelText("Search categories")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Task 8, item 2. `/transactions` keeps archived wallets' rows and links each
+ * one here, but `updateTransaction`/`updateTransfer` both refuse an archived
+ * wallet — so this page used to draw a fully interactive form whose Save
+ * could never succeed. See page.tsx's own doc comment for why this renders a
+ * distinct read-only state rather than `TransactionNotFound`.
+ *
+ * Every test here asserts BOTH halves: that the form is gone AND that the
+ * explanation is there. "No Save button" alone is satisfied by the page
+ * throwing or rendering nothing; "the message appears" alone is satisfied by
+ * a page that shows the warning above a working form.
+ */
+describe("EditTransactionPage — an archived wallet's transaction is read-only", () => {
+  it("replaces the form with a reason and the transaction's own values", async () => {
+    txnById.set(TXN_A, txn(TXN_A));
+    walletsById.set(WALLET_A, wallet(WALLET_A, { name: "Everyday", archived_at: "2026-01-01T00:00:00Z" }));
+    categoriesByWalletId.set(WALLET_A, [category(CATEGORY_A)]);
+
+    const ui = await EditTransactionPage({
+      params: Promise.resolve({ id: TXN_A }),
+      searchParams: Promise.resolve({}),
+    });
+    render(ui);
+
+    // The form is GONE — not disabled, not merely warned about. Fails if the
+    // `archived_at` guard in page.tsx is removed, or if `archived_at` is
+    // dropped from that page's wallet SELECT (undefined is falsy, so the
+    // guard silently stops firing).
+    expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Note")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Merchant")).not.toBeInTheDocument();
+
+    // And it is NOT the not-found state — the row exists and the caller can
+    // see it on /transactions; saying otherwise would be a lie about a row on
+    // their own screen. Fails if this branch is folded into
+    // `TransactionNotFound`.
+    expect(screen.queryByText("Transaction not found")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "This transaction can’t be edited" })).toBeInTheDocument();
+    expect(screen.getByText(/Everyday is archived/)).toBeInTheDocument();
+
+    // The transaction's own values still answer "what was this?".
+    expect(screen.getByText("−$12.50")).toBeInTheDocument();
+    expect(screen.getByText("2026-08-01")).toBeInTheDocument();
+    expect(screen.getByText("Tesco")).toBeInTheDocument();
+    expect(screen.getByText("weekly shop")).toBeInTheDocument();
+  });
+
+  /**
+   * The archived wallet here is the INCOMING leg's — deliberately NOT the
+   * wallet of the row the user tapped (`txn()` sets `wallet_id: WALLET_A`,
+   * the outgoing leg). A guard written as "is this row's own wallet
+   * archived?" would render the form and fail this test; only checking both
+   * legs' wallets passes, which is what `updateTransfer` itself requires.
+   */
+  it("refuses a transfer when the OTHER leg's wallet is archived", async () => {
+    txnById.set(
+      TXN_A,
+      txn(TXN_A, { kind: "transfer", transfer_id: TRANSFER_A, category_id: null, wallet_id: WALLET_A }),
+    );
+    legsByTransferId.set(TRANSFER_A, [
+      { wallet_id: WALLET_A, amount_minor: -5000, currency_code: "USD", occurred_on: "2026-08-02", note: "", merchant: "" },
+      { wallet_id: WALLET_B, amount_minor: 5000, currency_code: "USD", occurred_on: "2026-08-02", note: "", merchant: "" },
+    ]);
+    walletsById.set(WALLET_A, wallet(WALLET_A, { name: "Everyday" }));
+    walletsById.set(WALLET_B, wallet(WALLET_B, { name: "Holiday", archived_at: "2026-01-01T00:00:00Z" }));
+
+    const ui = await EditTransactionPage({
+      params: Promise.resolve({ id: TXN_A }),
+      searchParams: Promise.resolve({}),
+    });
+    render(ui);
+
+    expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "This transaction can’t be edited" })).toBeInTheDocument();
+    // Only the archived one is named. Naming the active wallet too would send
+    // the user looking for a problem that isn't there.
+    expect(screen.getByText(/^Holiday is archived/)).toBeInTheDocument();
+  });
+
+  /**
+   * Both legs archived. Pins that the page collects EVERY archived wallet
+   * rather than the first one it finds: naming only one would send the user
+   * to un-archive that wallet and discover the form still refuses.
+   */
+  it("names both wallets when a transfer has two archived legs", async () => {
+    txnById.set(
+      TXN_A,
+      txn(TXN_A, { kind: "transfer", transfer_id: TRANSFER_A, category_id: null, wallet_id: WALLET_A }),
+    );
+    legsByTransferId.set(TRANSFER_A, [
+      { wallet_id: WALLET_A, amount_minor: -5000, currency_code: "USD", occurred_on: "2026-08-02", note: "", merchant: "" },
+      { wallet_id: WALLET_B, amount_minor: 5000, currency_code: "USD", occurred_on: "2026-08-02", note: "", merchant: "" },
+    ]);
+    walletsById.set(WALLET_A, wallet(WALLET_A, { name: "Everyday", archived_at: "2026-01-01T00:00:00Z" }));
+    walletsById.set(WALLET_B, wallet(WALLET_B, { name: "Holiday", archived_at: "2026-01-01T00:00:00Z" }));
+
+    const ui = await EditTransactionPage({
+      params: Promise.resolve({ id: TXN_A }),
+      searchParams: Promise.resolve({}),
+    });
+    render(ui);
+
+    expect(screen.getByText(/^Everyday and Holiday are archived/)).toBeInTheDocument();
   });
 });

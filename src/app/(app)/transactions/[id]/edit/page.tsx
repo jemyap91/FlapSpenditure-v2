@@ -2,7 +2,7 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { TransactionForm, type EditSeed } from "@/components/TransactionForm";
 import type { Category } from "@/components/CategoryPicker";
-import { formatAmountInput, minorUnitFor } from "@/lib/money";
+import { formatAmountInput, formatMoney, minorUnitFor } from "@/lib/money";
 
 const uuid = z.uuid();
 
@@ -90,6 +90,33 @@ const uuid = z.uuid();
  * what keeps a query param from becoming an open redirect. An absent or
  * unrecognised `from` falls back to "/transactions", the destination this
  * page's saves already used.
+ *
+ * ## An archived wallet's transaction renders read-only, not a form
+ *
+ * Task 8, item 2. `/transactions` deliberately keeps archived wallets' rows
+ * (that page's own doc comment — history is preserved), and every row now
+ * links here, but `updateTransaction` refuses an archived wallet outright
+ * ("This wallet has been archived.") and, as of task 8 item 3, so does
+ * `updateTransfer`. Before this, a user could tap such a row, retype a note,
+ * press Save and be told no — with no warning beforehand and no way forward.
+ * The whole form was the "control that invites a click that can never
+ * succeed" this codebase refuses to ship (`TransactionForm`'s own comment on
+ * the category chip; `WalletForm`'s `lockCurrency`).
+ *
+ * So `archived_at` is selected on every wallet this page loads — the single
+ * wallet on the non-transfer path, and BOTH legs' wallets on the transfer
+ * path, since `updateTransfer` requires both to be active — and an archived
+ * one renders `ArchivedWalletTransaction` below instead of the form.
+ *
+ * Deliberately NOT `TransactionNotFound`. That component exists to collapse
+ * inputs the caller must not be able to tell apart (doesn't exist / isn't
+ * mine / isn't UUID-shaped / is soft-deleted). This is none of those: the
+ * caller is a proven member of the wallet (RLS returned the row), the
+ * transaction plainly exists, and they can still see it on `/transactions`.
+ * "Not found" would be a lie about a row on their own screen, and would
+ * leave them with no idea why. They are told the reason instead, and shown
+ * the transaction's own values, so tapping the row still answers "what was
+ * this?".
  */
 export default async function EditTransactionPage({
   params,
@@ -188,7 +215,10 @@ export default async function EditTransactionPage({
 
     const { data: legWallets, error: legWalletsError } = await supabase
       .from("wallets")
-      .select("id, name, currency_code")
+      // `archived_at` (task 8, item 2): `updateTransfer` requires BOTH legs'
+      // wallets to be active, so both are checked here rather than only the
+      // leg the user happened to tap.
+      .select("id, name, currency_code, archived_at")
       .in("id", [outLeg.wallet_id, inLeg.wallet_id]);
     if (legWalletsError) throw new Error("Failed to load wallets");
 
@@ -201,6 +231,17 @@ export default async function EditTransactionPage({
     // loosely-typed response, not a reachable branch in practice, mirroring
     // `/wallets/[id]/page.tsx`'s identical non-null assertions elsewhere.
     if (!fromWallet || !toWallet) throw new Error("Failed to load wallets");
+
+    // Either leg's wallet being archived makes the whole pair uneditable —
+    // `updateTransfer` (src/server/actions/transactions.ts, task 8 item 3)
+    // rejects the edit unless BOTH are active, and one statement moves both
+    // legs, so there is no partial edit to offer. Both names are listed when
+    // both are archived: naming only one would send the user to un-archive a
+    // wallet and find the form still refused.
+    const archivedLegWallets = [fromWallet, toWallet].filter((w) => w.archived_at);
+    if (archivedLegWallets.length > 0) {
+      return <ArchivedWalletTransaction walletNames={archivedLegWallets.map((w) => w.name)} row={row} />;
+    }
 
     const edit: EditSeed = {
       kind: "transfer",
@@ -236,7 +277,10 @@ export default async function EditTransactionPage({
 
   const { data: wallet, error: walletError } = await supabase
     .from("wallets")
-    .select("id, name, currency_code")
+    // `archived_at` (task 8, item 2) — see this file's doc comment. Without
+    // it this page rendered a fully interactive form whose Save
+    // `updateTransaction` was always going to refuse.
+    .select("id, name, currency_code, archived_at")
     .eq("id", row.wallet_id)
     .maybeSingle();
   if (walletError) throw new Error("Failed to load wallet");
@@ -244,6 +288,15 @@ export default async function EditTransactionPage({
   // above: the transaction row above already proved membership on this
   // exact wallet via `transactions_member` RLS.
   if (!wallet) return <TransactionNotFound />;
+
+  // The check `updateTransaction` makes (`transactions.ts`: "This wallet has
+  // been archived."), made BEFORE the form is drawn rather than after Save
+  // is pressed. Placed above the category queries deliberately: nothing
+  // below this point is needed by the read-only state, and an archived
+  // wallet's edit page should not issue reads it will never render.
+  if (wallet.archived_at) {
+    return <ArchivedWalletTransaction walletNames={[wallet.name]} row={row} />;
+  }
 
   const { data: activeCategories, error: categoriesError } = await supabase
     .from("categories")
@@ -307,6 +360,76 @@ export default async function EditTransactionPage({
  * this file's own doc comment above for why `notFound()` isn't used here
  * either).
  */
+/**
+ * Task 8, item 2: the read-only state for a transaction whose wallet has
+ * been archived. See this file's doc comment for why this is a distinct
+ * state rather than `TransactionNotFound` or a disabled form.
+ *
+ * The wording follows `/wallets/[id]/page.tsx`'s own archived disclosure
+ * ("This wallet is archived, so new transactions can’t be added to it.") —
+ * plain text, stating the reason. It deliberately does NOT tell the user to
+ * restore or un-archive the wallet: `src/server/actions/wallets.ts` has
+ * `archiveWallet` and no inverse, so promising a way back would be advice
+ * the app cannot honour.
+ *
+ * The transaction's own values are rendered because the user tapped a row to
+ * see it. `formatMoney(..., { signed: true })` matches `TransactionList`'s
+ * own amount rendering, so the figure here reads the same as the figure on
+ * the row that led here.
+ */
+function ArchivedWalletTransaction({
+  walletNames,
+  row,
+}: {
+  /** One name on the non-transfer path; one or two on the transfer path,
+   *  whichever legs' wallets are actually archived. */
+  walletNames: string[];
+  row: {
+    amount_minor: number;
+    currency_code: string;
+    occurred_on: string;
+    note: string | null;
+    merchant: string | null;
+  };
+}) {
+  const many = walletNames.length > 1;
+  return (
+    <div className="mx-auto max-w-2xl p-6">
+      <h1 className="text-2xl font-semibold" style={{ color: "var(--ink)" }}>
+        This transaction can’t be edited
+      </h1>
+      <p className="mt-2 text-sm" style={{ color: "var(--ink-2)" }}>
+        {walletNames.join(" and ")} {many ? "are" : "is"} archived, so {many ? "their" : "its"}{" "}
+        transactions can’t be changed. This one still counts in your history.
+      </p>
+      <dl className="mt-6 flex flex-col gap-3 text-sm">
+        <div>
+          <dt style={{ color: "var(--ink-2)" }}>Amount</dt>
+          <dd className="tabular-nums" style={{ color: "var(--ink)" }}>
+            {formatMoney(row.amount_minor, row.currency_code, { signed: true })}
+          </dd>
+        </div>
+        <div>
+          <dt style={{ color: "var(--ink-2)" }}>Date</dt>
+          <dd style={{ color: "var(--ink)" }}>{row.occurred_on}</dd>
+        </div>
+        {row.merchant && (
+          <div>
+            <dt style={{ color: "var(--ink-2)" }}>Merchant</dt>
+            <dd style={{ color: "var(--ink)" }}>{row.merchant}</dd>
+          </div>
+        )}
+        {row.note && (
+          <div>
+            <dt style={{ color: "var(--ink-2)" }}>Note</dt>
+            <dd style={{ color: "var(--ink)" }}>{row.note}</dd>
+          </div>
+        )}
+      </dl>
+    </div>
+  );
+}
+
 function TransactionNotFound() {
   return (
     <div className="mx-auto max-w-2xl p-6">
