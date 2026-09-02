@@ -243,6 +243,20 @@ describe("TransactionList — merchant", () => {
     render(<TransactionList rows={[row({ merchant: "Tesco", amount_minor: -1800 })]} />);
     expect(screen.getByRole("button", { name: /Delete Tesco/ })).toBeInTheDocument();
   });
+
+  it("still shows the category in the secondary line for a merchant-only row (no note)", () => {
+    // Fix round 1: the secondary-line category condition is
+    // `(merchantOf(r) || noteOf(r)) && r.category_name` — merchant-blind
+    // `noteOf(r) && r.category_name` (the pre-existing form) differs from it
+    // in exactly this case: merchant present, note absent. Every other test
+    // in this describe block also sets `note`, so none of them catches a
+    // regression back to the merchant-blind form — this is the commonest
+    // row shape once merchants are in use, and the one every other case
+    // here happens to skip.
+    render(<TransactionList rows={[row({ merchant: "Tesco", note: null, category_name: "Groceries" })]} />);
+    expect(screen.getByText("Tesco")).toBeInTheDocument();
+    expect(screen.getByText(/Groceries/)).toBeInTheDocument();
+  });
 });
 
 /**

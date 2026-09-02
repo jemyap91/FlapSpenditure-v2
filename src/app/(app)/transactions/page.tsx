@@ -69,12 +69,14 @@ import { resolveCreatedByNames, anyRowShared } from "./attribution";
  * `note` and `merchant` are both selected, and both rendered —
  * `TransactionList` shows the merchant as each row's primary line when
  * present, falling back to the note, falling back to the category; whatever
- * loses demotes to the secondary line beside the wallet. `note` was
+ * loses demotes to the secondary line beside the wallet. `note` alone was
  * excluded for a while on review, having been fetched and carried into
  * `Row` without anything displaying it (a dead payload on every request);
- * that comment said to add it back once something rendered it, and that is
- * now the case for both columns. Keep them in step: if either ever stops
- * being displayed, drop it from this select again.
+ * that comment said to add it back once something rendered it. `merchant`
+ * has no such history — it is new in this task and was never in that
+ * excluded state — but the same rule now covers it too: both are rendered,
+ * so neither column is a dead payload here. Keep them in step: if either
+ * ever stops being displayed, drop it from this select again.
  *
  * `.order("occurred_on", ...)` alone lets rows sharing a day reshuffle
  * between renders (Postgres makes no ordering promise among ties), which
