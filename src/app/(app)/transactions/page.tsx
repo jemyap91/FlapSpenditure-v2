@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { TransactionList, type Row } from "@/components/TransactionList";
 import { resolveCreatedByNames, anyRowShared } from "./attribution";
@@ -24,25 +25,46 @@ import { resolveCreatedByNames, anyRowShared } from "./attribution";
  * by `deleted_at`, so a soft-deleted row is still visible to the same
  * policy that lets you see the live ones.
  *
- * `wallets(name)` / `categories!transactions_category_id_fkey(name,
- * color_slot, icon)` each resolve to a single embedded object, not an
- * array — `transactions` has exactly one FK to `wallets` (`wallet_id`) and
- * one *simple* FK to `categories` (`category_id` -> `categories.id`,
- * `transactions_category_id_fkey`), confirmed against `src/lib/
- * database.types.ts`'s generated `Relationships` (`isOneToOne: false` from
- * the `transactions` side, i.e. many transactions to one wallet/category —
- * PostgREST embeds the "one" side of a many-to-one as a single object).
+ * `wallets!transactions_wallet_id_fkey(name)` / `categories!
+ * transactions_category_id_fkey(name, color_slot, icon)` each resolve to a
+ * single embedded object, not an array — `transactions` has exactly one
+ * *simple* FK to `wallets` (`wallet_id` -> `wallets.id`,
+ * `transactions_wallet_id_fkey`) and one *simple* FK to `categories`
+ * (`category_id` -> `categories.id`, `transactions_category_id_fkey`), each
+ * confirmed against `src/lib/database.types.ts`'s generated `Relationships`
+ * (`isOneToOne: false` from the `transactions` side, i.e. many transactions
+ * to one wallet/category — PostgREST embeds the "one" side of a many-to-one
+ * as a single object).
  *
- * The `categories` embed needs the explicit `!transactions_category_id_fkey`
- * hint, unlike `wallets`: 0008's composite FK
- * `transactions_category_same_wallet` (`(category_id, wallet_id)` ->
- * `categories(id, wallet_id)`, added so a transaction can never reference a
- * category from a different wallet) gives `transactions` a SECOND
- * relationship to `categories`. An unqualified `categories(...)` is
- * ambiguous between the two and PostgREST rejects the whole query with
- * `PGRST201` ("more than one relationship was found") — confirmed live
- * against this branch's local Postgres — so every column here must resolve
- * through the plain `category_id` FK explicitly, not the composite one.
+ * BOTH embeds need their explicit `!fkey` hint, for the same reason:
+ * `transactions` has a SECOND relationship to each of `wallets` and
+ * `categories`, from composite FKs added to close cross-wallet/
+ * cross-currency gaps at the schema layer rather than trust every write
+ * path to enforce them independently. `categories` picks up
+ * `transactions_category_same_wallet` (0008: `(category_id, wallet_id)` ->
+ * `categories(id, wallet_id)`, so a transaction can never reference a
+ * category from a different wallet). `wallets` picks up
+ * `transactions_currency_matches_wallet` (0015_recurring.sql:
+ * `(wallet_id, currency_code)` -> `wallets(id, currency_code)`, so a
+ * transaction can never carry a currency its own wallet doesn't hold — see
+ * that migration's own long comment for the cross-currency balance
+ * corruption it closes). An unqualified embed of either table is ambiguous
+ * between its two relationships and PostgREST rejects the WHOLE query with
+ * `PGRST201` ("more than one relationship was found") rather than guessing
+ * — confirmed live against this branch's local Postgres, for both.
+ *
+ * FIX (Task 7 of the recurring-entries plan, found live in this task's own
+ * end-to-end run against the local stack, not by design): the `wallets`
+ * embed above was left unqualified when this file was written, because at
+ * the time `transactions_wallet_id_fkey` really was the only relationship
+ * to `wallets`. 0015_recurring.sql (an EARLIER task on this same branch)
+ * added `transactions_currency_matches_wallet` afterwards and, as a side
+ * effect never checked against this query, broke this page outright: every
+ * load of `/transactions` against the current schema throws "Failed to
+ * load transactions", server-side, for every user, unconditionally
+ * (reproduced directly against PostgREST: HTTP 300, `PGRST201`).
+ * `wallets!transactions_wallet_id_fkey` pins the embed to the plain FK,
+ * mirroring `categories`' own hint exactly.
  *
  * `note` IS selected, and is rendered — `TransactionList` shows it as each
  * row's primary line, demoting the category to the secondary line beside
@@ -125,7 +147,7 @@ export default async function TransactionsPage() {
     supabase
       .from("transactions")
       .select(
-        "id, kind, amount_minor, currency_code, occurred_on, note, created_by, wallet_id, wallets(name), categories!transactions_category_id_fkey(name, color_slot, icon)",
+        "id, kind, amount_minor, currency_code, occurred_on, note, created_by, wallet_id, wallets!transactions_wallet_id_fkey(name), categories!transactions_category_id_fkey(name, color_slot, icon)",
       )
       .is("deleted_at", null)
       .order("occurred_on", { ascending: false })
@@ -196,9 +218,25 @@ export default async function TransactionsPage() {
 
   return (
     <div className="mx-auto max-w-2xl">
-      <h1 className="p-4 text-2xl font-semibold" style={{ color: "var(--ink)" }}>
-        Transactions
-      </h1>
+      <div className="flex items-center justify-between gap-3 p-4">
+        <h1 className="text-2xl font-semibold" style={{ color: "var(--ink)" }}>
+          Transactions
+        </h1>
+        {/* /recurring's permanent home (Task 5's own brief): the
+            dashboard's not-yet-built "due" list (Task 6) disappears
+            whenever nothing is due, which is exactly when a user goes
+            looking to CREATE a rule, so it cannot be the only entry point.
+            A plain link, not a TabBar/Sidebar item — the mobile tab bar
+            was just cut from six items to five to stop wallet names
+            truncating. */}
+        <Link
+          href="/recurring"
+          className="shrink-0 rounded-sm text-sm underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]"
+          style={{ color: "var(--ink-2)" }}
+        >
+          Recurring
+        </Link>
+      </div>
       <TransactionList rows={rows} showAttribution={showAttribution} />
     </div>
   );

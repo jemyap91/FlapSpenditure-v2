@@ -61,7 +61,7 @@ const FOCUS_RING =
  * `new Date("2026-08-13")` (no time suffix) is parsed by the ECMA-262 spec
  * as UTC midnight, which renders as the PREVIOUS calendar day for any
  * viewer west of UTC — the mirror image of the bug
- * `TransactionForm.tsx`'s `todayLocalDate()` exists to avoid on the way
+ * `src/lib/today.ts`'s `todayLocalDate()` exists to avoid on the way
  * IN. Appending a bare (no `Z`, no offset) `T00:00:00` forces the other
  * parse branch the spec defines for date-TIME strings: local time. That
  * makes the displayed weekday/date match the calendar day actually stored,

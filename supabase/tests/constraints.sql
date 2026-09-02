@@ -671,3 +671,303 @@ begin;
       format('OVERLAP BROKEN: expected 2 distinct budgets for the same category/month over different sets, found %s', v_rows);
   end $$;
 commit;
+
+-- Recurring rules and skips (0015). Fresh fixtures: a user, a wallet, and a
+-- category, following this file's own convention of literal UUIDs and
+-- direct insert into wallets/categories inside a do $$ ... $$ block --
+-- there is no test_wallet_id()/test_category_id() helper in this file (see
+-- task-2-brief.md's own caveat that those names were placeholders).
+insert into auth.users (id, email) values
+  ('ffffffff-0000-0000-0000-000000000001', 'frank@x.io');
+insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+  values ('ffffffff-0000-0000-0000-000000000002',
+          'ffffffff-0000-0000-0000-000000000001', 'Frank Bank', 'bank', 'USD', 1, 'landmark');
+insert into categories (id, wallet_id, name, kind, color_slot, icon)
+  values ('ffffffff-0000-0000-0000-000000000003',
+          'ffffffff-0000-0000-0000-000000000002', 'Recurring Test Category', 'expense', 3, 'repeat');
+
+\echo '--- recurring_rules: sign must follow kind ---'
+do $$
+begin
+  begin
+    insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                                 category_id, interval_unit, anchor_on)
+    values ('ffffffff-0000-0000-0000-000000000002', 'Bad', 'expense', 500, 'USD',
+            'ffffffff-0000-0000-0000-000000000003', 'monthly', current_date);
+    raise exception 'expected rule_expense_is_negative to reject a positive expense';
+  exception when check_violation then
+    assert sqlerrm like '%rule_expense_is_negative%',
+      format('wrong constraint fired: %s', sqlerrm);
+  end;
+end $$;
+
+\echo '--- recurring_rules: a transfer rule is refused outright ---'
+do $$
+begin
+  begin
+    insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                                 category_id, interval_unit, anchor_on)
+    values ('ffffffff-0000-0000-0000-000000000002', 'Bad', 'transfer', -500, 'USD',
+            'ffffffff-0000-0000-0000-000000000003', 'monthly', current_date);
+    raise exception 'expected rule_kind_not_transfer to reject a transfer rule';
+  exception when check_violation then
+    assert sqlerrm like '%rule_kind_not_transfer%',
+      format('wrong constraint fired: %s', sqlerrm);
+  end;
+end $$;
+
+\echo '--- recurring_rules: ends_on cannot precede the anchor ---'
+do $$
+begin
+  begin
+    insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                                 category_id, interval_unit, anchor_on, ends_on)
+    values ('ffffffff-0000-0000-0000-000000000002', 'Bad', 'expense', -500, 'USD',
+            'ffffffff-0000-0000-0000-000000000003', 'monthly', '2026-06-01', '2026-05-01');
+    raise exception 'expected rule_ends_after_anchor to reject an earlier end';
+  exception when check_violation then
+    assert sqlerrm like '%rule_ends_after_anchor%',
+      format('wrong constraint fired: %s', sqlerrm);
+  end;
+end $$;
+
+\echo '--- one occurrence cannot be recorded twice ---'
+do $$
+declare r uuid;
+begin
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('ffffffff-0000-0000-0000-000000000002', 'Rent', 'expense', -150000, 'USD',
+          'ffffffff-0000-0000-0000-000000000003', 'monthly', '2026-01-01')
+  returning id into r;
+
+  insert into transactions (wallet_id, kind, amount_minor, currency_code,
+                            category_id, occurred_on, recurring_id)
+  values ('ffffffff-0000-0000-0000-000000000002', 'expense', -150000, 'USD',
+          'ffffffff-0000-0000-0000-000000000003', '2026-01-01', r);
+
+  begin
+    insert into transactions (wallet_id, kind, amount_minor, currency_code,
+                              category_id, occurred_on, recurring_id)
+    values ('ffffffff-0000-0000-0000-000000000002', 'expense', -150000, 'USD',
+            'ffffffff-0000-0000-0000-000000000003', '2026-01-01', r);
+    raise exception 'expected the partial unique index to refuse a second record';
+  exception when unique_violation then
+    assert sqlerrm like '%transactions_recurring_occurrence%',
+      format('wrong index fired: %s', sqlerrm);
+  end;
+
+  -- Soft-deleting the first frees the occurrence again: the index is partial
+  -- on deleted_at, which is what makes an undone Record re-recordable.
+  update transactions set deleted_at = now()
+   where recurring_id = r and occurred_on = '2026-01-01';
+  insert into transactions (wallet_id, kind, amount_minor, currency_code,
+                            category_id, occurred_on, recurring_id)
+  values ('ffffffff-0000-0000-0000-000000000002', 'expense', -150000, 'USD',
+          'ffffffff-0000-0000-0000-000000000003', '2026-01-01', r);
+end $$;
+
+-- Fix round 1 (task-2-fix-1) coverage. A second wallet/category, owned by
+-- the same fixture user (this file bypasses RLS and tests CHECK/FK shape,
+-- not membership -- see the header comment), is what makes "cross-wallet"
+-- a real distinction to test against below.
+insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+  values ('ffffffff-0000-0000-0000-000000000004',
+          'ffffffff-0000-0000-0000-000000000001', 'Frank Second Wallet', 'bank', 'USD', 2, 'wallet');
+insert into categories (id, wallet_id, name, kind, color_slot, icon)
+  values ('ffffffff-0000-0000-0000-000000000005',
+          'ffffffff-0000-0000-0000-000000000004', 'Second Wallet Category', 'expense', 4, 'basket');
+
+\echo '--- Fix 2: recurring_rules_category_same_wallet rejects a cross-wallet category ---'
+do $$
+declare v_sqlstate text; v_constraint text;
+begin
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('ffffffff-0000-0000-0000-000000000002', 'Bad', 'expense', -500, 'USD',
+          'ffffffff-0000-0000-0000-000000000005', 'monthly', current_date);
+  raise exception 'CONSTRAINT BROKEN: recurring_rules_category_same_wallet accepted a cross-wallet category';
+exception
+  when foreign_key_violation then
+    get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+    assert v_sqlstate = '23503' and v_constraint = 'recurring_rules_category_same_wallet',
+      format('expected foreign_key_violation (23503) from recurring_rules_category_same_wallet, got SQLSTATE %s (constraint %s): %s',
+             v_sqlstate, v_constraint, sqlerrm);
+end $$;
+
+\echo '--- Fix 3: transactions_recurring_same_wallet rejects cross-wallet occurrence squatting ---'
+do $$
+declare r uuid; v_sqlstate text; v_constraint text;
+begin
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('ffffffff-0000-0000-0000-000000000002', 'Squat Target', 'expense', -2000, 'USD',
+          'ffffffff-0000-0000-0000-000000000003', 'monthly', '2026-02-01')
+  returning id into r;
+
+  begin
+    -- A transaction in the OTHER wallet, carrying this rule's id -- the
+    -- squatting shape the reviewer proved live: nothing but this composite
+    -- FK ties recurring_id to the SAME wallet as the rule it names.
+    insert into transactions (wallet_id, kind, amount_minor, currency_code,
+                              category_id, occurred_on, recurring_id)
+    values ('ffffffff-0000-0000-0000-000000000004', 'expense', -2000, 'USD',
+            'ffffffff-0000-0000-0000-000000000005', '2026-02-01', r);
+    raise exception 'CONSTRAINT BROKEN: transactions_recurring_same_wallet accepted a cross-wallet recurring_id';
+  exception
+    when foreign_key_violation then
+      get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+      assert v_sqlstate = '23503' and v_constraint = 'transactions_recurring_same_wallet',
+        format('expected foreign_key_violation (23503) from transactions_recurring_same_wallet, got SQLSTATE %s (constraint %s): %s',
+               v_sqlstate, v_constraint, sqlerrm);
+  end;
+end $$;
+
+\echo '--- Fix 5: on delete set null -- deleting a rule must not delete recorded money ---'
+do $$
+declare r uuid; v_txn_id uuid; v_recurring_id uuid; v_wallet_id uuid; v_deleted_at timestamptz;
+begin
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('ffffffff-0000-0000-0000-000000000002', 'Doomed Rule', 'expense', -3000, 'USD',
+          'ffffffff-0000-0000-0000-000000000003', 'monthly', '2026-03-01')
+  returning id into r;
+
+  insert into transactions (wallet_id, kind, amount_minor, currency_code,
+                            category_id, occurred_on, recurring_id)
+  values ('ffffffff-0000-0000-0000-000000000002', 'expense', -3000, 'USD',
+          'ffffffff-0000-0000-0000-000000000003', '2026-03-01', r)
+  returning id into v_txn_id;
+
+  delete from recurring_rules where id = r;
+
+  select recurring_id, wallet_id, deleted_at into v_recurring_id, v_wallet_id, v_deleted_at
+    from transactions where id = v_txn_id;
+  assert found, 'SAFETY BROKEN: transactions.recurring_id ON DELETE SET NULL let the whole row disappear (found no row at all -- check for an accidental CASCADE)';
+  assert v_deleted_at is null,
+    'SAFETY BROKEN: deleting a recurring rule soft-deleted (or otherwise touched deleted_at on) a real recorded transaction';
+  assert v_recurring_id is null,
+    'SAFETY BROKEN: transactions.recurring_id was not nulled after its rule was deleted -- ON DELETE is not SET NULL any more';
+  assert v_wallet_id = 'ffffffff-0000-0000-0000-000000000002',
+    'SAFETY BROKEN: wallet_id was disturbed by the rule deletion (composite-FK SET NULL must only touch recurring_id)';
+end $$;
+
+\echo '--- Fix 5: rule_income_is_positive rejects a non-positive income rule ---'
+do $$
+declare v_sqlstate text; v_constraint text;
+begin
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('ffffffff-0000-0000-0000-000000000002', 'Bad Income', 'income', -500, 'USD',
+          'ffffffff-0000-0000-0000-000000000003', 'monthly', current_date);
+  raise exception 'CONSTRAINT BROKEN: rule_income_is_positive did not reject a negative income rule';
+exception
+  when check_violation then
+    get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+    assert v_sqlstate = '23514' and v_constraint = 'rule_income_is_positive',
+      format('expected check_violation (23514) from rule_income_is_positive, got SQLSTATE %s (constraint %s): %s',
+             v_sqlstate, v_constraint, sqlerrm);
+end $$;
+
+\echo '--- Fix 5: recurring_skips_pkey is the idempotency guarantee -- same (rule_id, occurrence_on) twice must raise ---'
+do $$
+declare r uuid; v_sqlstate text; v_constraint text;
+begin
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('ffffffff-0000-0000-0000-000000000002', 'Skip Me', 'expense', -750, 'USD',
+          'ffffffff-0000-0000-0000-000000000003', 'monthly', '2026-04-01')
+  returning id into r;
+
+  insert into recurring_skips (rule_id, occurrence_on) values (r, '2026-04-01');
+
+  begin
+    insert into recurring_skips (rule_id, occurrence_on) values (r, '2026-04-01');
+    raise exception 'CONSTRAINT BROKEN: recurring_skips_pkey did not reject a duplicate (rule_id, occurrence_on)';
+  exception
+    when unique_violation then
+      get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+      assert v_sqlstate = '23505' and v_constraint = 'recurring_skips_pkey',
+        format('expected unique_violation (23505) from recurring_skips_pkey, got SQLSTATE %s (constraint %s): %s',
+               v_sqlstate, v_constraint, sqlerrm);
+  end;
+end $$;
+
+\echo '--- Fix 5: recurring_rules_name_check rejects a whitespace-only name ---'
+do $$
+declare v_sqlstate text; v_constraint text;
+begin
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('ffffffff-0000-0000-0000-000000000002', '   ', 'expense', -500, 'USD',
+          'ffffffff-0000-0000-0000-000000000003', 'monthly', current_date);
+  raise exception 'CONSTRAINT BROKEN: recurring_rules_name_check accepted a whitespace-only name';
+exception
+  when check_violation then
+    get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+    assert v_sqlstate = '23514' and v_constraint = 'recurring_rules_name_check',
+      format('expected check_violation (23514) from recurring_rules_name_check, got SQLSTATE %s (constraint %s): %s',
+             v_sqlstate, v_constraint, sqlerrm);
+end $$;
+
+\echo '--- Fix round 2 (task-4-fix-2): transactions_currency_matches_wallet rejects a transaction whose currency does not match its wallet''s ---'
+-- CRITICAL finding: src/server/actions/recurring.ts's own currency check is
+-- a UI courtesy, not a boundary -- `authenticated` holds a full-table
+-- INSERT grant on `transactions` and `transactions_member` RLS only checks
+-- membership, never currency, so an ordinary member's session (not
+-- service-role) can POST a wrong-currency row straight past the app
+-- entirely. This constraint is the actual boundary. The REJECT below is
+-- paired with a POSITIVE (a same-currency insert into the same wallet),
+-- following this file's own convention: a denial only proves something
+-- when paired with the corresponding permission.
+do $$
+declare v_sqlstate text; v_constraint text;
+begin
+  insert into public.transactions (wallet_id, kind, amount_minor, currency_code, category_id, occurred_on)
+  values ('ffffffff-0000-0000-0000-000000000002', 'expense', -999900, 'JPY',
+          'ffffffff-0000-0000-0000-000000000003', current_date);
+  raise exception 'CONSTRAINT BROKEN: transactions_currency_matches_wallet accepted a transaction whose currency does not match its wallet''s';
+exception
+  when foreign_key_violation then
+    get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+    assert v_sqlstate = '23503' and v_constraint = 'transactions_currency_matches_wallet',
+      format('expected foreign_key_violation (23503) from transactions_currency_matches_wallet, got SQLSTATE %s (constraint %s): %s',
+             v_sqlstate, v_constraint, sqlerrm);
+end $$;
+
+-- POSITIVE: the wallet's OWN currency is accepted. Without this, a
+-- constraint (or an insert path) that rejected EVERY currency_code would
+-- sail through the REJECT above -- the denial only means something paired
+-- with a permission.
+do $$
+declare n int;
+begin
+  insert into public.transactions (wallet_id, kind, amount_minor, currency_code, category_id, occurred_on)
+  values ('ffffffff-0000-0000-0000-000000000002', 'expense', -100, 'USD',
+          'ffffffff-0000-0000-0000-000000000003', current_date);
+
+  select count(*) into n from public.transactions
+  where wallet_id = 'ffffffff-0000-0000-0000-000000000002' and currency_code = 'USD' and amount_minor = -100;
+  assert n = 1,
+    format('CONSTRAINT BROKEN: transactions_currency_matches_wallet rejected the wallet''s OWN currency (%s row(s) landed)', n);
+end $$;
+
+\echo '--- Fix round 2: wallets_id_currency + transactions_currency_matches_wallet ON DELETE CASCADE agrees with transactions_wallet_id_fkey -- deleting a wallet with transactions must not error ---'
+do $$
+declare v_wallet uuid; v_owner uuid; v_cat uuid; n int;
+begin
+  insert into auth.users (id, email) values ('88888888-0000-0000-0000-000000000099','cascade-check@x.io')
+    returning id into v_owner;
+  insert into wallets (owner_id, name, kind, currency_code, color_slot, icon)
+    values (v_owner, 'Cascade Check Wallet', 'bank', 'USD', 3, 'landmark')
+    returning id into v_wallet;
+  select id into v_cat from categories where wallet_id = v_wallet and kind = 'expense' limit 1;
+  insert into transactions (wallet_id, kind, amount_minor, currency_code, category_id, occurred_on)
+    values (v_wallet, 'expense', -500, 'USD', v_cat, current_date);
+
+  delete from wallets where id = v_wallet;
+
+  select count(*) into n from transactions where wallet_id = v_wallet;
+  assert n = 0,
+    format('SAFETY BROKEN: deleting a wallet with transactions did not cascade-delete them (%s row(s) remain) -- transactions_currency_matches_wallet''s ON DELETE CASCADE disagrees with transactions_wallet_id_fkey''s', n);
+end $$;

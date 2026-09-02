@@ -202,6 +202,108 @@ export type Database = {
           },
         ]
       }
+      recurring_rules: {
+        Row: {
+          amount_minor: number
+          anchor_on: string
+          archived_at: string | null
+          category_id: string
+          created_at: string
+          created_by: string | null
+          currency_code: string
+          ends_on: string | null
+          id: string
+          interval_unit: Database["public"]["Enums"]["recur_interval"]
+          kind: Database["public"]["Enums"]["txn_kind"]
+          name: string
+          updated_at: string
+          wallet_id: string
+        }
+        Insert: {
+          amount_minor: number
+          anchor_on: string
+          archived_at?: string | null
+          category_id: string
+          created_at?: string
+          created_by?: string | null
+          currency_code: string
+          ends_on?: string | null
+          id?: string
+          interval_unit: Database["public"]["Enums"]["recur_interval"]
+          kind: Database["public"]["Enums"]["txn_kind"]
+          name: string
+          updated_at?: string
+          wallet_id: string
+        }
+        Update: {
+          amount_minor?: number
+          anchor_on?: string
+          archived_at?: string | null
+          category_id?: string
+          created_at?: string
+          created_by?: string | null
+          currency_code?: string
+          ends_on?: string | null
+          id?: string
+          interval_unit?: Database["public"]["Enums"]["recur_interval"]
+          kind?: Database["public"]["Enums"]["txn_kind"]
+          name?: string
+          updated_at?: string
+          wallet_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "recurring_rules_category_same_wallet"
+            columns: ["category_id", "wallet_id"]
+            isOneToOne: false
+            referencedRelation: "categories"
+            referencedColumns: ["id", "wallet_id"]
+          },
+          {
+            foreignKeyName: "recurring_rules_currency_code_fkey"
+            columns: ["currency_code"]
+            isOneToOne: false
+            referencedRelation: "currencies"
+            referencedColumns: ["code"]
+          },
+          {
+            foreignKeyName: "recurring_rules_wallet_id_fkey"
+            columns: ["wallet_id"]
+            isOneToOne: false
+            referencedRelation: "wallets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      recurring_skips: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          occurrence_on: string
+          rule_id: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          occurrence_on: string
+          rule_id: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          occurrence_on?: string
+          rule_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "recurring_skips_rule_id_fkey"
+            columns: ["rule_id"]
+            isOneToOne: false
+            referencedRelation: "recurring_rules"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       transactions: {
         Row: {
           amount_minor: number
@@ -214,6 +316,7 @@ export type Database = {
           kind: Database["public"]["Enums"]["txn_kind"]
           note: string | null
           occurred_on: string
+          recurring_id: string | null
           transfer_id: string | null
           updated_at: string
           wallet_id: string
@@ -229,6 +332,7 @@ export type Database = {
           kind: Database["public"]["Enums"]["txn_kind"]
           note?: string | null
           occurred_on: string
+          recurring_id?: string | null
           transfer_id?: string | null
           updated_at?: string
           wallet_id: string
@@ -244,6 +348,7 @@ export type Database = {
           kind?: Database["public"]["Enums"]["txn_kind"]
           note?: string | null
           occurred_on?: string
+          recurring_id?: string | null
           transfer_id?: string | null
           updated_at?: string
           wallet_id?: string
@@ -269,6 +374,20 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "currencies"
             referencedColumns: ["code"]
+          },
+          {
+            foreignKeyName: "transactions_currency_matches_wallet"
+            columns: ["wallet_id", "currency_code"]
+            isOneToOne: false
+            referencedRelation: "wallets"
+            referencedColumns: ["id", "currency_code"]
+          },
+          {
+            foreignKeyName: "transactions_recurring_same_wallet"
+            columns: ["recurring_id", "wallet_id"]
+            isOneToOne: false
+            referencedRelation: "recurring_rules"
+            referencedColumns: ["id", "wallet_id"]
           },
           {
             foreignKeyName: "transactions_wallet_id_fkey"
@@ -493,6 +612,7 @@ export type Database = {
       category_kind: "expense" | "income"
       invite_status: "pending" | "accepted" | "declined"
       member_role: "owner" | "member"
+      recur_interval: "weekly" | "fortnightly" | "monthly" | "yearly"
       theme_pref: "system" | "light" | "dark"
       txn_kind: "expense" | "income" | "transfer"
       wallet_kind: "card" | "bank"
@@ -629,6 +749,7 @@ export const Constants = {
       category_kind: ["expense", "income"],
       invite_status: ["pending", "accepted", "declined"],
       member_role: ["owner", "member"],
+      recur_interval: ["weekly", "fortnightly", "monthly", "yearly"],
       theme_pref: ["system", "light", "dark"],
       txn_kind: ["expense", "income", "transfer"],
       wallet_kind: ["card", "bank"],

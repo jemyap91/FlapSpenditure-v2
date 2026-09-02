@@ -2923,3 +2923,225 @@ begin;
       'OVERLAP BROKEN: same category/month over a DIFFERENT wallet set collapsed onto the same budget';
   end $$;
 commit;
+
+-- =====================================================================
+-- 0015: recurring_rules / recurring_skips RLS. Reuses cccccccc-003
+-- (Alice Bank) -- by this point in the file bob is already a genuine
+-- member of it (section 8) and carol has never touched it (she is only
+-- a member of 40404040-...-040, Alice's Invite Wallet -- section 11), so
+-- both actors are already in exactly the state this needs: bob a real
+-- co-member, carol a real stranger. dddddddd-004 ('Custom Category',
+-- kind expense) is cccccccc-003's own category, created in section 1.
+--
+-- Alice creates the rule, as its owner-side setup.
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+  end $$;
+
+  insert into public.recurring_rules
+      (id, wallet_id, created_by, name, kind, amount_minor, currency_code,
+       category_id, interval_unit, anchor_on)
+    values ('60606060-0000-0000-0000-000000000060', 'cccccccc-0000-0000-0000-000000000003',
+            'aaaaaaaa-0000-0000-0000-000000000001', 'Rent', 'expense', -150000, 'USD',
+            'dddddddd-0000-0000-0000-000000000004', 'monthly', '2026-01-01');
+
+  do $$ begin
+    assert (select count(*) from public.recurring_rules
+              where id = '60606060-0000-0000-0000-000000000060') = 1,
+      'PERMISSION BROKEN: alice (owner) cannot create a recurring rule on her own wallet';
+  end $$;
+commit;
+
+-- A non-member (carol) sees no rules and can create none.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"cccccccc-0000-0000-0000-000000000009","email":"carol@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'cccccccc-0000-0000-0000-000000000009'::uuid, 'impersonation failed';
+    assert (select count(*) from public.recurring_rules) = 0,
+      'LEAK: carol (a stranger to cccccccc-003) can see alice''s recurring rule';
+  end $$;
+
+  do $$
+  begin
+    insert into public.recurring_rules
+        (wallet_id, created_by, name, kind, amount_minor, currency_code,
+         category_id, interval_unit, anchor_on)
+      values ('cccccccc-0000-0000-0000-000000000003', 'cccccccc-0000-0000-0000-000000000009',
+              'Forged', 'expense', -100, 'USD', 'dddddddd-0000-0000-0000-000000000004',
+              'monthly', current_date);
+    raise exception 'LEAK: carol created a recurring rule on a wallet she is not a member of';
+  exception
+    when insufficient_privilege then
+      null; -- expected: WITH CHECK on recurring_rules_member rejects it
+  end $$;
+
+  do $$
+  begin
+    insert into public.recurring_skips (rule_id, occurrence_on, created_by)
+      values ('60606060-0000-0000-0000-000000000060', '2026-01-01',
+              'cccccccc-0000-0000-0000-000000000009');
+    raise exception 'LEAK: carol skipped an occurrence of alice''s recurring rule';
+  exception
+    when insufficient_privilege then
+      null; -- expected: WITH CHECK on recurring_skips_member rejects it (the
+            -- exists-subquery over recurring_rules finds no visible row)
+  end $$;
+commit;
+
+-- Verify from alice's side that carol's attempts left no trace.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select count(*) from public.recurring_rules
+              where wallet_id = 'cccccccc-0000-0000-0000-000000000003') = 1,
+      'LEAK: recurring_rules row count changed after carol''s rejected insert attempt';
+    assert (select count(*) from public.recurring_skips
+              where rule_id = '60606060-0000-0000-0000-000000000060') = 0,
+      'LEAK: a skip row exists after carol''s rejected insert attempt';
+  end $$;
+commit;
+
+-- The load-bearing case: a co-member of the shared wallet (bob, a genuine
+-- member of cccccccc-003 since section 8) sees the rule and MAY skip it.
+-- Proving this, not only carol's denial above, is what distinguishes a
+-- correct membership policy from one that simply denies everybody --
+-- a suite with only the non-member case would pass identically against
+-- either.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+    assert is_wallet_member('cccccccc-0000-0000-0000-000000000003'::uuid) = true,
+      'test setup broken: bob should already be a member of cccccccc-003 by this point in the file';
+    assert (select count(*) from public.recurring_rules
+              where wallet_id = 'cccccccc-0000-0000-0000-000000000003') = 1,
+      'PERMISSION BROKEN: co-member bob cannot see alice''s recurring rule on the shared wallet';
+  end $$;
+
+  insert into public.recurring_skips (rule_id, occurrence_on, created_by)
+    values ('60606060-0000-0000-0000-000000000060', '2026-01-01',
+            'bbbbbbbb-0000-0000-0000-000000000002');
+
+  do $$ begin
+    assert (select count(*) from public.recurring_skips
+              where rule_id = '60606060-0000-0000-0000-000000000060'
+                and occurrence_on = '2026-01-01') = 1,
+      'PERMISSION BROKEN: co-member bob cannot skip an occurrence of alice''s recurring rule';
+  end $$;
+commit;
+
+-- =====================================================================
+-- Fix 1 (task-2-fix-1, CRITICAL) -- a co-member must not be able to steal
+-- a recurring rule by reassigning its wallet_id. This is the round-1
+-- vulnerability, transactions' own precedent restated for recurring_rules:
+-- recurring_rules_member is `for all using (is_wallet_member(wallet_id))
+-- with check (is_wallet_member(wallet_id))`, so on UPDATE both clauses ask
+-- the identical membership question -- one against the OLD row, one
+-- against the NEW -- and a caller who is a member of TWO wallets satisfies
+-- both while moving a row between them. Bob is exactly that caller here:
+-- a real co-member of cccccccc-003 (section 8) AND owner (hence member, via
+-- add_owner_as_member()) of his own ffffffff-006 (section 5) -- so this is
+-- the live attack, not a contrived setup. The column-privilege grant this
+-- fix adds (0015_recurring.sql, mirroring 0004_rls.sql's UPDATE grant on
+-- transactions) is what has to stop it; RLS alone cannot, for the reason
+-- above.
+--
+-- DISCRIMINATION CHECK (per task-2-fix-1-brief.md): this assertion was
+-- verified to actually FAIL when 0015's blanket
+-- `grant select, insert, update, delete on recurring_rules to
+-- authenticated` was temporarily restored (i.e. before the column-scoped
+-- revoke/grant fix) -- `npm run test:rls` failed here with "LEAK: co-member
+-- bob reassigned alice's recurring rule to his own wallet via wallet_id",
+-- exactly the finding the reviewer proved live. See task-2-fix-1-report.md
+-- for both observed outputs (vulnerable-grant FAIL, fixed-grant PASS).
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+    assert is_wallet_member('cccccccc-0000-0000-0000-000000000003'::uuid) = true,
+      'test setup broken: bob should already be a co-member of cccccccc-003 (alice''s rule''s wallet)';
+    assert is_wallet_member('ffffffff-0000-0000-0000-000000000006'::uuid) = true,
+      'test setup broken: bob should already be a member (owner) of his own ffffffff-006';
+  end $$;
+
+  -- category_id is set IN THE SAME STATEMENT, to a4a4a4a4-002 ("Bob
+  -- Category", inserted earlier in this file for ffffffff-006) -- not
+  -- because a real attacker would bother, but because leaving category_id
+  -- untouched would make this UPDATE collide with Fix 2's OWN protection
+  -- (recurring_rules_category_same_wallet: dddddddd-004 belongs to
+  -- cccccccc-003, not ffffffff-006) and fail with 23503 regardless of
+  -- whether the column-privilege fix under test is present. category_id IS
+  -- in the allowed-columns grant (it's a legitimate field to edit), so
+  -- supplying a valid one isolates this assertion to wallet_id specifically
+  -- -- the column that must never be reachable, fixed grant or not.
+  do $$
+  begin
+    update public.recurring_rules
+      set wallet_id = 'ffffffff-0000-0000-0000-000000000006',
+          category_id = 'a4a4a4a4-0000-0000-0000-000000000002'
+      where id = '60606060-0000-0000-0000-000000000060';
+    raise exception 'LEAK: co-member bob reassigned alice''s recurring rule to his own wallet via wallet_id';
+  exception
+    when insufficient_privilege then
+      null; -- expected, COLUMN PRIVILEGE: authenticated has no UPDATE grant on wallet_id
+  end $$;
+
+  -- Same attack, one column over: created_by re-attribution.
+  do $$
+  begin
+    update public.recurring_rules set created_by = 'bbbbbbbb-0000-0000-0000-000000000002'
+      where id = '60606060-0000-0000-0000-000000000060';
+    raise exception 'LEAK: co-member bob re-attributed alice''s recurring rule to himself via created_by';
+  exception
+    when insufficient_privilege then
+      null; -- expected, COLUMN PRIVILEGE: authenticated has no UPDATE grant on created_by
+  end $$;
+
+  -- Positive control, shape-identical to both attacks above (same user,
+  -- same row -- only the column touched differs): bob CAN update an
+  -- allowed column on the very same rule, proving the two denials above are
+  -- the column grant specifically, not a broken session or an unreachable
+  -- table.
+  update public.recurring_rules set name = 'Rent (edited by bob)'
+    where id = '60606060-0000-0000-0000-000000000060';
+  do $$ begin
+    assert (select name from public.recurring_rules where id = '60606060-0000-0000-0000-000000000060')
+             = 'Rent (edited by bob)',
+      'PERMISSION BROKEN (COLUMN PRIVILEGE): co-member bob cannot update an allowed column (name)';
+  end $$;
+commit;
+
+-- Verify from alice's side that the wallet_id/created_by attacks left no
+-- trace: the rule is still hers, on her wallet, only the name (an allowed
+-- column) changed.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select wallet_id from public.recurring_rules where id = '60606060-0000-0000-0000-000000000060')
+             = 'cccccccc-0000-0000-0000-000000000003'::uuid,
+      'LEAK: recurring rule wallet_id changed despite the denied UPDATE';
+    assert (select created_by from public.recurring_rules where id = '60606060-0000-0000-0000-000000000060')
+             = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid,
+      'LEAK: recurring rule created_by changed despite the denied UPDATE';
+    -- The whole-statement rejection must have left category_id untouched
+    -- too, even though category_id is itself an allowed column -- Postgres
+    -- rejects the ENTIRE UPDATE when any targeted column lacks privilege,
+    -- not just the offending column.
+    assert (select category_id from public.recurring_rules where id = '60606060-0000-0000-0000-000000000060')
+             = 'dddddddd-0000-0000-0000-000000000004'::uuid,
+      'LEAK: recurring rule category_id changed despite the whole UPDATE being denied on wallet_id';
+    assert (select count(*) from public.recurring_rules
+              where wallet_id = 'ffffffff-0000-0000-0000-000000000006') = 0,
+      'LEAK: alice''s rule (or a copy of it) now exists under bob''s wallet';
+  end $$;
+commit;

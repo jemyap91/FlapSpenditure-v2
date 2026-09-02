@@ -2,9 +2,13 @@ import { createClient } from "@/lib/supabase/server";
 import { CategoryBreakdown, type BreakdownRow } from "@/components/CategoryBreakdown";
 import { CashFlow, type FlowRow } from "@/components/CashFlow";
 import { BudgetSummary } from "@/components/BudgetSummary";
+import { DueList } from "@/components/DueList";
 import { formatMoney } from "@/lib/money";
 import { monthRange } from "@/lib/month-range";
+import { todayLocalDate } from "@/lib/today";
 import type { BudgetStatusRow } from "@/lib/budget-status";
+import { buildDueRows, type DueRuleInput, type HandledOccurrence } from "./due-rows";
+import { lookbackFloor, type RecurInterval } from "@/lib/recurrence";
 
 /**
  * Task 21's dashboard — the first thing a returning user sees. Replaces
@@ -124,6 +128,153 @@ export default async function DashboardPage() {
   });
   if (budgetStatusError) throw new Error("Failed to load budget status");
 
+  // Task 6's DUE section. Deliberately NOT scoped to `walletIds`
+  // (the primary-currency wallet set the RPCs above are restricted to,
+  // for summability): each due row is rendered with its OWN rule's
+  // currency via `formatMoney`, never summed with another row, so there is
+  // nothing here for a mixed-currency total to corrupt — matching
+  // /recurring's own page.tsx, which carries no such restriction either.
+  //
+  // `recurring_rules` is read WITHOUT `.is("archived_at", null)`, unlike
+  // every other read on this page and unlike /recurring's own rule list:
+  // a rule can be paused (spec §5) AFTER one of its occurrences became due
+  // but before that occurrence was recorded or skipped, and excluding
+  // paused rules here would make that occurrence vanish silently instead
+  // of surfacing as a blocked row stating why — see `due-rows.ts`'s
+  // `DueRuleInput.archivedAt` doc comment.
+  //
+  // `wallets`/`categories` are embedded on the same plain FKs /recurring's
+  // page.tsx already established need no `!fkey` disambiguation
+  // (`recurring_rules_wallet_id_fkey`, `recurring_rules_category_same_wallet`
+  // are each the ONLY relationship from `recurring_rules` to that table).
+  // Both are fetched here for a reason /recurring's own read doesn't need:
+  // `buildDueRows` has no database access of its own, so every fact
+  // `recordOccurrence` would re-validate (wallet active, currency match,
+  // category kind/archived) has to arrive already joined, for it to state a
+  // blocked row's reason without duplicating that validation.
+  //
+  // The USER'S local calendar day, never the server's `new Date()` read via
+  // a UTC round trip -- see `src/lib/today.ts`'s own doc comment for the
+  // Kuwait/UTC+3 example. This is still, unavoidably, the SERVER's own
+  // local timezone: `todayLocalDate()` reads `new Date()`, and this page is
+  // a Server Component, so "today" resolves wherever this process is
+  // deployed, not wherever the person looking at the dashboard actually is.
+  // A request filed just after local midnight in one timezone but not the
+  // other can disagree about what day it is -- the exact same limitation
+  // `monthRange()` above already carries (see that module's own doc
+  // comment) and, like that one, out of scope here: fixing it needs the
+  // viewer's own timezone to reach the server, which nothing in this
+  // codebase currently sends up. Computed once and reused below for both
+  // `buildDueRows` and the two `.gte(...)` read bounds, and passed down to
+  // `DueList` itself (for its own date-label year decision) -- one value,
+  // never re-derived, so nothing downstream can disagree with it about what
+  // day "today" is.
+  const today = todayLocalDate();
+  // `recurring_skips` and the recorded-occurrence half of `transactions`
+  // are both scoped by RLS (`recurring_skips_member`, `transactions_member`)
+  // to the caller's own wallets, matching every other read on this page's
+  // convention of scoping defensively anyway -- but, fix round 1 (I5), NOT
+  // otherwise bounded before this: both were read in full, and
+  // `supabase/config.toml`'s `max_rows = 1000` makes PostgREST truncate
+  // silently past that, with no `ORDER BY` so survivors are roughly
+  // insertion order -- the OLDEST rows survive and recent recordings/skips
+  // are the ones dropped, exactly backwards from what `buildDueRows` needs.
+  // A household crossing ~1000 lifetime recorded occurrences would see
+  // already-recorded ones reappear as due, on every reload, forever.
+  //
+  // `.gte(...)` bounds both reads to `lookbackFloor(today)` -- the same
+  // 12-month floor `buildDueRows` (via `dueOccurrences`/`occurrencesFor`)
+  // already applies -- so nothing outside the window either function could
+  // ever consult is fetched, and the 1000-row cap has that much more room
+  // before it can silently bite at all. Matches this codebase's sibling
+  // convention of pairing a bound with an explicit read
+  // (`transactions/page.tsx`, `wallets/[id]/page.tsx` pair `.order()` with
+  // `.limit(100)`) rather than leaving a table scan open-ended.
+  const dueFloor = lookbackFloor(today);
+  const [
+    { data: dueRuleRows, error: dueRulesError },
+    { data: dueSkipRows, error: dueSkipsError },
+    { data: dueRecordedRows, error: dueRecordedError },
+  ] = await Promise.all([
+    supabase
+      .from("recurring_rules")
+      .select(
+        "id, name, kind, amount_minor, currency_code, interval_unit, anchor_on, ends_on, archived_at, wallets(name, currency_code, archived_at), categories(kind, archived_at)",
+      )
+      .order("created_at"),
+    supabase.from("recurring_skips").select("rule_id, occurrence_on").gte("occurrence_on", dueFloor),
+    // `deleted_at is null`: a soft-deleted transaction must not count as
+    // "already recorded" — TransactionList's own undo-based deletion
+    // (Task 4) means a recurring occurrence's transaction can be deleted
+    // and the occurrence genuinely becomes due again.
+    supabase
+      .from("transactions")
+      .select("recurring_id, occurred_on")
+      .not("recurring_id", "is", null)
+      .is("deleted_at", null)
+      .gte("occurred_on", dueFloor),
+  ]);
+  // Same "error is not emptiness" rule as every other read on this page.
+  if (dueRulesError) throw new Error("Failed to load recurring rules");
+  if (dueSkipsError) throw new Error("Failed to load recurring skips");
+  if (dueRecordedError) throw new Error("Failed to load recorded occurrences");
+
+  // Supabase types embedded relations loosely — asserted ONCE here, at the
+  // data boundary, matching /recurring's page.tsx identical `JoinedRule`
+  // pattern, rather than casting inline inside the map below.
+  type JoinedDueRule = {
+    id: string;
+    name: string;
+    kind: "expense" | "income";
+    amount_minor: number;
+    currency_code: string;
+    interval_unit: RecurInterval;
+    anchor_on: string;
+    ends_on: string | null;
+    archived_at: string | null;
+    wallets: { name: string; currency_code: string; archived_at: string | null } | null;
+    categories: { kind: "expense" | "income"; archived_at: string | null } | null;
+  };
+
+  const dueRuleInputs: DueRuleInput[] = ((dueRuleRows ?? []) as unknown as JoinedDueRule[]).map((r) => ({
+    id: r.id,
+    name: r.name,
+    kind: r.kind,
+    amountMinor: r.amount_minor,
+    currencyCode: r.currency_code,
+    anchorOn: r.anchor_on,
+    intervalUnit: r.interval_unit,
+    endsOn: r.ends_on,
+    archivedAt: r.archived_at,
+    walletName: r.wallets?.name ?? "",
+    walletCurrencyCode: r.wallets?.currency_code ?? "",
+    walletArchivedAt: r.wallets?.archived_at ?? null,
+    // `r.categories` can only be missing if the joined read itself failed
+    // to resolve a category `category_id` (`on delete restrict`) guarantees
+    // still exists -- defaulting `categoryKind` to the rule's OWN kind
+    // rather than to a value that would spuriously read as a mismatch.
+    categoryKind: r.categories?.kind ?? r.kind,
+    categoryArchivedAt: r.categories?.archived_at ?? null,
+  }));
+
+  const dueSkips: HandledOccurrence[] = (dueSkipRows ?? []).map((s) => ({
+    ruleId: s.rule_id,
+    occurrenceOn: s.occurrence_on,
+  }));
+  // `.not("recurring_id", "is", null)` above guarantees every row here has
+  // a non-null `recurring_id` -- the `!` asserts what the query already
+  // enforces, matching this file's convention of casting ONCE at the data
+  // boundary rather than re-deriving the same fact inline.
+  const dueRecorded: HandledOccurrence[] = (dueRecordedRows ?? []).map((t) => ({
+    ruleId: t.recurring_id!,
+    occurrenceOn: t.occurred_on,
+  }));
+
+  const { rows: dueRows, olderDropped: dueOlderDropped } = buildDueRows(
+    { rules: dueRuleInputs, skips: dueSkips, recorded: dueRecorded },
+    today,
+  );
+
   const rows: BreakdownRow[] = breakdown ?? [];
   // Same pattern as `rows` above: an explicit type annotation, not an
   // inline `as FlowRow[]` cast. `database.types.ts` already types
@@ -144,6 +295,11 @@ export default async function DashboardPage() {
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-8 p-6">
+      {/* Above the hero total (this task's brief), and rendered
+          unconditionally: `DueList` itself renders nothing at all when
+          `dueRows` is empty, which is most opens of this dashboard -- there
+          is no wrapping empty state to add or omit here. */}
+      <DueList rows={dueRows} olderDropped={dueOlderDropped} today={today} />
       <header>
         {/* An `<h1>`, not a `<p>`: this page had no level-one heading at
             all, so its first heading was CategoryBreakdown's `<h2>` and

@@ -12,7 +12,7 @@
  * is a plain `date` column with no time zone — a LOCAL calendar date — so
  * that shifted window silently counted a 31 July expense into "August" and
  * dropped a 31 August expense from it, while the header still read
- * "August 2026". This is the exact bug class `TransactionForm.tsx`'s
+ * "August 2026". This is the exact bug class `src/lib/today.ts`'s
  * `todayLocalDate()` doc comment exists to warn about (Task 19), on the
  * INPUT side of the same local/UTC round-trip this function was doing on
  * the OUTPUT side. Fixed by never constructing a `Date` for the boundary
