@@ -3145,3 +3145,91 @@ begin;
       'LEAK: alice''s rule (or a copy of it) now exists under bob''s wallet';
   end $$;
 commit;
+
+-- =====================================================================
+-- 0016_editable_transactions: merchant's new UPDATE grant on transactions.
+-- Reuses cccccccc-003, where by this point in the file bob is a genuine
+-- co-member (section 8) and carol is a genuine stranger to it (proven
+-- absent throughout sections 9 and 11) -- real membership state, not a
+-- contrived setup. dddddddd-004 ('Custom Category', kind expense) is
+-- cccccccc-003's own category, created in section 1. ffffffff-006 ('Bob
+-- Bank') is bob's own wallet, created in section 5, reused below as the
+-- wallet_id-reassignment target so the attack is genuinely reachable (bob
+-- really does own a second wallet to try to move the row into).
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  insert into transactions (id, wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on)
+    values ('61616161-0000-0000-0000-000000000001',
+            'cccccccc-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001',
+            'expense', -450, 'USD', 'dddddddd-0000-0000-0000-000000000004', current_date);
+commit;
+
+-- Non-member carol's update must affect zero rows.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"cccccccc-0000-0000-0000-000000000009","email":"carol@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'cccccccc-0000-0000-0000-000000000009'::uuid, 'impersonation failed';
+    assert is_wallet_member('cccccccc-0000-0000-0000-000000000003'::uuid) = false,
+      'test setup broken: carol should not be a member of cccccccc-003';
+  end $$;
+
+  do $$
+  declare n int;
+  begin
+    update transactions set merchant = 'Pwned Merchant'
+      where id = '61616161-0000-0000-0000-000000000001';
+    get diagnostics n = row_count;
+    assert n = 0, 'LEAK: non-member carol updated merchant on alice''s transaction';
+  end $$;
+commit;
+
+-- Co-member bob's update succeeds -- the load-bearing half: a suite that
+-- only proves a stranger is blocked cannot tell a correct policy from one
+-- that denies everybody. Also proves wallet_id stays refused for merchant's
+-- new grant, exactly as section 10 already proved for the pre-existing
+-- grant: the column list is what closed the proven privilege escalation
+-- 0004_rls.sql's own comment describes, and adding merchant to it must not
+-- have widened it any further.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+    assert is_wallet_member('cccccccc-0000-0000-0000-000000000003'::uuid) = true,
+      'test setup broken: bob should be a co-member of cccccccc-003 by now';
+  end $$;
+
+  update transactions set merchant = 'Corner Store'
+    where id = '61616161-0000-0000-0000-000000000001';
+  do $$ begin
+    assert (select merchant from transactions where id = '61616161-0000-0000-0000-000000000001') = 'Corner Store',
+      'PERMISSION BROKEN: co-member bob cannot update merchant on the shared wallet''s transaction';
+  end $$;
+
+  do $$
+  begin
+    update transactions set wallet_id = 'ffffffff-0000-0000-0000-000000000006'
+      where id = '61616161-0000-0000-0000-000000000001';
+    raise exception 'LEAK: co-member bob reassigned a transaction''s wallet_id via the same UPDATE path merchant now uses';
+  exception
+    when insufficient_privilege then
+      null; -- expected, COLUMN PRIVILEGE: authenticated has no UPDATE grant on wallet_id
+  end $$;
+commit;
+
+-- Verify from alice's side that carol's rejected attempt and bob's rejected
+-- wallet_id attempt both left no trace beyond bob's legitimate merchant edit.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select merchant from transactions where id = '61616161-0000-0000-0000-000000000001') = 'Corner Store',
+      'LEAK: merchant changed by carol''s rejected non-member update';
+    assert (select wallet_id from transactions where id = '61616161-0000-0000-0000-000000000001')
+             = 'cccccccc-0000-0000-0000-000000000003'::uuid,
+      'LEAK: wallet_id changed despite bob''s denied UPDATE';
+  end $$;
+commit;
