@@ -5,10 +5,15 @@ import { createClient } from "@/lib/supabase/server";
 import {
   transactionInput,
   transferInput,
+  transactionEditInput,
   precisionError,
   signedAmount,
 } from "@/lib/validation/transaction";
-import type { TransactionInput, TransferInput } from "@/lib/validation/transaction";
+import type {
+  TransactionInput,
+  TransferInput,
+  TransactionEditInput,
+} from "@/lib/validation/transaction";
 import { parseAmountInput, minorUnitFor } from "@/lib/money";
 
 export type TransactionResult = { id: string } | { error: string };
@@ -182,6 +187,139 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
 
   revalidatePath("/", "layout");
   return { id: data.id };
+}
+
+/**
+ * Edits an existing expense or income transaction — Task 4's transfer edit
+ * is a separate action; this one refuses a transfer row outright rather than
+ * silently mis-handling it (see the `kind === "transfer"` guard below).
+ *
+ * `wallet_id` and `kind` are never read from `input` — `transactionEditInput`
+ * (src/lib/validation/transaction.ts) doesn't even have those fields, and
+ * the row's real ones are loaded from the database first, exactly as this
+ * function's own doc comment on that schema requires. That load also
+ * doubles as existence/visibility check: `transactions_member` RLS
+ * (is_wallet_member(wallet_id)) means this SELECT already comes back empty
+ * for a row the caller isn't a member of, so there is no separate membership
+ * check to write here, mirroring `createTransaction`'s wallet lookup.
+ *
+ * Every other check below mirrors `createTransaction`'s, because editing a
+ * transaction must not be able to reach a state creating one couldn't: the
+ * wallet must be active, the category (when one is posted — `category_id` is
+ * nullable here, unlike `createTransaction`'s required field, since clearing
+ * a transaction's category is a legitimate edit) must belong to the same
+ * wallet, not be archived, and match the transaction's kind, and the amount
+ * must be non-zero with the sign `kind` requires.
+ */
+export async function updateTransaction(input: TransactionEditInput): Promise<MutationResult> {
+  const parsed = transactionEditInput.safeParse(input);
+  if (!parsed.success) return { error: parsed.error.issues[0]!.message };
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in" };
+
+  const { id, amount, occurred_on, category_id, note, merchant } = parsed.data;
+
+  // Load the row first to learn its wallet_id and kind — a posted one is
+  // never trusted, and there is no such field on transactionEditInput to
+  // trust in the first place.
+  const { data: existing } = await supabase
+    .from("transactions")
+    .select("wallet_id, kind")
+    .eq("id", id)
+    .single();
+  if (!existing) return { error: "Transaction not found" };
+  const { wallet_id, kind } = existing;
+
+  // A transfer leg reaching here would otherwise sail past every check below
+  // (a transfer's category_id is always null, per 0003's transfer_shape
+  // CHECK, so the category branch is skipped) and die inside signedAmount,
+  // which throws for kind "transfer" — an uncaught throw inside a Server
+  // Function is masked to an opaque digest in production (this file's own
+  // doc comment), not the readable error this module promises. Refusing
+  // explicitly, before any of that, keeps the promise and points the caller
+  // at the right place instead.
+  if (kind === "transfer") {
+    return { error: "This is a transfer — edit it from the transfer, not the transaction" };
+  }
+
+  const { data: wallet } = await supabase
+    .from("wallets")
+    .select("currency_code, archived_at")
+    .eq("id", wallet_id)
+    .single();
+  if (!wallet) return { error: "Wallet not found" };
+  // Distinct from "Wallet not found" (fix precedent: recurring.ts's
+  // recordOccurrence draws the identical distinction, and its own doc
+  // comment explains why conflating "missing" and "archived" into one
+  // message is wrong) — this transaction's wallet is known to exist and
+  // belong to the caller (the SELECT above already proved that), so a
+  // vague "not found" would be actively misleading here, unlike
+  // createTransaction's identically-worded check on a wallet freshly typed
+  // into a picker.
+  if (wallet.archived_at) return { error: "This wallet has been archived." };
+
+  // Unlike createTransaction, category_id may be null here — clearing a
+  // transaction's category is a legitimate edit (transactionEditInput's own
+  // doc comment), so the lookup and its checks are skipped entirely rather
+  // than rejecting a null category the way a create would.
+  if (category_id) {
+    const { data: category } = await supabase
+      .from("categories")
+      .select("kind, archived_at")
+      .eq("id", category_id)
+      .eq("wallet_id", wallet_id)
+      .single();
+    if (!category || category.archived_at) return { error: "Choose a category" };
+    if (category.kind !== kind) {
+      return { error: "That category doesn't match this transaction type" };
+    }
+  }
+
+  const minorUnit = minorUnitFor(wallet.currency_code);
+  const precisionIssue = precisionError(amount, minorUnit, wallet.currency_code);
+  if (precisionIssue) return { error: precisionIssue };
+
+  let magnitude: number;
+  try {
+    magnitude = parseAmountInput(amount, minorUnit);
+  } catch {
+    return { error: "That amount isn't valid" };
+  }
+  if (magnitude === 0) return { error: "Enter an amount greater than zero" };
+
+  // Built field by field, not `{ ...parsed.data }` — the same discipline
+  // setDeletedAt's UPDATE follows below. wallet_id and kind aren't in
+  // parsed.data (the schema never names them) and recurring_occurrence_on
+  // isn't either, but kind IS in `authenticated`'s effective UPDATE grant
+  // (0004_rls.sql, never revoked by 0016) — the schema's omission plus this
+  // explicit, named payload are the only two things keeping it out of the
+  // statement.
+  const { data: updated, error } = await supabase
+    .from("transactions")
+    .update({
+      amount_minor: signedAmount(kind, magnitude),
+      category_id,
+      occurred_on,
+      note,
+      merchant,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .select("id");
+
+  if (error) return { error: "Could not save transaction. Please try again." };
+  // A zero-row UPDATE is not a Postgres error — archiveWallet and
+  // archiveCategory both make this same check, and both exist because this
+  // codebase has shipped the "reported success, database untouched" bug
+  // before.
+  if (!updated || updated.length === 0) return { error: "Transaction not found" };
+
+  revalidatePath("/", "layout");
+  return { ok: true };
 }
 
 /**

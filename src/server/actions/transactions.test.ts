@@ -1,17 +1,160 @@
-import { describe, it, expect } from "vitest";
-// Both imported from src/lib/validation/transaction.ts, not "./transactions"
-// — signedAmount moved there so it can stay a plain synchronous function.
-// transactions.ts carries a file-level "use server" directive (required so
-// createTransaction/createTransfer/softDeleteTransaction/restoreTransaction
-// are importable from a Client Component — Task 19/20), and per
-// node_modules/next/dist/docs/01-app/03-api-reference/01-directives/
-// use-server.md every export from such a file must be an `async function`.
-// A side effect worth stating plainly: this also means importing this test
-// file never reaches src/lib/supabase/server.ts (which throws at import
-// time without NEXT_PUBLIC_SUPABASE_URL/ANON_KEY set) — this suite runs
-// with no env vars and no local Supabase stack required, which the
-// DB-facing Server Actions in transactions.ts themselves cannot do.
+import { describe, it, expect, vi, beforeEach } from "vitest";
+// signedAmount/precisionError are imported from src/lib/validation/
+// transaction.ts, not "./transactions" — signedAmount moved there so it can
+// stay a plain synchronous function; transactions.ts carries a file-level
+// "use server" directive (required so createTransaction/updateTransaction/
+// createTransfer/softDeleteTransaction/restoreTransaction are importable
+// from a Client Component — Task 19/20), and per node_modules/next/dist/
+// docs/01-app/03-api-reference/01-directives/use-server.md every export from
+// such a file must be an `async function`; a plain synchronous helper
+// cannot live there.
+//
+// `updateTransaction` itself IS imported from "./transactions" below, which
+// does reach `@/lib/supabase/server` (-> `next/headers` / `server-only`) at
+// module-evaluation time. `npm test` runs with no `.env.local`, so without
+// intervention that import would throw before this file's tests could even
+// register. `vi.mock` below intercepts `@/lib/supabase/server` before
+// `./transactions` loads — the same technique src/server/actions/
+// {wallets,recurring}.test.ts use — so this suite exercises
+// `updateTransaction`'s real logic against a fake client rather than a
+// stand-in for the action itself.
 import { signedAmount, precisionError } from "@/lib/validation/transaction";
+import { updateTransaction } from "./transactions";
+
+const TXN_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const OWNER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const WALLET_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const CATEGORY_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+
+/**
+ * `vi.hoisted` because `vi.mock` factories are hoisted above this file's own
+ * top-level `const`s (recurring.test.ts's identical note).
+ *
+ * `fromSpy`/`eqSpy` tag EVERY `.from(table)` and `.eq(col, val)` call with
+ * the table it happened on — recurring.test.ts's module comment explains why
+ * this is load-bearing rather than decorative: a shared, table-blind
+ * `eq: () => builder` cannot tell "the UPDATE was scoped to this row's id"
+ * apart from "an .eq call happened somewhere, on some table, with some
+ * column." This suite follows that exact convention rather than inventing a
+ * second one — `updateTransaction`'s own scoping test below only means
+ * anything because `eqSpy` can be asked which table and column a call
+ * actually landed on.
+ */
+const {
+  getUser,
+  txnLookupResult,
+  walletLookupResult,
+  categoryResult,
+  updateResult,
+  updateSpy,
+  fromSpy,
+  eqSpy,
+  revalidatePath,
+} = vi.hoisted(() => ({
+  getUser: vi.fn(),
+  // Shared by updateTransaction's initial `.select("wallet_id, kind")`
+  // lookup — the row it's told to report editing.
+  txnLookupResult: { data: null as { wallet_id: string; kind: string } | null },
+  walletLookupResult: {
+    data: null as { archived_at: string | null; currency_code: string } | null,
+  },
+  categoryResult: { data: null as { kind: string; archived_at: string | null } | null },
+  updateResult: { data: null as { id: string }[] | null, error: null as unknown },
+  updateSpy: vi.fn(),
+  fromSpy: vi.fn(),
+  eqSpy: vi.fn(),
+  revalidatePath: vi.fn(),
+}));
+
+vi.mock("next/cache", () => ({ revalidatePath }));
+
+vi.mock("@/lib/supabase/server", () => ({
+  createClient: async () => ({
+    auth: { getUser },
+    from: (table: string) => {
+      fromSpy(table);
+      if (table === "wallets") {
+        const builder: Record<string, unknown> = {
+          select: () => builder,
+          eq: (col: string, val: unknown) => {
+            eqSpy(table, col, val);
+            return builder;
+          },
+          single: () => builder,
+          then: (resolve: (v: unknown) => void) => resolve(walletLookupResult),
+        };
+        return builder;
+      }
+      if (table === "categories") {
+        const builder: Record<string, unknown> = {
+          select: () => builder,
+          eq: (col: string, val: unknown) => {
+            eqSpy(table, col, val);
+            return builder;
+          },
+          single: () => builder,
+          then: (resolve: (v: unknown) => void) => resolve(categoryResult),
+        };
+        return builder;
+      }
+      if (table !== "transactions") {
+        throw new Error(`unexpected table ${table}`);
+      }
+      // One builder covers both of updateTransaction's `transactions`
+      // calls — the initial SELECT lookup (mode stays "lookup") and the
+      // UPDATE (mode switches once `.update(...)` is called) — the same
+      // mode-switching shape recurring.test.ts's shared builder uses.
+      let mode: "lookup" | "update" = "lookup";
+      const builder: Record<string, unknown> = {
+        select: () => builder,
+        update: (payload: unknown) => {
+          mode = "update";
+          updateSpy(payload);
+          return builder;
+        },
+        eq: (col: string, val: unknown) => {
+          eqSpy(table, col, val);
+          return builder;
+        },
+        single: () => builder,
+        then: (resolve: (v: unknown) => void) =>
+          resolve(mode === "update" ? updateResult : txnLookupResult),
+      };
+      return builder;
+    },
+  }),
+}));
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  getUser.mockResolvedValue({ data: { user: { id: OWNER_ID } } });
+  txnLookupResult.data = { wallet_id: WALLET_ID, kind: "expense" };
+  walletLookupResult.data = { archived_at: null, currency_code: "SGD" };
+  categoryResult.data = { kind: "expense", archived_at: null };
+  updateResult.data = [{ id: TXN_ID }];
+  updateResult.error = null;
+});
+
+function edit(
+  overrides: Partial<{
+    id: string;
+    amount: string;
+    occurred_on: string;
+    category_id: string | null;
+    note: string | null;
+    merchant: string | null;
+  }> = {},
+) {
+  return {
+    id: TXN_ID,
+    amount: "42.50",
+    occurred_on: "2026-07-01",
+    category_id: CATEGORY_ID,
+    note: null,
+    merchant: null,
+    ...overrides,
+  };
+}
 
 describe("signedAmount", () => {
   it("makes an expense negative", () => {
@@ -82,5 +225,199 @@ describe("precisionError (src/lib/validation/transaction.ts)", () => {
 
   it("leaves a malformed amount for parseAmountInput's own rejection", () => {
     expect(precisionError("12.34.56", 2, "USD")).toBeUndefined();
+  });
+});
+
+describe("updateTransaction", () => {
+  it("never writes wallet_id, kind, or recurring_occurrence_on", async () => {
+    // The grant excludes all three. wallet_id would let a member of two
+    // wallets move a row out of one (0004_rls.sql:83's own reasoning);
+    // recurring_occurrence_on is an occurrence's identity, not user data.
+    await updateTransaction(edit());
+
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    const payload = updateSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("wallet_id");
+    expect(payload).not.toHaveProperty("kind");
+    expect(payload).not.toHaveProperty("recurring_occurrence_on");
+  });
+
+  /**
+   * The brief this task was written from asserted this with a bare
+   * `expect(eqSpy).toHaveBeenCalledWith("id", TXN_ID)` — a call shape this
+   * suite's `eqSpy` never produces (it's always `(table, col, val)`, per the
+   * module comment above), and even adapted to three arguments that
+   * assertion alone would NOT discriminate step 5's mutation: the initial
+   * `.select("wallet_id, kind").eq("id", id)` lookup already calls
+   * `eqSpy("transactions", "id", TXN_ID)` once, before the UPDATE is ever
+   * built, so `toHaveBeenCalledWith` stays true even with the UPDATE's own
+   * `.eq("id", id)` deleted. Counting the calls (mirroring recurring.test.ts's
+   * "scopes both the initial lookup and the UPDATE itself to this rule's id")
+   * is what actually proves the UPDATE itself carries the filter — the count
+   * drops from two to one when it's removed. See task-3-report.md for the
+   * before/after output this test's design is proven against.
+   */
+  it("scopes both the initial lookup and the UPDATE itself to the row's own id", async () => {
+    await updateTransaction(edit());
+
+    const idCalls = eqSpy.mock.calls.filter(
+      ([table, col, val]) => table === "transactions" && col === "id" && val === TXN_ID,
+    );
+    expect(idCalls).toHaveLength(2);
+  });
+
+  it("refuses an archived wallet", async () => {
+    walletLookupResult.data = { archived_at: "2026-06-01T00:00:00Z", currency_code: "SGD" };
+
+    const result = await updateTransaction(edit());
+
+    if (!("error" in result)) throw new Error("expected an error result");
+    expect(result.error).toMatch(/archived/i);
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses a category whose kind does not match", async () => {
+    categoryResult.data = { kind: "income", archived_at: null };
+
+    const result = await updateTransaction(edit());
+
+    if (!("error" in result)) throw new Error("expected an error result");
+    expect(result.error).toMatch(/doesn't match/i);
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("reports not found rather than success when the UPDATE matches no row", async () => {
+    updateResult.data = [];
+
+    expect(await updateTransaction(edit())).toEqual({ error: "Transaction not found" });
+  });
+
+  it("returns Transaction not found when the row can't be looked up (RLS or a bad id)", async () => {
+    txnLookupResult.data = null;
+
+    const result = await updateTransaction(edit());
+
+    expect(result).toEqual({ error: "Transaction not found" });
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns an error when there is no session", async () => {
+    getUser.mockResolvedValue({ data: { user: null } });
+
+    const result = await updateTransaction(edit());
+
+    expect(result).toEqual({ error: "Not signed in" });
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns Wallet not found when the wallet lookup itself fails", async () => {
+    walletLookupResult.data = null;
+
+    const result = await updateTransaction(edit());
+
+    expect(result).toEqual({ error: "Wallet not found" });
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  /**
+   * `kind` never appears on `transactionEditInput` — it always comes from
+   * the loaded row (see `updateTransaction`'s own doc comment) — so this
+   * exercises the ONLY way a transfer leg could reach this action: an id
+   * that happens to belong to one. Without an explicit guard, a transfer's
+   * always-null category_id would skip the category branch entirely and the
+   * call would reach `signedAmount("transfer", ...)`, which throws — an
+   * uncaught throw inside a Server Function is masked to an opaque digest in
+   * production, not the readable `{ error }` this module promises.
+   */
+  it("refuses to edit a transfer leg through this action", async () => {
+    txnLookupResult.data = { wallet_id: WALLET_ID, kind: "transfer" };
+
+    const result = await updateTransaction(edit({ category_id: null }));
+
+    if (!("error" in result)) throw new Error("expected an error result");
+    expect(result.error).toBeTruthy();
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("allows clearing the category to null without a category lookup", async () => {
+    const result = await updateTransaction(edit({ category_id: null }));
+
+    expect(result).toEqual({ ok: true });
+    expect(fromSpy).not.toHaveBeenCalledWith("categories");
+    const payload = updateSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.category_id).toBeNull();
+  });
+
+  it("signs an expense negative", async () => {
+    txnLookupResult.data = { wallet_id: WALLET_ID, kind: "expense" };
+
+    await updateTransaction(edit({ amount: "12.50" }));
+
+    const payload = updateSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.amount_minor).toBe(-1250);
+  });
+
+  it("signs an income positive", async () => {
+    txnLookupResult.data = { wallet_id: WALLET_ID, kind: "income" };
+    categoryResult.data = { kind: "income", archived_at: null };
+
+    await updateTransaction(edit({ amount: "12.50" }));
+
+    const payload = updateSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.amount_minor).toBe(1250);
+  });
+
+  it("writes amount, occurred_on, category_id, note and merchant from the parsed input", async () => {
+    await updateTransaction(edit({ note: "  Coffee  ", merchant: "Starbucks" }));
+
+    const payload = updateSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      amount_minor: -4250,
+      category_id: CATEGORY_ID,
+      occurred_on: "2026-07-01",
+      note: "Coffee",
+      merchant: "Starbucks",
+    });
+  });
+
+  it("rejects a zero amount", async () => {
+    const result = await updateTransaction(edit({ amount: "0" }));
+
+    if (!("error" in result)) throw new Error("expected an error result");
+    expect(result.error).toMatch(/greater than zero/i);
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects a fraction the currency cannot hold, rather than truncating it", async () => {
+    walletLookupResult.data = { archived_at: null, currency_code: "JPY" };
+
+    const result = await updateTransaction(edit({ amount: "12.999" }));
+
+    if (!("error" in result)) throw new Error("expected an error result");
+    expect(result.error).toMatch(/no decimal places/i);
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns a validation error for malformed input, never touching the database", async () => {
+    const result = await updateTransaction(edit({ amount: "" }));
+
+    if (!("error" in result)) throw new Error("expected an error result");
+    expect(result.error).toBeTruthy();
+    expect(fromSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns an error, never throws, when the UPDATE itself fails", async () => {
+    updateResult.data = null;
+    updateResult.error = { message: "boom", code: "XX000" };
+
+    const result = await updateTransaction(edit());
+
+    expect(result).toEqual({ error: "Could not save transaction. Please try again." });
+  });
+
+  it("revalidates the layout on success", async () => {
+    await updateTransaction(edit());
+
+    expect(revalidatePath).toHaveBeenCalledWith("/", "layout");
   });
 });
