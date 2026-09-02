@@ -161,9 +161,25 @@ const CHIP_BORDER =
  * `WalletForm`'s own doc comment on its hidden `kind`/`currency_code`
  * inputs is real: read before adding any `<select>`/radio here, per this
  * task's brief. But the bug it works around is specific to `<form
- * action={fn}>` (traced in that comment to `requestFormReset$1`, gated on
- * `"function" === typeof action` read off the `<form>` element's own
- * `action` prop) — and this component's doc comment ABOVE this one already
+ * action={fn}>`.
+ *
+ * That mechanism is NOT `WalletForm`'s claim to make, and an earlier
+ * version of this paragraph wrongly attributed it there (fix round 1,
+ * Minor 6). `WalletForm.tsx`'s comment explicitly declines it — "What's
+ * NOT known: the exact mechanism… treat it as a hypothesis, not fact." The
+ * `requestFormReset$1` trace, and the `"function" === typeof action` gate
+ * read off the `<form>` element's own `action` prop, come from THIS file's
+ * own pre-existing reasoning: the "Why this form does NOT need
+ * onboarding-form.tsx's hidden-input / ref-correction pattern" section at
+ * the top of this doc comment, which read
+ * `node_modules/react-dom/cjs/react-dom-client.development.js` directly
+ * (`startHostTransition` -> `requestFormReset$1` ->
+ * `HTMLFormElement.prototype.reset()`, and `extractEvents$1` /
+ * `coerceFormActionProp` for where `action` is read from). The conclusion
+ * below is unchanged and was independently re-verified against that same
+ * source in review — only the citation was wrong.
+ *
+ * And this component's doc comment ABOVE this one already
  * establishes that this `<form>` has no `action` prop at all in either mode:
  * submission is a plain `onSubmit` handler calling `updateTransaction`/
  * `updateTransfer` directly inside `useTransition`, exactly like the create
@@ -207,6 +223,11 @@ export function TransactionForm(
   const router = useRouter();
   const { wallets, categories } = props;
   const edit = props.mode === "edit" ? props.edit : undefined;
+  // A plain boolean rather than `edit` itself for the mount-focus effect's
+  // dependency below: `edit` is an object prop and could arrive as a fresh
+  // reference on any parent re-render, which would re-run that effect and
+  // yank focus back to the amount mid-edit.
+  const isEditMode = props.mode === "edit";
   // Only meaningful in create mode — see the props union above. Read only
   // from branches already known (by that same union) to be in create mode.
   const defaultWalletId = props.mode === "edit" ? undefined : props.defaultWalletId;
@@ -270,14 +291,27 @@ export function TransactionForm(
   // keyboard never appears" requirement), so the focus target is this
   // wrapping group div instead: tabIndex={-1} makes it programmatically
   // focusable without adding a new stop to the NORMAL Tab order (the
-  // keypad's own buttons are already independently tabbable). Empty deps:
-  // this must fire once on mount only, not every time `kind` or anything
-  // else changes later — re-focusing here after the user has deliberately
-  // moved focus elsewhere (e.g. into the category search box) would be a
-  // regression, not a fix.
+  // keypad's own buttons are already independently tabbable). Fires once
+  // per mount, not every time `kind` or anything else changes later —
+  // re-focusing here after the user has deliberately moved focus elsewhere
+  // (e.g. into the category search box) would be a regression, not a fix;
+  // `isEditMode` is the only dep and is fixed for a mounted form, so the
+  // effect still runs exactly once.
+  //
+  // CREATE MODE ONLY (fix round 1, Minor 3). The spec sentence above is
+  // about standing at a till on the ADD screen, and edit mode does not meet
+  // either half of it: the amount is seeded, not zeroed, and the focus
+  // target carries tabIndex={-1} with no FOCUS_RING, so nothing on screen
+  // shows it is focused. `appendDigit` is a no-op on a seeded
+  // full-precision amount, so a digit press looks like nothing happening —
+  // but `handleAmountKeyDown`'s Backspace branch is NOT a no-op: one press
+  // silently turns 12.50 into 12.5 on a control the user cannot see has
+  // focus. Landing on <body> instead costs an edit-mode keyboard user one
+  // Tab and removes that.
   useEffect(() => {
+    if (isEditMode) return;
     amountGroupRef.current?.focus();
-  }, []);
+  }, [isEditMode]);
 
   // Invariant: page.tsx only renders this component when `wallets.length
   // >= 1` (it redirects to /onboarding otherwise), and `walletId` only ever
@@ -784,7 +818,13 @@ export function TransactionForm(
           `maxLength` matches the column's own CHECK (`length(note) <= 280`)
           and the zod schema's `.max(280)`, so the limit is enforced at the
           input, at the schema and in Postgres rather than only at the last
-          of the three. */}
+          of the three.
+
+          The placeholder is "Description", not the "Merchant or description"
+          it used to be (fix round 1, Minor 2): that wording predates this
+          plan's Merchant column, and now sits directly above the Merchant
+          field below — two controls both telling the user to put the
+          merchant in them. */}
       <label className="flex flex-col gap-1">
         <span className="text-sm" style={{ color: "var(--ink-2)" }}>
           Note
@@ -793,7 +833,7 @@ export function TransactionForm(
           value={note}
           onChange={(e) => setNote(e.target.value)}
           maxLength={280}
-          placeholder="Merchant or description"
+          placeholder="Description"
           autoComplete="off"
           aria-describedby={errorId}
           className={`rounded-md border px-3 py-2 ${FOCUS_RING}`}

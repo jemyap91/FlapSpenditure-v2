@@ -176,6 +176,36 @@ describe("TransactionForm — edit mode (Task 6)", () => {
     merchant: "",
   };
 
+  /**
+   * Fix round 1, Minor 3. The mount effect that focuses the amount group is
+   * create-mode only now. Spec §5.1's "opens focused and zeroed" is about
+   * standing at a till on the ADD screen; in edit mode the amount is seeded
+   * rather than zeroed, and the focus target has `tabIndex={-1}` and no
+   * `FOCUS_RING`, so nothing on screen shows it is focused. `appendDigit` is
+   * a no-op on a seeded full-precision amount so a digit press looks inert,
+   * but `handleAmountKeyDown`'s Backspace branch is not: one press silently
+   * turns 12.50 into 12.5 on a control the user cannot see has focus.
+   *
+   * Both halves are asserted TOGETHER, in one test, because either alone is
+   * satisfiable by the wrong code: deleting the effect entirely satisfies the
+   * edit half, and reverting the `isEditMode` guard satisfies the create
+   * half. Only the pair pins "still on for create, off for edit."
+   */
+  it("focuses the amount on mount when creating, but not when editing", () => {
+    const created = render(
+      <TransactionForm wallets={wallets} categories={categories} defaultWalletId={WALLET_A} />,
+    );
+    expect(screen.getByRole("group", { name: "Amount" })).toHaveFocus();
+    created.unmount();
+
+    render(<TransactionForm mode="edit" wallets={wallets} categories={categories} edit={editTxnSeed} />);
+    expect(screen.getByRole("group", { name: "Amount" })).not.toHaveFocus();
+    // Nothing else grabbed it either — focus stays where a page load leaves
+    // it, so the first Tab goes to the first control rather than into the
+    // middle of the form.
+    expect(document.body).toHaveFocus();
+  });
+
   it("seeds every field from the transaction being edited", () => {
     render(<TransactionForm mode="edit" wallets={wallets} categories={categories} edit={editTxnSeed} />);
 
