@@ -26,6 +26,13 @@ const OWNER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const WALLET_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const CATEGORY_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const TRANSFER_ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+// The category the row being edited ALREADY carries, deliberately distinct
+// from CATEGORY_ID (what `edit()` posts by default). Fix round 1, IMPORTANT
+// 1: `updateTransaction` now exempts an UNCHANGED archived category from the
+// archived check, so "the posted category" and "the row's current category"
+// stopped being interchangeable and this suite can no longer use one id for
+// both without making that exemption untestable.
+const ROW_CATEGORY_ID = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 
 /**
  * `vi.hoisted` because `vi.mock` factories are hoisted above this file's own
@@ -81,9 +88,14 @@ const {
   revalidatePath,
 } = vi.hoisted(() => ({
   getUser: vi.fn(),
-  // Shared by updateTransaction's initial `.select("wallet_id, kind")`
-  // lookup — the row it's told to report editing.
-  txnLookupResult: { data: null as { wallet_id: string; kind: string } | null },
+  // Shared by updateTransaction's initial
+  // `.select("wallet_id, kind, category_id")` lookup — the row it's told to
+  // report editing. `category_id` is the row's CURRENT category (fix round
+  // 1, IMPORTANT 1), which is what the archived-category exemption is keyed
+  // on; it is never what the edit posts.
+  txnLookupResult: {
+    data: null as { wallet_id: string; kind: string; category_id: string | null } | null,
+  },
   walletLookupResult: {
     data: null as { archived_at: string | null; currency_code: string } | null,
   },
@@ -198,7 +210,11 @@ vi.mock("@/lib/supabase/server", () => ({
 beforeEach(() => {
   vi.clearAllMocks();
   getUser.mockResolvedValue({ data: { user: { id: OWNER_ID } } });
-  txnLookupResult.data = { wallet_id: WALLET_ID, kind: "expense" };
+  // The row's own category is ROW_CATEGORY_ID, not the CATEGORY_ID `edit()`
+  // posts — so by default every test below exercises the "this edit CHOOSES
+  // a category" path, and a test wanting the "KEEPS its own" path has to say
+  // so explicitly.
+  txnLookupResult.data = { wallet_id: WALLET_ID, kind: "expense", category_id: ROW_CATEGORY_ID };
   walletLookupResult.data = { archived_at: null, currency_code: "SGD" };
   categoryResult.data = { kind: "expense", archived_at: null };
   legsLookupResult.data = [
@@ -447,13 +463,82 @@ describe("updateTransaction", () => {
     expect(updateSpy).not.toHaveBeenCalled();
   });
 
+  /**
+   * Fix round 1, IMPORTANT 1. The archived check is now conditional, so this
+   * test's fixture had to become explicit about WHICH archived category is
+   * posted: the row's own current category is `ROW_CATEGORY_ID` and the edit
+   * posts `CATEGORY_ID`, so this is a NEWLY CHOSEN archived category — the
+   * case that is still refused. (Before this round the row carried no
+   * `category_id` at all, so the two were not distinguishable here.)
+   *
+   * The production change that breaks this test: writing the exemption as
+   * "skip the archived check whenever the row has any category" — i.e.
+   * `if (category.archived_at && !currentCategoryId)` instead of
+   * `if (category.archived_at && category_id !== currentCategoryId)`. Under
+   * that version this edit is accepted and this test fails. Deleting the
+   * archived check outright breaks it too.
+   */
   it("rejects an archived category, even if its kind matches", async () => {
+    txnLookupResult.data = { wallet_id: WALLET_ID, kind: "expense", category_id: ROW_CATEGORY_ID };
     categoryResult.data = { kind: "expense", archived_at: "2026-01-01T00:00:00Z" };
 
-    const result = await updateTransaction(edit());
+    const result = await updateTransaction(edit({ category_id: CATEGORY_ID }));
 
     if (!("error" in result)) throw new Error("expected an error result");
     expect(result.error).toMatch(/choose a category/i);
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Fix round 1, IMPORTANT 1: an archived category made a transaction
+   * permanently unsavable. Archiving "Groceries" and then opening an old
+   * Groceries expense to fix its NOTE hit `"Choose a category"` while a
+   * category was visibly chosen and preselected (the edit page deliberately
+   * merges a row's own archived category into the picker), with no way to
+   * clear the selection — `CategoryPicker`'s `onChange` is
+   * `(c: Category) => void`. Ruling: an edit may KEEP an archived category
+   * it already has; it may not newly CHOOSE one.
+   *
+   * The production change that breaks this test: restoring the unconditional
+   * `if (!category || category.archived_at) return { error: "Choose a
+   * category" }`, or dropping `category_id` back out of the `existing`
+   * select so `currentCategoryId` is always undefined and the equality can
+   * never hold. Either one turns this back into a rejection.
+   *
+   * `updateSpy`'s payload is asserted, not just `{ ok: true }` — an
+   * exemption that let the call through but silently wrote `null` (or the
+   * row's old value from the lookup rather than the posted one) would be a
+   * different bug wearing the same result object.
+   */
+  it("accepts an edit that re-submits the row's OWN archived category unchanged", async () => {
+    txnLookupResult.data = { wallet_id: WALLET_ID, kind: "expense", category_id: CATEGORY_ID };
+    categoryResult.data = { kind: "expense", archived_at: "2026-01-01T00:00:00Z" };
+
+    const result = await updateTransaction(edit({ category_id: CATEGORY_ID, note: "fixed a typo" }));
+
+    expect(result).toEqual({ ok: true });
+    const payload = updateSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload).toMatchObject({ category_id: CATEGORY_ID, note: "fixed a typo" });
+  });
+
+  /**
+   * The kind check stays UNCONDITIONAL through the exemption (the controller
+   * ruling is explicit that only the archived check is exempted). An
+   * unchanged category always matched this row's kind at create time and
+   * `kind` is not editable, so this only fires when the CATEGORY's own kind
+   * changed underneath the row — cheap to keep, and the case it closes is
+   * real. Breaks if the exemption is widened to skip the whole category
+   * block, or if the kind check is moved inside the `!keepsItsOwnCategory`
+   * branch.
+   */
+  it("still refuses an unchanged category whose own kind has since changed", async () => {
+    txnLookupResult.data = { wallet_id: WALLET_ID, kind: "expense", category_id: CATEGORY_ID };
+    categoryResult.data = { kind: "income", archived_at: "2026-01-01T00:00:00Z" };
+
+    const result = await updateTransaction(edit({ category_id: CATEGORY_ID }));
+
+    if (!("error" in result)) throw new Error("expected an error result");
+    expect(result.error).toMatch(/doesn't match/i);
     expect(updateSpy).not.toHaveBeenCalled();
   });
 
@@ -501,7 +586,10 @@ describe("updateTransaction", () => {
    * production, not the readable `{ error }` this module promises.
    */
   it("refuses to edit a transfer leg through this action", async () => {
-    txnLookupResult.data = { wallet_id: WALLET_ID, kind: "transfer" };
+    // A transfer leg's category_id is always null (0003's transfer_shape
+    // CHECK) — stated here rather than defaulted, since the lookup now
+    // selects the column.
+    txnLookupResult.data = { wallet_id: WALLET_ID, kind: "transfer", category_id: null };
 
     const result = await updateTransaction(edit({ category_id: null }));
 
@@ -528,7 +616,7 @@ describe("updateTransaction", () => {
    * one exercising `kind: "income"` and is kept for that reason.
    */
   it("signs an income positive", async () => {
-    txnLookupResult.data = { wallet_id: WALLET_ID, kind: "income" };
+    txnLookupResult.data = { wallet_id: WALLET_ID, kind: "income", category_id: ROW_CATEGORY_ID };
     categoryResult.data = { kind: "income", archived_at: null };
 
     await updateTransaction(edit({ amount: "12.50" }));

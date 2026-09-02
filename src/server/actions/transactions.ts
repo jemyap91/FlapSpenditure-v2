@@ -217,8 +217,11 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
  * wallet must be active, the category (when one is posted — `category_id` is
  * nullable here, unlike `createTransaction`'s required field, since clearing
  * a transaction's category is a legitimate edit) must belong to the same
- * wallet, not be archived, and match the transaction's kind, and the amount
- * must be non-zero with the sign `kind` requires.
+ * wallet and match the transaction's kind, and the amount must be non-zero
+ * with the sign `kind` requires. The ONE check that is not a straight mirror
+ * is the archived-category one — see its own comment below for why keeping
+ * an archived category a row already carries is not a state a create could
+ * not reach.
  */
 export async function updateTransaction(input: TransactionEditInput): Promise<MutationResult> {
   const parsed = transactionEditInput.safeParse(input);
@@ -232,9 +235,13 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
 
   const { id, amount, occurred_on, category_id, note, merchant } = parsed.data;
 
-  // Load the row first to learn its wallet_id and kind — a posted one is
-  // never trusted, and there is no such field on transactionEditInput to
-  // trust in the first place.
+  // Load the row first to learn its wallet_id, kind and CURRENT category —
+  // a posted wallet_id/kind is never trusted, and there is no such field on
+  // transactionEditInput to trust in the first place. `category_id` is read
+  // here purely to tell "this edit KEEPS the category the row already had"
+  // apart from "this edit CHOOSES a category," which is the whole of the
+  // archived-category carve-out below; the value written is always the
+  // POSTED one, never this.
   //
   // `.is("deleted_at", null)` here (and on the UPDATE below) is a deliberate
   // choice, not an oversight: a soft-deleted row is not offered anywhere in
@@ -246,12 +253,12 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
   // instead of a stray write to a row the user believes is gone.
   const { data: existing } = await supabase
     .from("transactions")
-    .select("wallet_id, kind")
+    .select("wallet_id, kind, category_id")
     .eq("id", id)
     .is("deleted_at", null)
     .single();
   if (!existing) return { error: "Transaction not found" };
-  const { wallet_id, kind } = existing;
+  const { wallet_id, kind, category_id: currentCategoryId } = existing;
 
   // A transfer leg reaching here would otherwise sail past every check below
   // (a transfer's category_id is always null, per 0003's transfer_shape
@@ -292,7 +299,38 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
       .eq("id", category_id)
       .eq("wallet_id", wallet_id)
       .single();
-    if (!category || category.archived_at) return { error: "Choose a category" };
+    if (!category) return { error: "Choose a category" };
+
+    // An edit may KEEP an archived category it already has; it may not
+    // newly CHOOSE one.
+    //
+    // Spec §3.3 mirrors `createTransaction`'s checks here so an edit cannot
+    // reach a state a create could not. A row that already carries an
+    // archived category is not such a state: it was filed legitimately
+    // while that category was still active, and the category was archived
+    // afterwards. Refusing to re-accept it makes every OTHER field of that
+    // row — its note, its merchant, its date, its amount — uneditable
+    // forever, which contradicts spec §1.1 ("let a user correct any
+    // transaction they have already recorded"). And there is no escape
+    // hatch in the UI: CategoryPicker's `onChange` is `(c: Category) =>
+    // void`, so the user cannot clear the selection to get past this —
+    // their only way to save an unrelated field would be to silently
+    // re-categorise the transaction.
+    //
+    // Deliberately narrow. It is keyed on the POSTED id equalling the id
+    // already on the row, NOT on "the row has some category" — a different
+    // archived category is still refused (`createTransaction`'s own
+    // archived-category comment above has the reasoning that still
+    // applies to newly choosing one). And it exempts ONLY the archived
+    // check: the same-wallet filter on the lookup above and the kind check
+    // below both stay unconditional. Keeping those costs nothing for an
+    // unchanged category — it always matched kind and wallet at create
+    // time, and neither `kind` nor `wallet_id` is editable — while still
+    // closing the case of a category whose own kind changed underneath
+    // this row.
+    const keepsItsOwnCategory = category_id === currentCategoryId;
+    if (category.archived_at && !keepsItsOwnCategory) return { error: "Choose a category" };
+
     if (category.kind !== kind) {
       return { error: "That category doesn't match this transaction type" };
     }

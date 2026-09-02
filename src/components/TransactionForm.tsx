@@ -458,11 +458,15 @@ export function TransactionForm(
             : await updateTransaction({
                 id: edit.id,
                 amount,
-                // `category` seeds from `edit.categoryId` and CategoryPicker
-                // can change or clear it — `category_id` is nullable on
-                // `transactionEditInput` (clearing a category is a
-                // legitimate edit, unlike creation's required category), so
-                // `null` here is a real, intentional value, not a bug.
+                // `category` seeds from `edit.categoryId`, and CategoryPicker
+                // can CHANGE it — it cannot clear it (`onChange` is
+                // `(c: Category) => void`; there is no control that deselects).
+                // `null` here is therefore reachable only for a row that
+                // already had no category and was never given one. It is
+                // still a real, intentional value rather than a bug:
+                // `category_id` is nullable on `transactionEditInput`, unlike
+                // creation's required category, so an uncategorised row stays
+                // uncategorised through an edit instead of being refused.
                 category_id: category?.id ?? null,
                 occurred_on: date,
                 note,
