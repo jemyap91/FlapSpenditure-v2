@@ -26,6 +26,12 @@ const OWNER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const WALLET_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const CATEGORY_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const TRANSFER_ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+// A transfer's two legs live in two DIFFERENT wallets — `WALLET_ID` is the
+// outgoing leg's, `WALLET_IN_ID` the incoming leg's. Distinct ids (task 8,
+// item 3) so a check written against only one leg's wallet is visible:
+// with one shared id, "checks the out leg" and "checks both" are the same
+// test.
+const WALLET_IN_ID = "99999999-9999-4999-8999-999999999999";
 // The category the row being edited ALREADY carries, deliberately distinct
 // from CATEGORY_ID (what `edit()` posts by default). Fix round 1, IMPORTANT
 // 1: `updateTransaction` now exempts an UNCHANGED archived category from the
@@ -79,6 +85,8 @@ const {
   walletLookupResult,
   categoryResult,
   legsLookupResult,
+  legWalletsResult,
+  inSpy,
   insertResult,
   insertSpy,
   updateResult,
@@ -107,7 +115,23 @@ const {
   // single object. amount_minor's sign is what tells the outgoing leg from
   // the incoming one (fix round 1: each leg is now parsed against its OWN
   // currency, since amount_out/amount_in replaced the single amount field).
-  legsLookupResult: { data: null as { amount_minor: number; currency_code: string }[] | null },
+  legsLookupResult: {
+    data: null as { wallet_id: string; amount_minor: number; currency_code: string }[] | null,
+  },
+  // updateTransfer's archived-wallet check (task 8, item 3): the two legs'
+  // wallets, looked up with `.in("id", [...])` rather than the `.eq(...)
+  // .single()` `walletLookupResult` backs. Kept as its OWN canned result,
+  // and the wallets builder below tells the two apart by whether `.in` was
+  // called on the chain — the same `usedSingle` technique the transactions
+  // builder already uses, for the same reason: one shared value cannot be
+  // both a single object and an array.
+  legWalletsResult: { data: null as { id: string; archived_at: string | null }[] | null },
+  // Tags every `.in(col, vals)` call with its table, exactly as `eqSpy`/
+  // `isSpy` do for `.eq`/`.is`. Without it, "the archived check looked at
+  // BOTH legs' wallets" would be unobservable — a check that looked up only
+  // the outgoing leg's wallet id would be indistinguishable from a correct
+  // one for any test that only reads the returned error.
+  inSpy: vi.fn(),
   // createTransaction's INSERT (task 8, item 1). Kept separate from
   // `updateResult` rather than shared: `createTransaction` finishes with
   // `.select("id").single()`, so it expects ONE object back, while
@@ -136,14 +160,26 @@ vi.mock("@/lib/supabase/server", () => ({
     from: (table: string) => {
       fromSpy(table);
       if (table === "wallets") {
+        // Whether `.in(...)` was used on THIS chain distinguishes
+        // updateTransfer's two-leg archived-wallet lookup (task 8, item 3)
+        // from updateTransaction/createTransaction's single-wallet
+        // `.eq(...).single()` — an array result vs one object, so one canned
+        // value cannot serve both.
+        let usedIn = false;
         const builder: Record<string, unknown> = {
           select: () => builder,
           eq: (col: string, val: unknown) => {
             eqSpy(table, col, val);
             return builder;
           },
+          in: (col: string, vals: unknown) => {
+            inSpy(table, col, vals);
+            usedIn = true;
+            return builder;
+          },
           single: () => builder,
-          then: (resolve: (v: unknown) => void) => resolve(walletLookupResult),
+          then: (resolve: (v: unknown) => void) =>
+            resolve(usedIn ? legWalletsResult : walletLookupResult),
         };
         return builder;
       }
@@ -242,8 +278,14 @@ beforeEach(() => {
   walletLookupResult.data = { archived_at: null, currency_code: "SGD" };
   categoryResult.data = { kind: "expense", archived_at: null };
   legsLookupResult.data = [
-    { amount_minor: -4250, currency_code: "SGD" },
-    { amount_minor: 4250, currency_code: "SGD" },
+    { wallet_id: WALLET_ID, amount_minor: -4250, currency_code: "SGD" },
+    { wallet_id: WALLET_IN_ID, amount_minor: 4250, currency_code: "SGD" },
+  ];
+  // Both legs' wallets active by default, so the archived cases below have
+  // to opt in — the same discipline the txn/category fixtures follow.
+  legWalletsResult.data = [
+    { id: WALLET_ID, archived_at: null },
+    { id: WALLET_IN_ID, archived_at: null },
   ];
   updateResult.data = [{ id: TXN_ID }];
   updateResult.error = null;
@@ -857,8 +899,8 @@ describe("updateTransfer", () => {
    */
   it("carries two different amounts through to the RPC for a cross-currency edit", async () => {
     legsLookupResult.data = [
-      { amount_minor: -10000, currency_code: "USD" },
-      { amount_minor: 920000, currency_code: "JPY" },
+      { wallet_id: WALLET_ID, amount_minor: -10000, currency_code: "USD" },
+      { wallet_id: WALLET_IN_ID, amount_minor: 920000, currency_code: "JPY" },
     ];
     updateResult.data = [
       { id: "leg-out", amount_minor: -12000 },
@@ -954,12 +996,86 @@ describe("updateTransfer", () => {
    * all), so both are asserted.
    */
   it("reports not found when the pre-flight lookup itself finds an incomplete pair", async () => {
-    legsLookupResult.data = [{ amount_minor: -4250, currency_code: "SGD" }];
+    legsLookupResult.data = [{ wallet_id: WALLET_ID, amount_minor: -4250, currency_code: "SGD" }];
 
     const result = await updateTransfer(transferEdit());
 
     if (!("error" in result)) throw new Error("expected an error result");
     expect(result.error).toMatch(/not found|both/i);
+    expect(rpcSpy).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Task 8, item 3. `updateTransaction` has always refused an archived
+   * wallet and `createTransfer` has always refused archived endpoints, but
+   * `updateTransfer` had neither check — so a user who archived a closed
+   * savings account could no longer edit an ordinary expense in it while
+   * still being able to change the amount of a transfer LEG into it. Money
+   * moving into an archived wallet's balance through the one path that
+   * skipped the check.
+   *
+   * The two directions are asserted SEPARATELY and both are needed: a check
+   * written against only `outLeg`'s wallet passes the first and fails the
+   * second, and vice versa. That is only visible because the two legs live
+   * in different wallets (`WALLET_ID` / `WALLET_IN_ID`) — with one shared
+   * wallet id, either half-check would pass both.
+   */
+  it("refuses the edit when the OUTGOING leg's wallet is archived", async () => {
+    legWalletsResult.data = [
+      { id: WALLET_ID, archived_at: "2026-01-01T00:00:00Z" },
+      { id: WALLET_IN_ID, archived_at: null },
+    ];
+
+    const result = await updateTransfer(transferEdit());
+
+    expect(result).toEqual({ error: "This wallet has been archived." });
+    expect(rpcSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses the edit when the INCOMING leg's wallet is archived", async () => {
+    legWalletsResult.data = [
+      { id: WALLET_ID, archived_at: null },
+      { id: WALLET_IN_ID, archived_at: "2026-01-01T00:00:00Z" },
+    ];
+
+    const result = await updateTransfer(transferEdit());
+
+    expect(result).toEqual({ error: "This wallet has been archived." });
+    expect(rpcSpy).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The control, and the reason the two tests above mean anything: with both
+   * wallets active the edit must still go through. A guard written to refuse
+   * every transfer edit would pass both archived tests and look identical to
+   * a correct one without this.
+   *
+   * The lookup itself is asserted on `inSpy` — the ids the check actually
+   * asked about, on the `wallets` table — because "an error came back" cannot
+   * distinguish a check that looked at both legs from one that looked at the
+   * outgoing leg twice.
+   */
+  it("looks BOTH legs' wallets up, and lets the edit through when both are active", async () => {
+    const result = await updateTransfer(transferEdit());
+
+    expect(result).toEqual({ ok: true });
+    expect(inSpy).toHaveBeenCalledWith("wallets", "id", [WALLET_ID, WALLET_IN_ID]);
+    expect(rpcSpy).toHaveBeenCalled();
+  });
+
+  /**
+   * A leg's wallet not coming back at all is a type-safety net, not a
+   * reachable branch (the legs lookup already proved membership on the same
+   * wallets through the same `is_wallet_member` predicate) — but it must not
+   * fall through to a successful RPC call, which is what an
+   * `if (wallet?.archived_at)` written with optional chaining would do.
+   */
+  it("refuses rather than proceeding when a leg's wallet cannot be read", async () => {
+    legWalletsResult.data = [{ id: WALLET_ID, archived_at: null }];
+
+    const result = await updateTransfer(transferEdit());
+
+    expect(result).toEqual({ error: "Wallet not found" });
     expect(rpcSpy).not.toHaveBeenCalled();
   });
 
@@ -974,8 +1090,8 @@ describe("updateTransfer", () => {
    */
   it("reports not found when both legs share the same sign", async () => {
     legsLookupResult.data = [
-      { amount_minor: 4250, currency_code: "SGD" },
-      { amount_minor: 4250, currency_code: "SGD" },
+      { wallet_id: WALLET_ID, amount_minor: 4250, currency_code: "SGD" },
+      { wallet_id: WALLET_IN_ID, amount_minor: 4250, currency_code: "SGD" },
     ];
 
     const result = await updateTransfer(transferEdit());
@@ -1037,8 +1153,8 @@ describe("updateTransfer", () => {
 
   it("rejects a fraction the outgoing leg's currency cannot hold, rather than truncating it", async () => {
     legsLookupResult.data = [
-      { amount_minor: -4250, currency_code: "JPY" },
-      { amount_minor: 4250, currency_code: "JPY" },
+      { wallet_id: WALLET_ID, amount_minor: -4250, currency_code: "JPY" },
+      { wallet_id: WALLET_IN_ID, amount_minor: 4250, currency_code: "JPY" },
     ];
 
     const result = await updateTransfer(transferEdit({ amount_out: "12.999", amount_in: "12" }));
@@ -1057,8 +1173,8 @@ describe("updateTransfer", () => {
    */
   it("rejects a fraction the incoming leg's currency cannot hold, even when the outgoing leg's is fine", async () => {
     legsLookupResult.data = [
-      { amount_minor: -1200, currency_code: "USD" },
-      { amount_minor: 1200, currency_code: "JPY" },
+      { wallet_id: WALLET_ID, amount_minor: -1200, currency_code: "USD" },
+      { wallet_id: WALLET_IN_ID, amount_minor: 1200, currency_code: "JPY" },
     ];
 
     const result = await updateTransfer(transferEdit({ amount_out: "12.00", amount_in: "12.999" }));

@@ -551,7 +551,9 @@ export async function createTransfer(input: TransferInput): Promise<TransferResu
  *
  * A lookup precedes the RPC call (`.eq("transfer_id", ...).is("deleted_at",
  * null)`, no `.select("id")`/`.single()` — a transfer is always exactly two
- * rows) for two reasons: it is what makes each amount's precision/parsing
+ * rows) for three reasons: it carries each leg's `wallet_id`, which is what
+ * the archived-wallet check below (task 8, item 3) needs; it is what makes
+ * each amount's precision/parsing
  * currency-aware at all (a leg's `currency_code` has to come from
  * somewhere, and `amount_out`/`amount_in` are parsed against the OUTGOING
  * and INCOMING leg's own currency respectively, read by sign off the rows —
@@ -583,7 +585,11 @@ export async function updateTransfer(input: TransferEditInput): Promise<Mutation
   // never touch one leg of a pair without the other.
   const { data: legs } = await supabase
     .from("transactions")
-    .select("amount_minor, currency_code")
+    // `wallet_id` (task 8, item 3) is read only to check each leg's wallet is
+    // still active below — it is never posted, never written, and never
+    // trusted from the caller: `transferEditInput` has no wallet field at
+    // all, exactly like `transactionEditInput`.
+    .select("wallet_id, amount_minor, currency_code")
     .eq("transfer_id", transfer_id)
     .is("deleted_at", null);
   if (!legs || legs.length !== 2) return { error: "Transfer not found" };
@@ -598,6 +604,45 @@ export async function updateTransfer(input: TransferEditInput): Promise<Mutation
   const outLeg = legs.find((l) => l.amount_minor < 0);
   const inLeg = legs.find((l) => l.amount_minor > 0);
   if (!outLeg || !inLeg) return { error: "Transfer not found" };
+
+  // BOTH legs' wallets must be active — task 8, item 3, closing a gap that
+  // fell in the seam between the transaction edit and the transfer edit.
+  // `updateTransaction` has made this check since it was written, and
+  // `createTransfer` rejects archived endpoints on the create side, but this
+  // function had neither: a user who archived a closed savings account could
+  // no longer edit an ordinary expense in it, yet could still change the
+  // amount of a transfer LEG into it — money moving into an archived
+  // wallet's balance through the one path that skipped the check. Nothing
+  // was corrupted (the pair stays balanced), but spec §3.3's "an edit must
+  // not reach a state a create could not" was not being applied uniformly.
+  //
+  // BOTH, not just the leg the caller happened to open: one statement moves
+  // both rows, so there is no half-edit to allow, and `createTransfer`'s own
+  // endpoint check is likewise on both.
+  //
+  // `.in("id", [...])` in one round trip, mirroring `createTransfer`'s
+  // identical two-wallet lookup rather than issuing two `.single()` queries.
+  // `wallets_select` RLS already scoped this to wallets the caller belongs
+  // to — and membership was already proven by the legs lookup above, which
+  // is keyed on the same `is_wallet_member(wallet_id)` — so a missing row
+  // here is a type-safety net rather than a reachable branch, folded into
+  // the same message rather than given one of its own.
+  const { data: legWallets } = await supabase
+    .from("wallets")
+    .select("id, archived_at")
+    .in("id", [outLeg.wallet_id, inLeg.wallet_id]);
+  const outWallet = legWallets?.find((w) => w.id === outLeg.wallet_id);
+  const inWallet = legWallets?.find((w) => w.id === inLeg.wallet_id);
+  if (!outWallet || !inWallet) return { error: "Wallet not found" };
+  // The identical string `updateTransaction` returns, deliberately — the two
+  // actions describe the same refusal and must not drift into two wordings
+  // for it. It does not name WHICH wallet: the edit page (task 8, item 2)
+  // already names the archived wallet(s) before this form is ever drawn, so
+  // by the time this string can be reached the caller is posting directly,
+  // and telling them more would not help them.
+  if (outWallet.archived_at || inWallet.archived_at) {
+    return { error: "This wallet has been archived." };
+  }
 
   const outMinorUnit = minorUnitFor(outLeg.currency_code);
   const outPrecisionIssue = precisionError(amount_out, outMinorUnit, outLeg.currency_code);
