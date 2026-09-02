@@ -5,13 +5,66 @@ import { useRouter } from "next/navigation";
 import { TrendingDown, TrendingUp, ArrowRightLeft } from "lucide-react";
 import { AmountKeypad } from "./AmountKeypad";
 import { CategoryPicker, type Category } from "./CategoryPicker";
-import { createTransaction, createTransfer } from "@/server/actions/transactions";
+import {
+  createTransaction,
+  createTransfer,
+  updateTransaction,
+  updateTransfer,
+} from "@/server/actions/transactions";
 import { appendDigit, clampAmountInput, minorUnitFor, parseAmountInput } from "@/lib/money";
 import { parseOrigin } from "@/lib/origin";
 import { todayLocalDate } from "@/lib/today";
 
 type Wallet = { id: string; name: string; currency_code: string };
 type Kind = "expense" | "income" | "transfer";
+
+/**
+ * Task 6 (editable-transactions plan): what edit mode seeds a non-transfer
+ * row from. `updateTransaction` (src/server/actions/transactions.ts)
+ * refuses a transfer's id outright and `transactionEditInput`
+ * (src/lib/validation/transaction.ts) has no `wallet_id`/`kind` fields at
+ * all — neither is editable, so neither is carried here either. `walletId`
+ * IS carried, but only to resolve this row's fixed wallet/currency for
+ * display and to filter `categories` down to the right wallet+kind — it is
+ * never sent back to `updateTransaction`, which derives the real one from
+ * the database row itself.
+ */
+export type EditTransactionSeed = {
+  kind: "expense" | "income";
+  id: string;
+  walletId: string;
+  /** Keypad-format string (see AmountKeypad's own doc comment) — the same
+   *  representation `formatAmountInput` (src/lib/money.ts) produces, not
+   *  minor units. */
+  amount: string;
+  categoryId: string | null;
+  occurredOn: string;
+  note: string;
+  merchant: string;
+};
+
+/**
+ * What edit mode seeds a transfer from. Two wallets and two amounts —
+ * `amountOut`/`amountIn`, mirroring `transferEditInput` and
+ * `update_transfer_pair` exactly (see that schema's own doc comment): a
+ * cross-currency transfer's two legs are genuinely different amounts in
+ * different currencies, and a same-currency one must additionally balance.
+ * `fromWalletId`/`toWalletId` are, like `walletId` above, for display and
+ * currency lookup only — `updateTransfer` never receives them.
+ */
+export type EditTransferSeed = {
+  kind: "transfer";
+  transferId: string;
+  fromWalletId: string;
+  toWalletId: string;
+  amountOut: string;
+  amountIn: string;
+  occurredOn: string;
+  note: string;
+  merchant: string;
+};
+
+export type EditSeed = EditTransactionSeed | EditTransferSeed;
 
 const KIND_META = [
   { value: "expense", label: "Expense", Icon: TrendingDown },
@@ -68,39 +121,129 @@ const CHIP_BORDER =
  * additionally verified live — see this task's report for the archived-
  * category rejection test, which confirms every control still reflects
  * exactly what the user chose after a rejected submit.
+ *
+ * ## EDIT MODE (Task 6, editable-transactions plan)
+ *
+ * `mode="edit"` plus an `edit` seed (`EditSeed` above) is this same
+ * component's edit path, the shape `WalletForm.tsx`'s own doc comment
+ * anticipates ("defaults + a lock prop"). Because a transaction's wallet
+ * and kind are BOTH fixed for its whole life — `updateTransaction` refuses
+ * a transfer id outright, and neither `transactionEditInput` nor
+ * `transferEditInput` even has a `wallet_id`/`kind` field to carry one — the
+ * wallet-picking `<select>`, the "To" `<select>`, and the kind radiogroup
+ * are not rendered AT ALL in edit mode, replaced by stated text. This
+ * mirrors `WalletForm`'s own `lockCurrency` rule exactly (that component's
+ * doc comment): "a control that can never succeed is absent, not
+ * disabled," the same rule `TransactionList.tsx`'s `RowIcon` and
+ * `WalletList.tsx`'s per-owner Archive already follow.
+ *
+ * Which server action gets called is dispatched on `edit.kind`:
+ * `updateTransaction` for an expense/income row, `updateTransfer` for a
+ * transfer — mirroring exactly how `updateTransaction` itself refuses a
+ * transfer id rather than silently mishandling it. Both return
+ * `MutationResult = { ok: true } | { error: string }` and never throw
+ * (`transactions.ts`'s own file doc comment on why: an uncaught throw
+ * inside a Server Function is masked to an opaque digest in production).
+ *
+ * A transfer's amount is TWO fields (`amountOut`/`amountIn`), not one,
+ * whenever its two legs' currencies differ — `crossCurrency` below already
+ * governs exactly this for the CREATE path (a cross-currency transfer
+ * legitimately sends and receives different amounts), so edit mode reuses
+ * that identical boolean rather than inventing a second one. When the legs
+ * share a currency, only the source `AmountKeypad` renders and its single
+ * value is sent as BOTH `amount_out` and `amount_in` on submit — the same
+ * "one number typed twice" convenience `createTransfer`'s own `amount_in`
+ * omission already gives the create path, preserved here for a same-
+ * currency edit rather than forcing a second, redundant field.
+ *
+ * ## Why this does NOT need `WalletForm`'s hidden-input workaround
+ *
+ * `WalletForm`'s own doc comment on its hidden `kind`/`currency_code`
+ * inputs is real: read before adding any `<select>`/radio here, per this
+ * task's brief. But the bug it works around is specific to `<form
+ * action={fn}>` (traced in that comment to `requestFormReset$1`, gated on
+ * `"function" === typeof action` read off the `<form>` element's own
+ * `action` prop) — and this component's doc comment ABOVE this one already
+ * establishes that this `<form>` has no `action` prop at all in either mode:
+ * submission is a plain `onSubmit` handler calling `updateTransaction`/
+ * `updateTransfer` directly inside `useTransition`, exactly like the create
+ * path already does for `createTransaction`/`createTransfer` (neither takes
+ * `FormData`, so neither could be bound as `<form action>` in the first
+ * place). Every visible control in edit mode is consequently an ordinary
+ * controlled React input with no native form-reset event to desync from —
+ * confirmed by this file's own pre-existing reasoning, not a new claim. And
+ * concretely, edit mode adds no NEW `<select>`/radio at all: the two
+ * controls `WalletForm`'s bug actually hit (a `<select>`, a radio group) are
+ * exactly the ones edit mode REMOVES (wallet, kind), replaced by inert
+ * stated text with no live DOM property for a reset to desync in the first
+ * place. The brief's instruction to route this form's controls through
+ * hidden inputs the way `WalletForm` does does not apply here — this is
+ * this task's own found defect in its brief (see this task's report).
  */
-export function TransactionForm({
-  wallets,
-  categories,
-  defaultWalletId,
-  from,
-}: {
-  wallets: Wallet[];
-  categories: Category[];
-  defaultWalletId: string;
-  /**
-   * The `?from` search param, threaded down unmodified from the page — an
-   * origin IDENTIFIER (e.g. `wallet:<uuid>`), NOT a path or URL, and
-   * untrusted (it comes straight off the query string). `parseOrigin`
-   * (`@/lib/origin`) is the only thing allowed to turn it into a
-   * navigation target; see the redirect below.
-   */
-  from?: string | null;
-}) {
+export function TransactionForm(
+  props:
+    | {
+        mode?: "create";
+        wallets: Wallet[];
+        categories: Category[];
+        defaultWalletId: string;
+        /**
+         * The `?from` search param, threaded down unmodified from the page —
+         * an origin IDENTIFIER (e.g. `wallet:<uuid>`), NOT a path or URL, and
+         * untrusted (it comes straight off the query string). `parseOrigin`
+         * (`@/lib/origin`) is the only thing allowed to turn it into a
+         * navigation target; see the redirect below.
+         */
+        from?: string | null;
+      }
+    | {
+        mode: "edit";
+        wallets: Wallet[];
+        categories: Category[];
+        /** The row (or transfer pair) being edited. See `EditSeed` above. */
+        edit: EditSeed;
+      },
+) {
   const router = useRouter();
-  const [kind, setKind] = useState<Kind>("expense");
-  const [amount, setAmount] = useState("0");
-  const [walletId, setWalletId] = useState(defaultWalletId);
-  const [toWalletId, setToWalletId] = useState(
-    () => wallets.find((w) => w.id !== defaultWalletId)?.id ?? "",
+  const { wallets, categories } = props;
+  const edit = props.mode === "edit" ? props.edit : undefined;
+  // Only meaningful in create mode — see the props union above. Read only
+  // from branches already known (by that same union) to be in create mode.
+  const defaultWalletId = props.mode === "edit" ? undefined : props.defaultWalletId;
+  const from = props.mode === "edit" ? undefined : props.from;
+
+  // Kind is fixed for the life of an edited row (see the component doc
+  // comment above) — `createKind` is the CREATE path's own selectable
+  // state, and `kind` is what every other line in this component reads,
+  // resolving to the immutable `edit.kind` whenever one was supplied.
+  const [createKind, setCreateKind] = useState<Kind>("expense");
+  const kind: Kind = edit ? edit.kind : createKind;
+  const [amount, setAmount] = useState(() => {
+    if (!edit) return "0";
+    return edit.kind === "transfer" ? edit.amountOut : edit.amount;
+  });
+  const [walletId, setWalletId] = useState(() => {
+    if (!edit) return defaultWalletId!;
+    return edit.kind === "transfer" ? edit.fromWalletId : edit.walletId;
+  });
+  const [toWalletId, setToWalletId] = useState(() => {
+    if (!edit) return wallets.find((w) => w.id !== defaultWalletId)?.id ?? "";
+    return edit.kind === "transfer" ? edit.toWalletId : "";
+  });
+  const [amountIn, setAmountIn] = useState(() => (edit?.kind === "transfer" ? edit.amountIn : "0"));
+  const [category, setCategory] = useState<Category | null>(() =>
+    edit && edit.kind !== "transfer" ? (categories.find((c) => c.id === edit.categoryId) ?? null) : null,
   );
-  const [amountIn, setAmountIn] = useState("0");
-  const [category, setCategory] = useState<Category | null>(null);
-  const [date, setDate] = useState(todayLocalDate);
+  const [date, setDate] = useState(() => (edit ? edit.occurredOn : todayLocalDate()));
   /** The transactions table's own `note` column — what a user types to name
    *  a transaction, typically a merchant. Optional on both the expense and
    *  the transfer path; the actions coerce "" to null on write. */
-  const [note, setNote] = useState("");
+  const [note, setNote] = useState(() => (edit ? edit.note : ""));
+  /** The transactions table's own `merchant` column (Task 1 of this plan) —
+   *  editable, but not creatable: `transactionInput`/`transferInput` (the
+   *  CREATE schemas) have no `merchant` field at all, only their `...Edit`
+   *  counterparts do, so this control renders only in edit mode (below). */
+  const [merchant, setMerchant] = useState(() => (edit ? edit.merchant : ""));
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
 
@@ -192,7 +335,7 @@ export function TransactionForm({
   }
 
   function handleKindChange(next: Kind) {
-    setKind(next);
+    setCreateKind(next);
     // A transfer has no category; switching between expense/income also
     // clears it, since the two kinds draw from disjoint category lists
     // (CategoryPicker filters by `kind`) and a stale selection from the
@@ -269,6 +412,11 @@ export function TransactionForm({
     setError(null);
   }
 
+  function handleMerchantChange(next: string) {
+    setMerchant(next);
+    setError(null);
+  }
+
   function handleFormKeyDown(e: React.KeyboardEvent<HTMLFormElement>) {
     // Native browsers implicitly submit the nearest form when Enter is
     // pressed inside most single-line fields (a <select>, the date input,
@@ -287,6 +435,54 @@ export function TransactionForm({
     // for why) — this is a plain, ordinary controlled-form submit handler.
     e.preventDefault();
     setError(null);
+
+    // Dispatch on `edit.kind`, not on the generic `kind` alone — mirroring
+    // `updateTransaction`'s own refusal of a transfer id (transactions.ts)
+    // rather than risking this component silently calling the wrong action.
+    // `updateTransaction`/`updateTransfer` both return `MutationResult =
+    // { ok: true } | { error: string }` and never throw.
+    if (edit) {
+      start(async () => {
+        const res =
+          edit.kind === "transfer"
+            ? await updateTransfer({
+                transfer_id: edit.transferId,
+                amount_out: amount,
+                // Same-currency: one field feeds both legs, since they must
+                // balance anyway — see the component doc comment above.
+                amount_in: crossCurrency ? amountIn : amount,
+                occurred_on: date,
+                note,
+                merchant,
+              })
+            : await updateTransaction({
+                id: edit.id,
+                amount,
+                // `category` seeds from `edit.categoryId` and CategoryPicker
+                // can change or clear it — `category_id` is nullable on
+                // `transactionEditInput` (clearing a category is a
+                // legitimate edit, unlike creation's required category), so
+                // `null` here is a real, intentional value, not a bug.
+                category_id: category?.id ?? null,
+                occurred_on: date,
+                note,
+                merchant,
+              });
+
+        if ("error" in res) {
+          setError(res.error);
+          return;
+        }
+
+        // No `from`/`parseOrigin` return trip in edit mode (unlike the
+        // create path below) — out of this task's scope, see this task's
+        // report. `/transactions` is always a safe landing spot: it is the
+        // same fallback destination `parseOrigin` itself resolves to for
+        // every input it doesn't recognise.
+        router.push("/transactions");
+      });
+      return;
+    }
 
     if (kind !== "transfer" && !category) {
       setError("Choose a category");
@@ -364,50 +560,80 @@ export function TransactionForm({
       // IS extra room, without ever double-counting the shell's own.
       className="mx-auto flex max-w-md flex-col gap-4 p-4"
     >
-      <fieldset className="flex gap-2" aria-describedby={errorId}>
-        <legend className="sr-only">Transaction type</legend>
-        {visibleKinds.map(({ value, label, Icon }) => {
-          const selected = kind === value;
-          return (
-            <label key={value} className="flex-1 cursor-pointer">
-              <input
-                type="radio"
-                name="txn-kind"
-                value={value}
-                checked={selected}
-                onChange={() => handleKindChange(value)}
-                className="peer sr-only"
-              />
-              <div
-                className={`flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-center text-sm ${FOCUS_RING} peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--cat-1)]`}
-                style={{
-                  // Same accepted mitigation as Sidebar.tsx's active nav
-                  // item and onboarding-form.tsx's Type selector: a
-                  // var(--grid) background alone measures 1.29:1 (light) /
-                  // 1.24:1 (dark) between selected/unselected, well under
-                  // WCAG 1.4.11's 3:1 floor for UI-state contrast. The
-                  // var(--cat-1) border (4.34:1 light / 4.18:1 dark against
-                  // var(--grid) — same token pair, reused from Sidebar's
-                  // own measurement) plus the font-weight change are the
-                  // real differentiators; the background is a visual bonus,
-                  // not what carries the state.
-                  borderColor: selected ? "var(--cat-1)" : "var(--ink-2)",
-                  background: selected ? "var(--grid)" : "transparent",
-                  color: "var(--ink)",
-                  fontWeight: selected ? 600 : 400,
-                }}
-              >
-                <Icon size={16} aria-hidden />
-                {label}
-              </div>
-            </label>
-          );
-        })}
-      </fieldset>
+      {/* Kind is fixed for the life of an existing row (component doc
+          comment above) — absent in edit mode, not a disabled radiogroup a
+          click could never change. */}
+      {edit ? (
+        <p className="text-sm" style={{ color: "var(--ink-2)" }}>
+          {edit.kind === "transfer" ? "Transfer" : edit.kind === "expense" ? "Expense" : "Income"} — the
+          type of a transaction can’t be changed once it’s saved.
+        </p>
+      ) : (
+        <fieldset className="flex gap-2" aria-describedby={errorId}>
+          <legend className="sr-only">Transaction type</legend>
+          {visibleKinds.map(({ value, label, Icon }) => {
+            const selected = kind === value;
+            return (
+              <label key={value} className="flex-1 cursor-pointer">
+                <input
+                  type="radio"
+                  name="txn-kind"
+                  value={value}
+                  checked={selected}
+                  onChange={() => handleKindChange(value)}
+                  className="peer sr-only"
+                />
+                <div
+                  className={`flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-center text-sm ${FOCUS_RING} peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--cat-1)]`}
+                  style={{
+                    // Same accepted mitigation as Sidebar.tsx's active nav
+                    // item and onboarding-form.tsx's Type selector: a
+                    // var(--grid) background alone measures 1.29:1 (light) /
+                    // 1.24:1 (dark) between selected/unselected, well under
+                    // WCAG 1.4.11's 3:1 floor for UI-state contrast. The
+                    // var(--cat-1) border (4.34:1 light / 4.18:1 dark against
+                    // var(--grid) — same token pair, reused from Sidebar's
+                    // own measurement) plus the font-weight change are the
+                    // real differentiators; the background is a visual bonus,
+                    // not what carries the state.
+                    borderColor: selected ? "var(--cat-1)" : "var(--ink-2)",
+                    background: selected ? "var(--grid)" : "transparent",
+                    color: "var(--ink)",
+                    fontWeight: selected ? 600 : 400,
+                  }}
+                >
+                  <Icon size={16} aria-hidden />
+                  {label}
+                </div>
+              </label>
+            );
+          })}
+        </fieldset>
+      )}
+
+      {/* A transfer edit updates both legs together, atomically, via the
+          `update_transfer_pair` RPC (`updateTransfer`'s own doc comment) —
+          stated up front so a user editing one leg's amount/date/note isn't
+          surprised the OTHER leg (a different wallet's ledger) changes too. */}
+      {edit?.kind === "transfer" && (
+        <p className="text-sm" style={{ color: "var(--ink-2)" }}>
+          Editing both legs of this transfer — the source and destination wallets are updated together.
+        </p>
+      )}
 
       <div>
         <p id={amountLabelId} className="mb-1 text-sm" style={{ color: "var(--ink-2)" }}>
-          {kind === "transfer" ? `You send (${wallet.currency_code})` : "Amount"}
+          {kind === "transfer"
+            ? // A same-currency EDIT renders only this one field (see the
+              // component doc comment: it feeds both legs on submit), so
+              // "You send" — worded for the two-field cross-currency case —
+              // would misdescribe it as one-directional. Create mode's
+              // wording is untouched: `edit` is undefined there, so this
+              // falls through to the original text exactly as before.
+              edit && !crossCurrency
+              ? `Amount (${wallet.currency_code})`
+              : `You send (${wallet.currency_code})`
+            : "Amount"}
         </p>
         {/* AmountKeypad's own <output> already carries aria-label="Amount"
             and aria-live="polite" internally (it is not modified here — see
@@ -434,7 +660,7 @@ export function TransactionForm({
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {/* A transfer has no category, so the chip is REMOVED, not
             disabled — a greyed-out control invites a click that can never
             succeed (spec §5.1). */}
@@ -443,52 +669,72 @@ export function TransactionForm({
             {category?.name ?? "Choose category"}
           </span>
         )}
-        <label className="flex items-center gap-1 text-sm" style={{ color: "var(--ink-2)" }}>
-          {/* VISIBLE for a transfer. These were sr-only, so a screen reader
-              announced "From wallet"/"To wallet" while a sighted user saw
-              two identical dropdowns side by side with nothing to tell them
-              apart — and on a transfer, choosing them the wrong way round
-              sends money in the wrong direction. Left sr-only for a
-              non-transfer, where there is only one select and no ambiguity
-              to resolve. */}
-          <span className={kind === "transfer" ? "text-sm" : "sr-only"} style={{ color: "var(--ink-2)" }}>
-            {kind === "transfer" ? "From" : "Wallet"}
-          </span>
-          <select
-            value={walletId}
-            onChange={(e) => handleWalletChange(e.target.value)}
-            aria-describedby={errorId}
-            className={CHIP_BORDER}
-            style={{ borderColor: "var(--ink-2)", color: "var(--ink)" }}
-          >
-            {wallets.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        {kind === "transfer" && (
-          <label className="flex items-center gap-1 text-sm" style={{ color: "var(--ink-2)" }}>
-            <span className="text-sm" style={{ color: "var(--ink-2)" }}>
-              To
-            </span>
-            <select
-              value={toWalletId}
-              onChange={(e) => handleToWalletChange(e.target.value)}
-              aria-describedby={errorId}
-              className={CHIP_BORDER}
-              style={{ borderColor: "var(--ink-2)", color: "var(--ink)" }}
-            >
-              {wallets
-                .filter((w) => w.id !== walletId)
-                .map((w) => (
+        {edit ? (
+          // Wallet(s) are fixed for the life of a row — stated as text, not
+          // a `<select>` a click could never actually change (component doc
+          // comment above). No `<label>`: there is no control to label.
+          <p className="text-sm" style={{ color: "var(--ink-2)" }}>
+            {edit.kind === "transfer" ? (
+              <>
+                From <span style={{ color: "var(--ink)" }}>{wallet.name}</span> to{" "}
+                <span style={{ color: "var(--ink)" }}>{toWallet?.name}</span>
+              </>
+            ) : (
+              <>
+                Wallet: <span style={{ color: "var(--ink)" }}>{wallet.name}</span>
+              </>
+            )}
+          </p>
+        ) : (
+          <>
+            <label className="flex items-center gap-1 text-sm" style={{ color: "var(--ink-2)" }}>
+              {/* VISIBLE for a transfer. These were sr-only, so a screen
+                  reader announced "From wallet"/"To wallet" while a sighted
+                  user saw two identical dropdowns side by side with nothing
+                  to tell them apart — and on a transfer, choosing them the
+                  wrong way round sends money in the wrong direction. Left
+                  sr-only for a non-transfer, where there is only one select
+                  and no ambiguity to resolve. */}
+              <span className={kind === "transfer" ? "text-sm" : "sr-only"} style={{ color: "var(--ink-2)" }}>
+                {kind === "transfer" ? "From" : "Wallet"}
+              </span>
+              <select
+                value={walletId}
+                onChange={(e) => handleWalletChange(e.target.value)}
+                aria-describedby={errorId}
+                className={CHIP_BORDER}
+                style={{ borderColor: "var(--ink-2)", color: "var(--ink)" }}
+              >
+                {wallets.map((w) => (
                   <option key={w.id} value={w.id}>
                     {w.name}
                   </option>
                 ))}
-            </select>
-          </label>
+              </select>
+            </label>
+            {kind === "transfer" && (
+              <label className="flex items-center gap-1 text-sm" style={{ color: "var(--ink-2)" }}>
+                <span className="text-sm" style={{ color: "var(--ink-2)" }}>
+                  To
+                </span>
+                <select
+                  value={toWalletId}
+                  onChange={(e) => handleToWalletChange(e.target.value)}
+                  aria-describedby={errorId}
+                  className={CHIP_BORDER}
+                  style={{ borderColor: "var(--ink-2)", color: "var(--ink)" }}
+                >
+                  {wallets
+                    .filter((w) => w.id !== walletId)
+                    .map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.name}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            )}
+          </>
         )}
         <label className="flex items-center gap-1 text-sm" style={{ color: "var(--ink-2)" }}>
           <span className="sr-only">Date</span>
@@ -551,6 +797,32 @@ export function TransactionForm({
         />
       </label>
 
+      {/* Edit-only (component doc comment above): `transactionInput`/
+          `transferInput` (the CREATE schemas) have no `merchant` field at
+          all — only their `...Edit` counterparts do — so there is nothing
+          for this control to submit in create mode, and it does not render
+          there. `maxLength` matches `editableText(120, ...)`
+          (src/lib/validation/transaction.ts) and the column's own
+          `length(merchant) <= 120` CHECK, the same three-layer-match
+          discipline the Note field's own comment states for its 280. */}
+      {edit && (
+        <label className="flex flex-col gap-1">
+          <span className="text-sm" style={{ color: "var(--ink-2)" }}>
+            Merchant
+          </span>
+          <input
+            value={merchant}
+            onChange={(e) => handleMerchantChange(e.target.value)}
+            maxLength={120}
+            placeholder="Who the money went to or came from"
+            autoComplete="off"
+            aria-describedby={errorId}
+            className={`rounded-md border px-3 py-2 ${FOCUS_RING}`}
+            style={{ borderColor: "var(--ink-2)", background: "var(--surface)", color: "var(--ink)" }}
+          />
+        </label>
+      )}
+
       {/* Always mounted, not conditionally rendered — see the useEffect
           above for why. Empty when there's nothing to say. */}
       <p ref={errorRef} id={errorId} role="alert" tabIndex={-1} style={{ color: "var(--neg)" }}>
@@ -582,7 +854,7 @@ export function TransactionForm({
         className={`sticky bottom-20 mt-auto rounded-lg py-4 text-lg font-medium disabled:opacity-60 md:bottom-0 ${FOCUS_RING}`}
         style={{ background: "var(--cat-1)", color: "var(--surface)" }}
       >
-        {pending ? "Saving…" : "Save"}
+        {pending ? "Saving…" : edit ? "Save changes" : "Save"}
       </button>
     </form>
   );

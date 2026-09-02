@@ -329,3 +329,55 @@ describe("TransactionList — attribution", () => {
     expect(screen.getByText("Coffee · Personal")).toBeInTheDocument();
   });
 });
+
+/**
+ * Task 6 (editable-transactions plan): the row's entry point into editing
+ * it. Deliberately NOT the whole row — each row already contains a Delete
+ * `<button>`, and wrapping that in a link would nest one interactive
+ * element inside another (invalid HTML, ambiguous click target).
+ * `WalletList.tsx` already solved this exact problem (the wallet's NAME is
+ * the link, not the row); this follows that precedent, so the row's primary
+ * label (merchant → note → category, `rowLabel`) is the link.
+ */
+describe("TransactionList — edit entry point (Task 6)", () => {
+  it("links the row's primary label to that transaction's edit route", () => {
+    render(<TransactionList rows={[{ ...baseRow, id: "row-42", category_name: "Groceries" }]} />);
+    const link = screen.getByRole("link", { name: "Groceries" });
+    expect(link).toHaveAttribute("href", "/transactions/row-42/edit");
+  });
+
+  it("names the link after merchant/note, matching the Delete button's own accessible name", () => {
+    render(<TransactionList rows={[row({ id: "row-7", merchant: "Tesco" })]} />);
+    // The link's accessible name is `rowLabel`'s output alone — nothing
+    // else inside the anchor — so it matches what Delete already announces
+    // (`Delete ${label}, ${amountText}`): a row cannot name itself one
+    // thing to a link and another to its delete control.
+    expect(screen.getByRole("link", { name: "Tesco" })).toHaveAttribute(
+      "href",
+      "/transactions/row-7/edit",
+    );
+    expect(screen.getByRole("button", { name: /^Delete Tesco/ })).toBeInTheDocument();
+  });
+
+  it("does not make the whole row a link — Delete is its own, separate control", () => {
+    render(<TransactionList rows={[{ ...baseRow, id: "row-1", category_name: "Groceries" }]} />);
+    // Exactly one link and one button, sharing no DOM ancestor-descendant
+    // relationship of one wrapping the other — the failure mode this
+    // guards is a link wrapping the Delete button (invalid HTML: a button
+    // nested inside an anchor).
+    const link = screen.getByRole("link", { name: "Groceries" });
+    const del = screen.getByRole("button", { name: /^Delete /i });
+    expect(link.contains(del)).toBe(false);
+    expect(del.contains(link)).toBe(false);
+  });
+
+  it("Delete still works with the label now a link (link and delete are independent controls)", async () => {
+    vi.mocked(softDeleteTransaction).mockResolvedValue({ ok: true });
+    render(<TransactionList rows={[{ ...baseRow, id: "row-9", category_name: "Groceries" }]} />);
+
+    await clickDelete();
+
+    expect(await screen.findByText("Groceries deleted")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+  });
+});

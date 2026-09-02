@@ -2,6 +2,7 @@
 
 import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { ArrowRightLeft } from "lucide-react";
 import { formatMoney } from "@/lib/money";
 import { slotVar } from "@/lib/palette";
@@ -426,9 +427,30 @@ export function TransactionList({
                   >
                     <RowIcon row={r} />
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate" style={{ color: "var(--ink)" }}>
+                      {/* Task 6 (editable-transactions plan): the row's
+                          PRIMARY LABEL is the entry point into editing it,
+                          not the whole row — the row already contains a
+                          Delete <button>, and wrapping that in a link would
+                          nest one interactive element inside another
+                          (invalid HTML, ambiguous click target).
+                          `WalletList.tsx` already solved this exact problem
+                          (its own doc comment: "the wallet's NAME is the
+                          link into its detail screen"); this follows that
+                          precedent for the same reason.
+
+                          The link's accessible name is `label` alone —
+                          nothing else inside this anchor — so it matches
+                          exactly what the Delete button below already
+                          announces (`Delete ${label}, ${amountText}`): a
+                          row cannot name itself one thing to a link and
+                          another to its delete control. */}
+                      <Link
+                        href={`/transactions/${r.id}/edit`}
+                        className={`block truncate rounded-sm ${FOCUS_RING}`}
+                        style={{ color: "var(--ink)" }}
+                      >
                         {label}
-                      </span>
+                      </Link>
                       {/* Whatever the primary line didn't use joins the
                           wallet here rather than being dropped — the row
                           still carries everything it did before, just

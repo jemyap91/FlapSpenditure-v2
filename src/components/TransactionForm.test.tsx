@@ -19,8 +19,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { TransactionForm } from "./TransactionForm";
-import { createTransaction } from "@/server/actions/transactions";
+import { TransactionForm, type EditSeed } from "./TransactionForm";
+import { createTransaction, updateTransaction, updateTransfer } from "@/server/actions/transactions";
 import type { Category } from "./CategoryPicker";
 
 const push = vi.fn();
@@ -31,6 +31,8 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/server/actions/transactions", () => ({
   createTransaction: vi.fn(),
   createTransfer: vi.fn(),
+  updateTransaction: vi.fn(),
+  updateTransfer: vi.fn(),
 }));
 
 vi.mock("@/server/actions/categories", () => ({
@@ -38,11 +40,25 @@ vi.mock("@/server/actions/categories", () => ({
 }));
 
 const WALLET_A = "11111111-1111-4111-8111-111111111111";
+const WALLET_B = "33333333-3333-4333-8333-333333333333";
+const WALLET_EUR = "44444444-4444-4444-8444-444444444444";
 const ORIGIN_UUID = "22222222-2222-4222-8222-222222222222";
+const TXN_ID = "55555555-5555-4555-8555-555555555555";
+const TRANSFER_ID = "66666666-6666-4666-8666-666666666666";
 
 const wallets = [{ id: WALLET_A, name: "Everyday", currency_code: "USD" }];
 const categories: Category[] = [
   { id: "cat-1", name: "Groceries", kind: "expense", color_slot: 1, icon: "circle", wallet_id: WALLET_A },
+];
+
+// Task 6 (editable-transactions plan): edit-mode fixtures. A second,
+// same-currency wallet (WALLET_B) and a third, EUR one (WALLET_EUR) let the
+// same-currency/cross-currency transfer-edit tests below share one wallets
+// array rather than each building its own.
+const editWallets = [
+  { id: WALLET_A, name: "Everyday", currency_code: "USD" },
+  { id: WALLET_B, name: "Savings", currency_code: "USD" },
+  { id: WALLET_EUR, name: "Holiday", currency_code: "EUR" },
 ];
 
 /** Fills the minimum a save needs (a nonzero amount, a category) and clicks
@@ -62,6 +78,10 @@ beforeEach(() => {
   push.mockClear();
   vi.mocked(createTransaction).mockReset();
   vi.mocked(createTransaction).mockResolvedValue({ id: "t1" });
+  vi.mocked(updateTransaction).mockReset();
+  vi.mocked(updateTransaction).mockResolvedValue({ ok: true });
+  vi.mocked(updateTransfer).mockReset();
+  vi.mocked(updateTransfer).mockResolvedValue({ ok: true });
 });
 
 describe("TransactionForm — post-save redirect (Task 4)", () => {
@@ -81,5 +101,215 @@ describe("TransactionForm — post-save redirect (Task 4)", () => {
   it("refuses an attacker-supplied absolute URL and goes to /transactions instead", async () => {
     await saveAnExpense("https://evil.example");
     expect(push).toHaveBeenCalledWith("/transactions");
+  });
+});
+
+/**
+ * Task 6 (editable-transactions plan): TransactionForm's edit mode
+ * (`mode="edit"` + `edit`). Context that isn't in this task's brief, all
+ * binding here:
+ *
+ * - Wallet and kind are fixed for the life of a row — neither control
+ *   renders at all in edit mode (WalletForm.tsx's own precedent: absent,
+ *   not disabled).
+ * - A transfer edit takes TWO amounts (`amount_out`/`amount_in`), mirroring
+ *   `create_transfer` exactly, because a cross-currency transfer's legs are
+ *   genuinely different amounts — the form renders two `AmountKeypad`s only
+ *   when the legs' currencies differ, one otherwise (fed to both legs).
+ * - `updateTransaction`/`updateTransfer` are dispatched on `edit.kind`,
+ *   mirroring `updateTransaction`'s own refusal of a transfer id.
+ */
+describe("TransactionForm — edit mode (Task 6)", () => {
+  const editTxnSeed: EditSeed = {
+    kind: "expense",
+    id: TXN_ID,
+    walletId: WALLET_A,
+    amount: "12.50",
+    categoryId: "cat-1",
+    occurredOn: "2026-08-01",
+    note: "weekly shop",
+    merchant: "Tesco",
+  };
+
+  const editTransferSameCurrency: EditSeed = {
+    kind: "transfer",
+    transferId: TRANSFER_ID,
+    fromWalletId: WALLET_A,
+    toWalletId: WALLET_B,
+    amountOut: "50.00",
+    amountIn: "50.00",
+    occurredOn: "2026-08-02",
+    note: "",
+    merchant: "",
+  };
+
+  const editTransferCrossCurrency: EditSeed = {
+    kind: "transfer",
+    transferId: TRANSFER_ID,
+    fromWalletId: WALLET_A,
+    toWalletId: WALLET_EUR,
+    amountOut: "50.00",
+    amountIn: "45.00",
+    occurredOn: "2026-08-02",
+    note: "",
+    merchant: "",
+  };
+
+  it("seeds every field from the transaction being edited", () => {
+    render(<TransactionForm mode="edit" wallets={wallets} categories={categories} edit={editTxnSeed} />);
+
+    // AmountKeypad's own <output aria-label="Amount"> — queried by role
+    // (an <output> element's implicit ARIA role) rather than
+    // `getByLabelText`, since that would also match the WRAPPING group div
+    // below it (`role="group" aria-labelledby={amountLabelId}`, whose
+    // referenced label text is the identical "Amount" for a non-transfer
+    // edit), and ambiguously return two elements.
+    expect(screen.getByRole("status", { name: "Amount" }).textContent).toContain("12.50");
+    // CategoryPicker highlights the seeded selection via aria-pressed, and
+    // the chip above it (TransactionForm's own <span>) shows its name.
+    expect(screen.getByRole("button", { name: "Groceries" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByDisplayValue("2026-08-01")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("weekly shop")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Tesco")).toBeInTheDocument();
+    // The fixed wallet is stated as text, not a selectable value.
+    expect(screen.getByText("Everyday")).toBeInTheDocument();
+  });
+
+  it("offers no wallet or kind control — neither is editable", () => {
+    // Absent, not disabled: this codebase's convention for a control that
+    // can never succeed (TransactionForm removes the category chip on a
+    // transfer; WalletList renders no Archive for a non-owner).
+    render(<TransactionForm mode="edit" wallets={wallets} categories={categories} edit={editTxnSeed} />);
+    expect(screen.queryByRole("combobox", { name: /Wallet/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+  });
+
+  it("offers no category control when editing a transfer", () => {
+    render(
+      <TransactionForm
+        mode="edit"
+        wallets={editWallets}
+        categories={categories}
+        edit={editTransferSameCurrency}
+      />,
+    );
+    expect(screen.queryByLabelText("Search categories")).not.toBeInTheDocument();
+    expect(screen.queryByText("Choose category")).not.toBeInTheDocument();
+  });
+
+  it("says it is editing both legs of a transfer", () => {
+    render(
+      <TransactionForm
+        mode="edit"
+        wallets={editWallets}
+        categories={categories}
+        edit={editTransferSameCurrency}
+      />,
+    );
+    expect(screen.getByText(/both legs/i)).toBeInTheDocument();
+  });
+
+  it("renders one amount field when a transfer's legs share a currency", () => {
+    render(
+      <TransactionForm
+        mode="edit"
+        wallets={editWallets}
+        categories={categories}
+        edit={editTransferSameCurrency}
+      />,
+    );
+    expect(screen.getAllByLabelText("Amount")).toHaveLength(1);
+  });
+
+  it("renders two amount fields when a transfer's legs' currencies differ", () => {
+    render(
+      <TransactionForm
+        mode="edit"
+        wallets={editWallets}
+        categories={categories}
+        edit={editTransferCrossCurrency}
+      />,
+    );
+    expect(screen.getAllByLabelText("Amount")).toHaveLength(2);
+  });
+
+  it("edits a non-transfer transaction via updateTransaction and redirects to /transactions", async () => {
+    const user = userEvent.setup();
+    render(<TransactionForm mode="edit" wallets={wallets} categories={categories} edit={editTxnSeed} />);
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/transactions"));
+    expect(updateTransaction).toHaveBeenCalledWith({
+      id: TXN_ID,
+      amount: "12.50",
+      category_id: "cat-1",
+      occurred_on: "2026-08-01",
+      note: "weekly shop",
+      merchant: "Tesco",
+    });
+    // updateTransfer must never be called for a non-transfer edit — this is
+    // the dispatch-on-kind contract, not just "some save happened."
+    expect(updateTransfer).not.toHaveBeenCalled();
+  });
+
+  it("edits a same-currency transfer via updateTransfer, sending one amount for both legs", async () => {
+    const user = userEvent.setup();
+    render(
+      <TransactionForm
+        mode="edit"
+        wallets={editWallets}
+        categories={categories}
+        edit={editTransferSameCurrency}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/transactions"));
+    expect(updateTransfer).toHaveBeenCalledWith({
+      transfer_id: TRANSFER_ID,
+      amount_out: "50.00",
+      amount_in: "50.00",
+      occurred_on: "2026-08-02",
+      note: "",
+      merchant: "",
+    });
+    expect(updateTransaction).not.toHaveBeenCalled();
+  });
+
+  it("edits a cross-currency transfer via updateTransfer, sending each leg's own amount", async () => {
+    const user = userEvent.setup();
+    render(
+      <TransactionForm
+        mode="edit"
+        wallets={editWallets}
+        categories={categories}
+        edit={editTransferCrossCurrency}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/transactions"));
+    expect(updateTransfer).toHaveBeenCalledWith({
+      transfer_id: TRANSFER_ID,
+      amount_out: "50.00",
+      amount_in: "45.00",
+      occurred_on: "2026-08-02",
+      note: "",
+      merchant: "",
+    });
+  });
+
+  it("surfaces the server's error and does not redirect when the edit fails", async () => {
+    vi.mocked(updateTransaction).mockResolvedValue({ error: "This wallet has been archived." });
+    const user = userEvent.setup();
+    render(<TransactionForm mode="edit" wallets={wallets} categories={categories} edit={editTxnSeed} />);
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    expect(await screen.findByText("This wallet has been archived.")).toBeInTheDocument();
+    expect(push).not.toHaveBeenCalled();
   });
 });
