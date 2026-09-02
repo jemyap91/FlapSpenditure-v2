@@ -8,7 +8,7 @@
 # Why this exists at all, when the unit suite is green: a nested embed like
 # `wallets(name)` is resolved by PostgREST at request time from the schema
 # cache, not by anything TypeScript, Vitest or `tsc` can see. When
-# 0012_wallet_currency.sql added a SECOND foreign key between `transactions`
+# 0015_recurring.sql:189 added a SECOND foreign key between `transactions`
 # and `wallets` (transactions_currency_matches_wallet, alongside
 # transactions_wallet_id_fkey), the unhinted `wallets(name)` in
 # /transactions became AMBIGUOUS: PostgREST answered PGRST201 with HTTP 300,
