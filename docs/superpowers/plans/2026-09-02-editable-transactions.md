@@ -170,16 +170,39 @@ fixtures. Required outcomes:
   **refused** (the column is not granted). Verify this assertion discriminates
   by temporarily granting the column, confirming the test fails, and reverting.
 
-- [ ] **Step 5: Run every suite**
+- [ ] **Step 5: Fix the writers this constraint breaks**
 
-Run: `npm run test:constraints && npm run test:rls && npm test && npx playwright test`
-Expected: all pass. The e2e run is required by this plan's global constraints
-because this task changes the schema.
+The CHECK constrains a shape production code ALREADY WRITES.
+`src/server/actions/recurring.ts`'s `recordOccurrence` inserts `recurring_id`
+with no `recurring_occurrence_on`, so every Record fails with `23514` — and its
+handler special-cases only `23505`, so the user is told to retry something that
+can never work.
 
-- [ ] **Step 6: Commit**
+Add `recurring_occurrence_on: occurrenceOn` to that insert, and map `23514` to
+a readable message.
+
+Then make the split actually load-bearing: `src/app/(app)/page.tsx` builds the
+handled-occurrence set from `occurred_on`, and `src/app/(app)/due-rows.ts`'s
+`HandledOccurrence` is keyed on it. Switch both to `recurring_occurrence_on`,
+or the migration buys nothing — an edited date still makes a paid occurrence
+due again, which is the entire scenario spec §1.2 exists to eliminate.
+
+Run `npm run db:types` and commit the result: the generated types have neither
+new column, and Task 3 writes `merchant`.
+
+Add a SQL assertion that a `recordOccurrence`-SHAPED insert SUCCEEDS. Every
+other fixture here writes the new column by hand, which is exactly why the
+suite could not see this.
+
+- [ ] **Step 6: Run every suite**
+
+Run: `npm run test:constraints && npm run test:rls && npm test && npm run typecheck && npm run lint`
+Expected: all pass. Playwright is deliberately excluded from this plan.
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add supabase/migrations/0016_editable_transactions.sql supabase/tests
+git add supabase/migrations/0016_editable_transactions.sql supabase/tests src/server/actions/recurring.ts "src/app/(app)/page.tsx" "src/app/(app)/due-rows.ts" src/lib/database.types.ts
 git commit -m "feat(db): add merchant, split the recurring occurrence identity from the actual date
 
 A recorded occurrence was identified by (recurring_id, occurred_on), which

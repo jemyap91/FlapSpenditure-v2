@@ -314,9 +314,11 @@ export type Database = {
           deleted_at: string | null
           id: string
           kind: Database["public"]["Enums"]["txn_kind"]
+          merchant: string | null
           note: string | null
           occurred_on: string
           recurring_id: string | null
+          recurring_occurrence_on: string | null
           transfer_id: string | null
           updated_at: string
           wallet_id: string
@@ -330,9 +332,11 @@ export type Database = {
           deleted_at?: string | null
           id?: string
           kind: Database["public"]["Enums"]["txn_kind"]
+          merchant?: string | null
           note?: string | null
           occurred_on: string
           recurring_id?: string | null
+          recurring_occurrence_on?: string | null
           transfer_id?: string | null
           updated_at?: string
           wallet_id: string
@@ -346,9 +350,11 @@ export type Database = {
           deleted_at?: string | null
           id?: string
           kind?: Database["public"]["Enums"]["txn_kind"]
+          merchant?: string | null
           note?: string | null
           occurred_on?: string
           recurring_id?: string | null
+          recurring_occurrence_on?: string | null
           transfer_id?: string | null
           updated_at?: string
           wallet_id?: string
@@ -606,6 +612,40 @@ export type Database = {
           p_wallet_ids: string[]
         }
         Returns: string
+      }
+      update_transfer_pair: {
+        Args: {
+          p_amount_in: number
+          p_amount_out: number
+          p_merchant?: string
+          p_note?: string
+          p_occurred_on: string
+          p_transfer_id: string
+        }
+        Returns: {
+          amount_minor: number
+          category_id: string | null
+          created_at: string
+          created_by: string | null
+          currency_code: string
+          deleted_at: string | null
+          id: string
+          kind: Database["public"]["Enums"]["txn_kind"]
+          merchant: string | null
+          note: string | null
+          occurred_on: string
+          recurring_id: string | null
+          recurring_occurrence_on: string | null
+          transfer_id: string | null
+          updated_at: string
+          wallet_id: string
+        }[]
+        SetofOptions: {
+          from: "*"
+          to: "transactions"
+          isOneToOne: false
+          isSetofReturn: true
+        }
       }
     }
     Enums: {

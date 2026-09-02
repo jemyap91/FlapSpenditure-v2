@@ -5,10 +5,17 @@ import { createClient } from "@/lib/supabase/server";
 import {
   transactionInput,
   transferInput,
+  transactionEditInput,
+  transferEditInput,
   precisionError,
   signedAmount,
 } from "@/lib/validation/transaction";
-import type { TransactionInput, TransferInput } from "@/lib/validation/transaction";
+import type {
+  TransactionInput,
+  TransferInput,
+  TransactionEditInput,
+  TransferEditInput,
+} from "@/lib/validation/transaction";
 import { parseAmountInput, minorUnitFor } from "@/lib/money";
 
 export type TransactionResult = { id: string } | { error: string };
@@ -51,6 +58,13 @@ const KNOWN_TRANSFER_ERRORS = new Set([
   "transfer amounts must be positive",
   "not a member of both wallets",
   "a same-currency transfer must balance",
+  // update_transfer_pair (0016_editable_transactions.sql, task-4 fix round
+  // 2): raised when a transfer's UPDATE touched something other than
+  // exactly two rows -- e.g. a third row inserted onto an existing
+  // transfer_id via the full-table INSERT grant. Without this in the
+  // allowlist, updateTransfer below would fall through to the generic
+  // "Could not save transfer" message instead of a readable one.
+  "a transfer edit must update exactly two legs",
 ]);
 
 /**
@@ -75,7 +89,7 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
   } = await supabase.auth.getUser();
   if (!user) return { error: "Not signed in" };
 
-  const { wallet_id, kind, amount, category_id, occurred_on, note } = parsed.data;
+  const { wallet_id, kind, amount, category_id, occurred_on, note, merchant } = parsed.data;
 
   // `wallets_select` RLS (is_wallet_member) already means this SELECT comes
   // back empty for a wallet the caller doesn't belong to — no separate
@@ -169,6 +183,23 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
       category_id,
       occurred_on,
       note: note || null,
+      // Task 8, item 1. `merchant` is already `string | null` here —
+      // `transactionInput.merchant` uses the same `editableText(120, ...)`
+      // the edit schemas use, which trims and turns a blank string into
+      // null during parsing, so unlike `note` above there is no `|| null`
+      // left to do. It reaches the INSERT with no migration and no grant
+      // change: 0004_rls.sql:46-48 grants `insert` on `transactions`
+      // full-table (verified — only UPDATE is revoked and re-granted
+      // column-by-column at :83-84, which is why `merchant` needed
+      // 0016_editable_transactions.sql:56's `grant update (merchant)` but
+      // needs nothing at all to be INSERTable).
+      //
+      // `createTransfer` below has no equivalent: `create_transfer`
+      // (0005_transfer_fn.sql) takes no merchant argument, and a transfer
+      // between the user's own wallets has no merchant to record. See
+      // `transferInput`'s own comment (src/lib/validation/transaction.ts)
+      // for the full asymmetry.
+      merchant,
     })
     .select("id")
     .single();
@@ -182,6 +213,188 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
 
   revalidatePath("/", "layout");
   return { id: data.id };
+}
+
+/**
+ * Edits an existing expense or income transaction — Task 4's transfer edit
+ * is a separate action; this one refuses a transfer row outright rather than
+ * silently mis-handling it (see the `kind === "transfer"` guard below).
+ *
+ * `wallet_id` and `kind` are never read from `input` — `transactionEditInput`
+ * (src/lib/validation/transaction.ts) doesn't even have those fields, and
+ * the row's real ones are loaded from the database first, exactly as this
+ * function's own doc comment on that schema requires. That load also
+ * doubles as existence/visibility check: `transactions_member` RLS
+ * (is_wallet_member(wallet_id)) means this SELECT already comes back empty
+ * for a row the caller isn't a member of, so there is no separate membership
+ * check to write here, mirroring `createTransaction`'s wallet lookup.
+ *
+ * Every other check below mirrors `createTransaction`'s, because editing a
+ * transaction must not be able to reach a state creating one couldn't: the
+ * wallet must be active, the category (when one is posted — `category_id` is
+ * nullable here, unlike `createTransaction`'s required field, since clearing
+ * a transaction's category is a legitimate edit) must belong to the same
+ * wallet and match the transaction's kind, and the amount must be non-zero
+ * with the sign `kind` requires. The ONE check that is not a straight mirror
+ * is the archived-category one — see its own comment below for why keeping
+ * an archived category a row already carries is not a state a create could
+ * not reach.
+ */
+export async function updateTransaction(input: TransactionEditInput): Promise<MutationResult> {
+  const parsed = transactionEditInput.safeParse(input);
+  if (!parsed.success) return { error: parsed.error.issues[0]!.message };
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in" };
+
+  const { id, amount, occurred_on, category_id, note, merchant } = parsed.data;
+
+  // Load the row first to learn its wallet_id, kind and CURRENT category —
+  // a posted wallet_id/kind is never trusted, and there is no such field on
+  // transactionEditInput to trust in the first place. `category_id` is read
+  // here purely to tell "this edit KEEPS the category the row already had"
+  // apart from "this edit CHOOSES a category," which is the whole of the
+  // archived-category carve-out below; the value written is always the
+  // POSTED one, never this.
+  //
+  // `.is("deleted_at", null)` here (and on the UPDATE below) is a deliberate
+  // choice, not an oversight: a soft-deleted row is not offered anywhere in
+  // the UI (fix round 1 review) and editing one directly would be an
+  // unstated asymmetry with `setDeletedAt`'s own restore/delete pair — this
+  // action is for editing a LIVE transaction, and a deleted one must be
+  // restored first. Filtered at both steps rather than just the lookup so a
+  // delete racing between them still lands on "Transaction not found"
+  // instead of a stray write to a row the user believes is gone.
+  const { data: existing } = await supabase
+    .from("transactions")
+    .select("wallet_id, kind, category_id")
+    .eq("id", id)
+    .is("deleted_at", null)
+    .single();
+  if (!existing) return { error: "Transaction not found" };
+  const { wallet_id, kind, category_id: currentCategoryId } = existing;
+
+  // A transfer leg reaching here would otherwise sail past every check below
+  // (a transfer's category_id is always null, per 0003's transfer_shape
+  // CHECK, so the category branch is skipped) and die inside signedAmount,
+  // which throws for kind "transfer" — an uncaught throw inside a Server
+  // Function is masked to an opaque digest in production (this file's own
+  // doc comment), not the readable error this module promises. Refusing
+  // explicitly, before any of that, keeps the promise and points the caller
+  // at the right place instead.
+  if (kind === "transfer") {
+    return { error: "This is a transfer — edit it from the transfer, not the transaction" };
+  }
+
+  const { data: wallet } = await supabase
+    .from("wallets")
+    .select("currency_code, archived_at")
+    .eq("id", wallet_id)
+    .single();
+  if (!wallet) return { error: "Wallet not found" };
+  // Distinct from "Wallet not found" (fix precedent: recurring.ts's
+  // recordOccurrence draws the identical distinction, and its own doc
+  // comment explains why conflating "missing" and "archived" into one
+  // message is wrong) — this transaction's wallet is known to exist and
+  // belong to the caller (the SELECT above already proved that), so a
+  // vague "not found" would be actively misleading here, unlike
+  // createTransaction's identically-worded check on a wallet freshly typed
+  // into a picker.
+  if (wallet.archived_at) return { error: "This wallet has been archived." };
+
+  // Unlike createTransaction, category_id may be null here — clearing a
+  // transaction's category is a legitimate edit (transactionEditInput's own
+  // doc comment), so the lookup and its checks are skipped entirely rather
+  // than rejecting a null category the way a create would.
+  if (category_id) {
+    const { data: category } = await supabase
+      .from("categories")
+      .select("kind, archived_at")
+      .eq("id", category_id)
+      .eq("wallet_id", wallet_id)
+      .single();
+    if (!category) return { error: "Choose a category" };
+
+    // An edit may KEEP an archived category it already has; it may not
+    // newly CHOOSE one.
+    //
+    // Spec §3.3 mirrors `createTransaction`'s checks here so an edit cannot
+    // reach a state a create could not. A row that already carries an
+    // archived category is not such a state: it was filed legitimately
+    // while that category was still active, and the category was archived
+    // afterwards. Refusing to re-accept it makes every OTHER field of that
+    // row — its note, its merchant, its date, its amount — uneditable
+    // forever, which contradicts spec §1.1 ("let a user correct any
+    // transaction they have already recorded"). And there is no escape
+    // hatch in the UI: CategoryPicker's `onChange` is `(c: Category) =>
+    // void`, so the user cannot clear the selection to get past this —
+    // their only way to save an unrelated field would be to silently
+    // re-categorise the transaction.
+    //
+    // Deliberately narrow. It is keyed on the POSTED id equalling the id
+    // already on the row, NOT on "the row has some category" — a different
+    // archived category is still refused (`createTransaction`'s own
+    // archived-category comment above has the reasoning that still
+    // applies to newly choosing one). And it exempts ONLY the archived
+    // check: the same-wallet filter on the lookup above and the kind check
+    // below both stay unconditional. Keeping those costs nothing for an
+    // unchanged category — it always matched kind and wallet at create
+    // time, and neither `kind` nor `wallet_id` is editable — while still
+    // closing the case of a category whose own kind changed underneath
+    // this row.
+    const keepsItsOwnCategory = category_id === currentCategoryId;
+    if (category.archived_at && !keepsItsOwnCategory) return { error: "Choose a category" };
+
+    if (category.kind !== kind) {
+      return { error: "That category doesn't match this transaction type" };
+    }
+  }
+
+  const minorUnit = minorUnitFor(wallet.currency_code);
+  const precisionIssue = precisionError(amount, minorUnit, wallet.currency_code);
+  if (precisionIssue) return { error: precisionIssue };
+
+  let magnitude: number;
+  try {
+    magnitude = parseAmountInput(amount, minorUnit);
+  } catch {
+    return { error: "That amount isn't valid" };
+  }
+  if (magnitude === 0) return { error: "Enter an amount greater than zero" };
+
+  // Built field by field, not `{ ...parsed.data }` — the same discipline
+  // setDeletedAt's UPDATE follows below. wallet_id and kind aren't in
+  // parsed.data (the schema never names them) and recurring_occurrence_on
+  // isn't either, but kind IS in `authenticated`'s effective UPDATE grant
+  // (0004_rls.sql, never revoked by 0016) — the schema's omission plus this
+  // explicit, named payload are the only two things keeping it out of the
+  // statement.
+  const { data: updated, error } = await supabase
+    .from("transactions")
+    .update({
+      amount_minor: signedAmount(kind, magnitude),
+      category_id,
+      occurred_on,
+      note,
+      merchant,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .is("deleted_at", null)
+    .select("id");
+
+  if (error) return { error: "Could not save transaction. Please try again." };
+  // A zero-row UPDATE is not a Postgres error — archiveWallet and
+  // archiveCategory both make this same check, and both exist because this
+  // codebase has shipped the "reported success, database untouched" bug
+  // before.
+  if (!updated || updated.length === 0) return { error: "Transaction not found" };
+
+  revalidatePath("/", "layout");
+  return { ok: true };
 }
 
 /**
@@ -286,6 +499,230 @@ export async function createTransfer(input: TransferInput): Promise<TransferResu
 }
 
 /**
+ * Edits an existing transfer — both legs together, via the
+ * `update_transfer_pair` RPC (supabase/migrations/0016_editable_transactions.sql).
+ *
+ * **Why an RPC, not two `.update()` calls from here.** A transfer is a PAIR
+ * of rows sharing `transfer_id` with opposite-signed `amount_minor`
+ * (0003_transactions.sql's `transfer_shape`/`non_transfer_no_link` CHECKs).
+ * Editing the amount has to change BOTH rows' magnitude while preserving
+ * each row's own sign — PostgREST cannot express a `CASE` inside a single
+ * `.update()` call, so that alone rules out one statement from the client.
+ * Two separate client-side `.update()` calls were the other option this
+ * task's brief floated, and they were rejected: each is its own HTTP
+ * request and its own Postgres transaction, so they are not atomic — a
+ * request that failed (network blip, connection drop) between the first
+ * `.update()` and the second would leave one leg re-dated/re-amounted and
+ * the other leg untouched, silently making money appear or vanish. That is
+ * the exact corruption this task exists to prevent, so "handle a partial
+ * failure by rolling the first one back from application code" is not a
+ * real answer — there is no way to guarantee that rollback itself runs.
+ * Wrapping both writes in one PL/pgSQL statement (`update_transfer_pair`)
+ * makes them one Postgres transaction, the same way `create_transfer`
+ * (0005_transfer_fn.sql) already solved the identical problem for the
+ * INSERT side — this function is that precedent's UPDATE counterpart, and
+ * `security invoker` for the same reason: it must run under the caller's
+ * own `transactions_member` RLS and column-scoped UPDATE grant
+ * (0004_rls.sql, extended by 0016), not with elevated rights.
+ *
+ * **`amount_out`/`amount_in`, mirroring `create_transfer` exactly (fix
+ * round 1).** The original version of this function took a single shared
+ * `amount` — a defect in `transferEditInput` (Task 2), not something this
+ * function could correctly work around: `create_transfer` takes independent
+ * `amount_out`/`amount_in` bigints because a cross-currency transfer's two
+ * legs are genuinely different amounts in different currencies, while a
+ * same-currency transfer must additionally balance. A single shared amount
+ * can only ever express the same-currency case, so the original version
+ * refused every edit to a cross-currency transfer — not just its amount,
+ * its date/note/merchant too, since `amount` was required with no "leave
+ * this alone" option. `transferEditInput` now carries both fields (that
+ * schema's own doc comment has the full defect writeup), and this function
+ * no longer needs its own currency-mismatch guard: the balance invariant
+ * that guard existed to protect now lives in `update_transfer_pair` itself,
+ * which protects the EDIT path the way `create_transfer` protects the
+ * CREATE path — neither is the only thing that can move `amount_minor`.
+ * 0004_rls.sql:83 grants `update (amount_minor)` on `transactions`
+ * table-wide, so a member can unbalance a pair with an ordinary PATCH to
+ * one leg, no RPC involved at all; the database as a whole does not
+ * guarantee a transfer stays balanced. `update_transfer_pair` raises
+ * `'a same-currency transfer must balance'` — the exact string
+ * `create_transfer` already raises, so no change was needed to
+ * `KNOWN_TRANSFER_ERRORS` below to forward it.
+ *
+ * A lookup precedes the RPC call (`.eq("transfer_id", ...).is("deleted_at",
+ * null)`, no `.select("id")`/`.single()` — a transfer is always exactly two
+ * rows) for three reasons: it carries each leg's `wallet_id`, which is what
+ * the archived-wallet check below (task 8, item 3) needs; it is what makes
+ * each amount's precision/parsing
+ * currency-aware at all (a leg's `currency_code` has to come from
+ * somewhere, and `amount_out`/`amount_in` are parsed against the OUTGOING
+ * and INCOMING leg's own currency respectively, read by sign off the rows —
+ * never assumed to be the same currency, unlike the original version), and
+ * it fails fast with a readable error before ever calling the RPC. It is
+ * NOT a substitute for the RPC's own `deleted_at is null` filter and
+ * exactly-two-rows check below — a delete racing between the lookup and
+ * the RPC call must still land on "not found," not a stray write to a row
+ * the user believes is gone, exactly like `updateTransaction`'s identical
+ * two-checkpoint reasoning.
+ */
+export async function updateTransfer(input: TransferEditInput): Promise<MutationResult> {
+  const parsed = transferEditInput.safeParse(input);
+  if (!parsed.success) return { error: parsed.error.issues[0]!.message };
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in" };
+
+  const { transfer_id, amount_out, amount_in, occurred_on, note, merchant } = parsed.data;
+
+  // `transactions_member` RLS means this only ever sees legs the caller is
+  // a member of — a caller who has lost membership on one of the two
+  // wallets since the transfer was created sees fewer than two rows here,
+  // the same "incomplete pair" outcome as a genuinely missing/foreign
+  // transfer_id, and is refused for the identical reason: this action must
+  // never touch one leg of a pair without the other.
+  const { data: legs } = await supabase
+    .from("transactions")
+    // `wallet_id` (task 8, item 3) is read only to check each leg's wallet is
+    // still active below — it is never posted, never written, and never
+    // trusted from the caller: `transferEditInput` has no wallet field at
+    // all, exactly like `transactionEditInput`.
+    .select("wallet_id, amount_minor, currency_code")
+    .eq("transfer_id", transfer_id)
+    .is("deleted_at", null);
+  if (!legs || legs.length !== 2) return { error: "Transfer not found" };
+
+  // Which leg is "out" (amount_out applies) and which is "in" (amount_in
+  // applies) is read from each row's OWN current sign, never guessed from
+  // array order — the identical discipline update_transfer_pair's own CASE
+  // follows for the actual write. A malformed pair (both legs the same
+  // sign — nothing in the schema's CHECK constraints rules that out, only
+  // `create_transfer` itself ever producing opposite signs) is reported as
+  // "not found" rather than silently misapplied to the wrong leg.
+  const outLeg = legs.find((l) => l.amount_minor < 0);
+  const inLeg = legs.find((l) => l.amount_minor > 0);
+  if (!outLeg || !inLeg) return { error: "Transfer not found" };
+
+  // BOTH legs' wallets must be active — task 8, item 3, closing a gap that
+  // fell in the seam between the transaction edit and the transfer edit.
+  // `updateTransaction` has made this check since it was written, and
+  // `createTransfer` rejects archived endpoints on the create side, but this
+  // function had neither: a user who archived a closed savings account could
+  // no longer edit an ordinary expense in it, yet could still change the
+  // amount of a transfer LEG into it — money moving into an archived
+  // wallet's balance through the one path that skipped the check. Nothing
+  // was corrupted (the pair stays balanced), but spec §3.3's "an edit must
+  // not reach a state a create could not" was not being applied uniformly.
+  //
+  // BOTH, not just the leg the caller happened to open: one statement moves
+  // both rows, so there is no half-edit to allow, and `createTransfer`'s own
+  // endpoint check is likewise on both.
+  //
+  // `.in("id", [...])` in one round trip, mirroring `createTransfer`'s
+  // identical two-wallet lookup rather than issuing two `.single()` queries.
+  // `wallets_select` RLS already scoped this to wallets the caller belongs
+  // to — and membership was already proven by the legs lookup above, which
+  // is keyed on the same `is_wallet_member(wallet_id)` — so a missing row
+  // here is a type-safety net rather than a reachable branch, folded into
+  // the same message rather than given one of its own.
+  const { data: legWallets } = await supabase
+    .from("wallets")
+    .select("id, archived_at")
+    .in("id", [outLeg.wallet_id, inLeg.wallet_id]);
+  const outWallet = legWallets?.find((w) => w.id === outLeg.wallet_id);
+  const inWallet = legWallets?.find((w) => w.id === inLeg.wallet_id);
+  if (!outWallet || !inWallet) return { error: "Wallet not found" };
+  // The identical string `updateTransaction` returns, deliberately — the two
+  // actions describe the same refusal and must not drift into two wordings
+  // for it. It does not name WHICH wallet: the edit page (task 8, item 2)
+  // already names the archived wallet(s) before this form is ever drawn, so
+  // by the time this string can be reached the caller is posting directly,
+  // and telling them more would not help them.
+  if (outWallet.archived_at || inWallet.archived_at) {
+    return { error: "This wallet has been archived." };
+  }
+
+  const outMinorUnit = minorUnitFor(outLeg.currency_code);
+  const outPrecisionIssue = precisionError(amount_out, outMinorUnit, outLeg.currency_code);
+  if (outPrecisionIssue) return { error: outPrecisionIssue };
+
+  const inMinorUnit = minorUnitFor(inLeg.currency_code);
+  const inPrecisionIssue = precisionError(amount_in, inMinorUnit, inLeg.currency_code);
+  if (inPrecisionIssue) return { error: inPrecisionIssue };
+
+  let outMagnitude: number;
+  let inMagnitude: number;
+  try {
+    outMagnitude = parseAmountInput(amount_out, outMinorUnit);
+    inMagnitude = parseAmountInput(amount_in, inMinorUnit);
+  } catch {
+    return { error: "That amount isn't valid" };
+  }
+  if (outMagnitude === 0 || inMagnitude === 0) {
+    return { error: "Enter an amount greater than zero" };
+  }
+
+  // Built field by field and named explicitly, matching updateTransaction's
+  // own discipline — there is no `category_id` (or `wallet_id`/`kind`) to
+  // spread in the first place, since transferEditInput never carries one
+  // (that schema's own doc comment: the transfer_shape CHECK forces a
+  // transfer's category_id to null), so this call can never put one on
+  // the wire no matter what `parsed.data` contains. The same-currency
+  // balance check is deliberately NOT duplicated here — see this
+  // function's own doc comment above for why that invariant lives in
+  // update_transfer_pair alone.
+  //
+  // `note ?? undefined` / `merchant ?? undefined`: the same codegen quirk
+  // createTransfer's own `note: note || undefined` comment already covers —
+  // `p_note`/`p_merchant` are `text default null` SQL parameters, but
+  // Supabase's generated Args type maps a defaulted parameter to an
+  // OPTIONAL TS property (`p_note?: string`), not a nullable one. An
+  // omitted key, once JSON-serialized, reaches Postgres exactly the way an
+  // absent argument would — the function's own `default null` takes over —
+  // so this is equivalent to sending `null` explicitly, just typed
+  // correctly. Unlike createTransfer's `note || undefined` (which also
+  // treats an empty string as "omit"), this is `?? undefined`: `note`/
+  // `merchant` here are already `string | null` (transferEditInput's
+  // `editableText` already turned a blank string into `null` during
+  // parsing), so there is no remaining falsy-but-meaningful case to fold in.
+  const { data: updated, error } = await supabase.rpc("update_transfer_pair", {
+    p_transfer_id: transfer_id,
+    p_amount_out: outMagnitude,
+    p_amount_in: inMagnitude,
+    p_occurred_on: occurred_on,
+    p_note: note ?? undefined,
+    p_merchant: merchant ?? undefined,
+  });
+
+  if (error) {
+    // update_transfer_pair raises the identical strings create_transfer
+    // does for the null/positivity/balance guards (this function's own doc
+    // comment) — already covered by KNOWN_TRANSFER_ERRORS, so forwarding
+    // them here is the same allowlisted, no-raw-provider-text path
+    // createTransfer already uses, not a new hole.
+    return {
+      error: KNOWN_TRANSFER_ERRORS.has(error.message)
+        ? error.message
+        : "Could not save transfer. Please try again.",
+    };
+  }
+  // A zero- or one-row result is not a Postgres error — same
+  // reported-success-database-untouched concern archiveWallet,
+  // archiveCategory and updateTransaction's own check all guard against.
+  // Exactly two rows, never fewer, never more (transfer_id is never reused
+  // across pairs — 0005_transfer_fn.sql's create_transfer always mints a
+  // fresh one), or this pair is reported incomplete rather than "fixed."
+  if (!updated || updated.length !== 2) {
+    return { error: "Could not update both legs of this transfer. Please try again." };
+  }
+
+  revalidatePath("/", "layout");
+  return { ok: true };
+}
+
+/**
  * Soft delete / restore, sharing one implementation. A transfer's two legs
  * go together — undo must restore (or remove) an intact pair, never half of
  * one — so when the target row is a transfer leg, the UPDATE is scoped by
@@ -362,18 +799,25 @@ async function setDeletedAt(id: string, value: string | null): Promise<MutationR
     : await query.eq("id", id).select("id");
   if (error) {
     // 23505 unique_violation on transactions_recurring_occurrence (the
-    // partial unique index supabase/migrations/0015_recurring.sql adds on
-    // (recurring_id, occurred_on) where recurring_id is not null and
-    // deleted_at is null) can only fire on a RESTORE (value === null,
-    // i.e. this is restoreTransaction): the index's own predicate excludes
-    // soft-deleted rows, so a soft DELETE always transitions a row OUT of
-    // it and can never collide, while un-deleting can newly collide with a
-    // live sibling that already occupies the same (recurring_id,
-    // occurred_on) pair. Real path this closes: a recorded rent row is
-    // deleted, the same occurrence is recorded again from the recurring
-    // card, and the user taps Undo on the ORIGINAL delete toast — without
-    // this branch that produced the generic message below, which gave no
-    // hint the row was unrecoverable via Undo and no path to fix it.
+    // partial unique index supabase/migrations/0015_recurring.sql adds,
+    // moved by 0016_editable_transactions.sql onto (recurring_id,
+    // recurring_occurrence_on) -- the occurrence's SCHEDULED date, not its
+    // occurred_on -- where recurring_id is not null and deleted_at is
+    // null) can only fire on a RESTORE (value === null, i.e. this is
+    // restoreTransaction): the index's own predicate excludes soft-deleted
+    // rows, so a soft DELETE always transitions a row OUT of it and can
+    // never collide, while un-deleting can newly collide with a live
+    // sibling that already occupies the same (recurring_id,
+    // recurring_occurrence_on) pair. Real path this closes: a recorded
+    // rent row is deleted, the same occurrence is recorded again from the
+    // recurring card, and the user taps Undo on the ORIGINAL delete toast
+    // — without this branch that produced the generic message below,
+    // which gave no hint the row was unrecoverable via Undo and no path
+    // to fix it. This logic needs no change for the split -- both the
+    // deleted row and its live replacement still share the same
+    // recurring_occurrence_on regardless of what either one's occurred_on
+    // says, so the collision this branch explains still fires exactly
+    // when it used to.
     if (error.code === "23505") {
       return {
         error: "This occurrence has already been recorded again, so the deleted copy can't be restored.",

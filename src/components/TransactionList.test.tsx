@@ -37,12 +37,19 @@ const baseRow: Row = {
   currency_code: "USD",
   occurred_on: "2026-08-18",
   wallet_name: "USD Checking",
+  merchant: null,
   note: null,
   category_name: "Groceries",
   category_icon: "shopping-basket",
   color_slot: 1,
   created_by_name: null,
 };
+
+// Overrides layered onto `baseRow` — the merchant tests below use this
+// factory verbatim, matching this task's brief.
+function row(overrides: Partial<Row> = {}): Row {
+  return { ...baseRow, ...overrides };
+}
 
 // Matches whichever row's Delete button is rendered — the accessible name
 // includes the row's own label ("Groceries"/"Transfer"/"Uncategorised")
@@ -198,6 +205,61 @@ describe("TransactionList — note", () => {
 });
 
 /**
+ * `merchant` (the transactions table's own `text` column, <=120 chars, Task
+ * 1 of this plan) outranks `note` as the row's primary line — it is the
+ * most specific name available for a transaction, structured rather than
+ * freeform. When both are present the note does not disappear; it demotes
+ * to the secondary line beside the category, the same way the category
+ * itself already demotes when a note alone took the primary line.
+ */
+describe("TransactionList — merchant", () => {
+  it("uses the merchant as the row's primary line when present", () => {
+    render(<TransactionList rows={[row({ merchant: "Tesco", note: "weekly shop" })]} />);
+    expect(screen.getByText("Tesco")).toBeInTheDocument();
+  });
+
+  it("demotes the note beside the category when a merchant is present", () => {
+    render(
+      <TransactionList rows={[row({ merchant: "Tesco", note: "weekly shop", category_name: "Groceries" })]} />,
+    );
+    expect(screen.getByText(/weekly shop/)).toBeInTheDocument();
+    expect(screen.getByText(/Groceries/)).toBeInTheDocument();
+  });
+
+  it("falls back to the note exactly as before when there is no merchant", () => {
+    // Additive: a row with no merchant must render precisely as it does today.
+    render(<TransactionList rows={[row({ merchant: null, note: "weekly shop" })]} />);
+    expect(screen.getByText("weekly shop")).toBeInTheDocument();
+  });
+
+  it("treats a blank merchant as absent", () => {
+    render(<TransactionList rows={[row({ merchant: "   ", note: "weekly shop" })]} />);
+    expect(screen.getByText("weekly shop")).toBeInTheDocument();
+  });
+
+  it("names the Delete button after the merchant when there is one", () => {
+    // rowLabel drives the Delete aria-label and the toast; a row that announces
+    // one name and a delete button that announces another is the defect here.
+    render(<TransactionList rows={[row({ merchant: "Tesco", amount_minor: -1800 })]} />);
+    expect(screen.getByRole("button", { name: /Delete Tesco/ })).toBeInTheDocument();
+  });
+
+  it("still shows the category in the secondary line for a merchant-only row (no note)", () => {
+    // Fix round 1: the secondary-line category condition is
+    // `(merchantOf(r) || noteOf(r)) && r.category_name` — merchant-blind
+    // `noteOf(r) && r.category_name` (the pre-existing form) differs from it
+    // in exactly this case: merchant present, note absent. Every other test
+    // in this describe block also sets `note`, so none of them catches a
+    // regression back to the merchant-blind form — this is the commonest
+    // row shape once merchants are in use, and the one every other case
+    // here happens to skip.
+    render(<TransactionList rows={[row({ merchant: "Tesco", note: null, category_name: "Groceries" })]} />);
+    expect(screen.getByText("Tesco")).toBeInTheDocument();
+    expect(screen.getByText(/Groceries/)).toBeInTheDocument();
+  });
+});
+
+/**
  * Attribution renders ONLY when the caller tells us the wallet has more
  * than one member (`showAttribution`) — a solo wallet would otherwise show
  * "added by you" on every row, which is noise, not information. The page
@@ -265,5 +327,90 @@ describe("TransactionList — attribution", () => {
     // segment just because showAttribution is true page-wide.
     expect(screen.getAllByText(/added by/i)).toHaveLength(1);
     expect(screen.getByText("Coffee · Personal")).toBeInTheDocument();
+  });
+});
+
+/**
+ * Task 6 (editable-transactions plan): the row's entry point into editing
+ * it. Deliberately NOT the whole row — each row already contains a Delete
+ * `<button>`, and wrapping that in a link would nest one interactive
+ * element inside another (invalid HTML, ambiguous click target).
+ * `WalletList.tsx` already solved this exact problem (the wallet's NAME is
+ * the link, not the row); this follows that precedent, so the row's primary
+ * label (merchant → note → category, `rowLabel`) is the link.
+ */
+describe("TransactionList — edit entry point (Task 6)", () => {
+  it("links the row's primary label to that transaction's edit route", () => {
+    render(<TransactionList rows={[{ ...baseRow, id: "row-42", category_name: "Groceries" }]} />);
+    const link = screen.getByRole("link", { name: "Groceries" });
+    expect(link).toHaveAttribute("href", "/transactions/row-42/edit");
+  });
+
+  it("names the link after merchant/note, matching the Delete button's own accessible name", () => {
+    render(<TransactionList rows={[row({ id: "row-7", merchant: "Tesco" })]} />);
+    // The link's accessible name is `rowLabel`'s output alone — nothing
+    // else inside the anchor — so it matches what Delete already announces
+    // (`Delete ${label}, ${amountText}`): a row cannot name itself one
+    // thing to a link and another to its delete control.
+    expect(screen.getByRole("link", { name: "Tesco" })).toHaveAttribute(
+      "href",
+      "/transactions/row-7/edit",
+    );
+    expect(screen.getByRole("button", { name: /^Delete Tesco/ })).toBeInTheDocument();
+  });
+
+  it("does not make the whole row a link — Delete is its own, separate control", () => {
+    render(<TransactionList rows={[{ ...baseRow, id: "row-1", category_name: "Groceries" }]} />);
+    // Exactly one link and one button, sharing no DOM ancestor-descendant
+    // relationship of one wrapping the other — the failure mode this
+    // guards is a link wrapping the Delete button (invalid HTML: a button
+    // nested inside an anchor).
+    const link = screen.getByRole("link", { name: "Groceries" });
+    const del = screen.getByRole("button", { name: /^Delete /i });
+    expect(link.contains(del)).toBe(false);
+    expect(del.contains(link)).toBe(false);
+  });
+
+  /**
+   * Fix round 1, Minor 1: the edit link now carries the origin of the screen
+   * it was rendered on, so a save can return there instead of always landing
+   * on the global list.
+   *
+   * Both halves in one test, and both `toHaveAttribute` on the WHOLE href
+   * rather than a `toContain`: "the href mentions the origin somewhere" would
+   * pass on a malformed URL (`/transactions/row-3/editwallet:...`), and a
+   * separate no-origin test would not catch an implementation that appended a
+   * bare `?from=` or `?from=undefined` when the prop is absent — which is the
+   * regression that silently changes /transactions' existing hrefs.
+   */
+  it("appends ?from only when an origin is given, and leaves the href untouched otherwise", () => {
+    const WALLET = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const withOrigin = render(
+      <TransactionList
+        rows={[{ ...baseRow, id: "row-3", category_name: "Groceries" }]}
+        origin={`wallet:${WALLET}`}
+      />,
+    );
+    expect(screen.getByRole("link", { name: "Groceries" })).toHaveAttribute(
+      "href",
+      `/transactions/row-3/edit?from=wallet:${WALLET}`,
+    );
+    withOrigin.unmount();
+
+    render(<TransactionList rows={[{ ...baseRow, id: "row-3", category_name: "Groceries" }]} />);
+    expect(screen.getByRole("link", { name: "Groceries" })).toHaveAttribute(
+      "href",
+      "/transactions/row-3/edit",
+    );
+  });
+
+  it("Delete still works with the label now a link (link and delete are independent controls)", async () => {
+    vi.mocked(softDeleteTransaction).mockResolvedValue({ ok: true });
+    render(<TransactionList rows={[{ ...baseRow, id: "row-9", category_name: "Groceries" }]} />);
+
+    await clickDelete();
+
+    expect(await screen.findByText("Groceries deleted")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
   });
 });

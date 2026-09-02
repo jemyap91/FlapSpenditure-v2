@@ -127,31 +127,120 @@ export function precisionError(
     : `${currencyCode} allows up to ${minorUnit} decimal place${minorUnit === 1 ? "" : "s"}.`;
 }
 
+/**
+ * Free-text amount input shared by every schema in this file — checked only
+ * for "is this non-empty text", not yet parsed as a number: `parseAmountInput`
+ * (src/lib/money.ts) does the real parsing once the field reaches an action,
+ * and `precisionError` above checks decimal-place limits once the wallet's
+ * currency is known. Factored out (Task 2 fix round) so the message and
+ * shape can't drift between the create and edit schemas — before this it
+ * was four copy-pasted literals, one per schema below.
+ */
+const amountField = z.string().trim().min(1, "Enter an amount");
+
+/**
+ * Stricter than a `\d{4}-\d{2}-\d{2}` regex: z.iso.date() rejects
+ * calendar-invalid strings like "2023-02-30" (verified — JS's own
+ * `Date.parse` silently rolls that over to March 2 instead of failing, so a
+ * plain regex would let it through to Postgres and surface as a raw driver
+ * error instead of a validation message). Shared by every schema below for
+ * the same drift-prevention reason as `amountField`.
+ */
+const dateField = z.iso.date("Enter a valid date");
+
+/**
+ * Same trimmed-string-capped-at-N, `""` → null treatment as an edit's
+ * `note`, factored out because `transactionInput.merchant` (below),
+ * `transactionEditInput.note`/`.merchant` and `transferEditInput.note`/
+ * `.merchant` all need it. Unlike `transactionInput`'s `note` field
+ * (`.optional().or(z.literal(""))`, which leaves `""` as `""`), these must
+ * come out as `string | null` — `TransactionList.tsx`'s `noteOf`/`merchantOf`
+ * already treat a blank string as absent when *reading* a row, but the
+ * create/edit actions write their parsed payload straight into an
+ * INSERT/UPDATE, so the coercion has to happen here or a blank string would
+ * be written to the row instead of NULL, giving that row an empty heading.
+ *
+ * Declared above `transactionInput` rather than beside the edit schemas
+ * (task 8, item 1): `transactionInput.merchant` is the first CREATE-schema
+ * field to use it, and a `function` declaration would hoist but a `const`
+ * arrow would not — keeping the definition physically before its first use
+ * removes the question entirely.
+ */
+function editableText(max: number, tooLongMessage: string) {
+  return z
+    .string()
+    .trim()
+    .max(max, tooLongMessage)
+    .nullable()
+    .transform((v) => (v ? v : null));
+}
+
 export const transactionInput = z.object({
   wallet_id: z.uuid(),
   kind: nonTransferKind,
-  amount: z.string().trim().min(1, "Enter an amount"),
+  amount: amountField,
   category_id: z.uuid("Choose a category"),
-  // Stricter than a `\d{4}-\d{2}-\d{2}` regex: z.iso.date() rejects
-  // calendar-invalid strings like "2023-02-30" (verified — JS's own
-  // `Date.parse` silently rolls that over to March 2 instead of failing,
-  // so a plain regex would let it through to Postgres and surface as a raw
-  // driver error instead of a validation message).
-  occurred_on: z.iso.date("Enter a valid date"),
+  occurred_on: dateField,
   note: z.string().trim().max(280, "Note is too long").optional().or(z.literal("")),
+  /**
+   * Task 8, item 1 — the create path's merchant. Shipped originally as an
+   * EDIT-only field, which made the column useless in the one flow where a
+   * merchant is actually known: standing at the till. `merchant` is now
+   * settable when the transaction is first recorded.
+   *
+   * The SAME `editableText(120, ...)` the two edit schemas below use — same
+   * 120-char cap as the column's own `length(merchant) <= 120` CHECK
+   * (0016_editable_transactions.sql), and the same blank-to-null coercion,
+   * for the same reason: `TransactionList`'s `merchantOf` treats `""` as
+   * absent, so storing one would give the row an empty primary line.
+   *
+   * Required (nullable), not `.optional()`, unlike `note` above: `note`'s
+   * optionality predates this plan, while `merchant` is modelled on
+   * `transactionEditInput.merchant`/`transferEditInput.merchant`, which are
+   * both required-and-nullable. Requiring it means a future caller of
+   * `createTransaction` gets a TYPE error rather than silently dropping the
+   * field — the whole defect this item exists to fix, reintroduced one call
+   * site at a time.
+   *
+   * No migration and no grant change: 0004_rls.sql:46-48 grants
+   * `insert` on `transactions` FULL-TABLE (only UPDATE is revoked and
+   * re-granted column-by-column at :83-84, and 0016 only ADDS `merchant` to
+   * that UPDATE list), so `authenticated` could already INSERT this column.
+   *
+   * There is deliberately NO counterpart on `transferInput` below — see its
+   * own comment for the asymmetry and why it is intended.
+   */
+  merchant: editableText(120, "Merchant is too long"),
 });
 
 export const transferInput = z
   .object({
     from_wallet_id: z.uuid(),
     to_wallet_id: z.uuid(),
-    amount: z.string().trim().min(1, "Enter an amount"),
+    amount: amountField,
     // Only meaningful for a cross-currency transfer — see the check in
     // createTransfer. Omitted, the destination is assumed to receive
     // exactly what the source sent, which only makes sense same-currency.
     amount_in: z.string().trim().optional(),
-    occurred_on: z.iso.date("Enter a valid date"),
+    occurred_on: dateField,
     note: z.string().trim().max(280, "Note is too long").optional().or(z.literal("")),
+    // NO `merchant` here, deliberately, and this asymmetry with
+    // `transferEditInput` below (which HAS one) is intended — task 8, item 1.
+    //
+    // A transfer is created by the `create_transfer` RPC
+    // (supabase/migrations/0005_transfer_fn.sql), whose signature has no
+    // merchant parameter. Adding one means dropping and recreating a
+    // reviewed function, and risks a PostgREST RPC overload — real cost, for
+    // a field a transfer does not have: a transfer moves money between the
+    // user's OWN wallets, so there is no third party to name.
+    //
+    // `transferEditInput.merchant`/`update_transfer_pair`'s `p_merchant`
+    // stay exactly as they shipped. They are reviewed, spec §3.1 lists
+    // merchant among a transfer's editable fields, and removing them to
+    // "restore symmetry" would delete working, specified behaviour. The
+    // asymmetry is create-vs-edit, not a bug: a transfer that acquired a
+    // merchant some other way (a direct POST, an import) must still be able
+    // to have it corrected or cleared.
   })
   .refine((v) => v.from_wallet_id !== v.to_wallet_id, {
     message: "Choose two different wallets",
@@ -160,3 +249,117 @@ export const transferInput = z
 
 export type TransactionInput = z.infer<typeof transactionInput>;
 export type TransferInput = z.infer<typeof transferInput>;
+
+/**
+ * Editing an existing (non-transfer) transaction. Modeled on
+ * `transactionInput` above: `amount` and `occurred_on` share the same
+ * `amountField`/`dateField` schemas, and `note`/`merchant` reuse `note`'s
+ * own trim+cap shape via `editableText`. Two things are deliberately
+ * different from `transactionInput`:
+ *
+ * - No `wallet_id` and no `kind`. Neither is editable, but they are NOT
+ *   blocked the same way — Postgres GRANTs are additive across migrations,
+ *   not replacements, so 0016_editable_transactions.sql's
+ *   `grant update (merchant)` only ADDS to 0004_rls.sql:83's original
+ *   `grant update (kind, amount_minor, currency_code, category_id,
+ *   occurred_on, note, deleted_at, updated_at)`; it revokes nothing.
+ *     - `wallet_id` genuinely is blocked at both layers: it has never
+ *       appeared in any `grant update (...)` list on `transactions`, so it
+ *       isn't grantable regardless of what this schema does. That closes a
+ *       proven privilege-escalation path (a member reassigning a row to a
+ *       wallet they don't belong to) twice over.
+ *     - `kind`, by contrast, IS in the effective grant today (via 0004,
+ *       never revoked) — there is no database backstop for it. This
+ *       schema's omission is the ONLY thing keeping `kind` out of an edit:
+ *       a field absent here is absent from `parsed.data`, and the edit
+ *       action builds its UPDATE field-by-field from `parsed.data` (the
+ *       same pattern `setDeletedAt` already uses —
+ *       src/server/actions/transactions.ts, `.update({ deleted_at: ...,
+ *       updated_at: ... })` — rather than spreading `parsed.data` whole),
+ *       so a field this schema never names never reaches that statement.
+ *       Do not shorten this back to "excluded from the grant" without
+ *       rechecking 0004's grant list — that was wrong once already.
+ * - `category_id` is nullable, unlike `transactionInput`'s required
+ *   `z.uuid("Choose a category")`. That requirement is `TransactionForm`'s
+ *   own creation-flow UX choice, not a database one — the `transactions`
+ *   table has never forced a non-transfer row to carry a category (see
+ *   `TransactionList.tsx`'s `Row` doc comment: "an expense/income row can
+ *   ALSO have a null category"), and `merchant` joining the editable-column
+ *   list alongside the pre-existing `category_id` (0004_rls.sql:83,
+ *   confirmed still present in 0016's grant per Task 1's report) means an
+ *   edit can legitimately clear it back to null.
+ *
+ * `id` identifies which row to update; it is never itself written.
+ */
+export const transactionEditInput = z.object({
+  id: z.uuid(),
+  amount: amountField,
+  occurred_on: dateField,
+  category_id: z.uuid("Choose a category").nullable(),
+  note: editableText(280, "Note is too long"),
+  merchant: editableText(120, "Merchant is too long"),
+});
+
+/**
+ * Editing an existing transfer leg. Modeled on `transferInput` above the
+ * same way `transactionEditInput` is modeled on `transactionInput`:
+ * `occurred_on` shares `dateField`, `note`/`merchant` share `editableText`.
+ *
+ * No `from_wallet_id`/`to_wallet_id` (wallets aren't editable — same reason
+ * as `transactionEditInput`'s missing `wallet_id`) and, unlike
+ * `transactionEditInput`, no `category_id` at all: `0003_transactions.sql`'s
+ * `transfer_shape` CHECK forces a transfer's `category_id` to be null, so a
+ * schema that accepted one here would let a caller's payload reach Postgres
+ * as a constraint violation instead of a message this action can return.
+ * `transfer_id` identifies which pair of linked rows to update.
+ *
+ * `amount_out`/`amount_in`, not a single `amount` (task-4 fix round 1 —
+ * this schema's own defect, found and fixed after Task 4 shipped
+ * `updateTransfer` against the original single-`amount` version). A single
+ * shared amount cannot represent what `create_transfer`
+ * (0005_transfer_fn.sql) already models on the CREATE side: that function
+ * takes independent `amount_out`/`amount_in` bigints precisely because a
+ * cross-currency transfer's two legs are genuinely different amounts in
+ * different currencies, while a same-currency transfer must additionally
+ * balance (`amount_out = amount_in`, enforced by `create_transfer` itself,
+ * not by this schema). The original single-`amount` field could only
+ * express the same-currency case; editing a cross-currency transfer's
+ * amount had no correct encoding at all, so Task 4's `updateTransfer`
+ * refused every edit to one (not just the amount — `amount` was a
+ * *required* field with no "leave this alone" option, so a cross-currency
+ * transfer's date/note/merchant were unreachable too). Naming the fields
+ * `amount_out`/`amount_in` (not `amount`/`amount_in` the way `transferInput`
+ * does above) mirrors `create_transfer`'s own parameter names exactly, and
+ * both are required here — unlike `transferInput.amount_in`, which is
+ * optional because *creating* a same-currency transfer only needs one
+ * number to be typed twice. There is no equivalent convenience being
+ * preserved on the edit path (the caller already knows both legs' amounts
+ * from what it is displaying), so there is no reason to special-case one
+ * as optional.
+ *
+ * The same-currency balance invariant is intentionally NOT re-checked here
+ * (or anywhere in `updateTransfer`) — `update_transfer_pair`
+ * (0016_editable_transactions.sql) is what protects the EDIT path, the way
+ * `create_transfer` protects the CREATE path. Neither is the only thing
+ * that can move `amount_minor`: 0004_rls.sql:83 grants
+ * `update (amount_minor)` on `transactions` table-wide, so a member can
+ * unbalance a pair with an ordinary PATCH to one leg, no RPC involved at
+ * all — the database as a whole does not guarantee a transfer stays
+ * balanced. Duplicating the RPC's check in this schema would let the two
+ * drift; a same-currency edit that posts `amount_out === amount_in`
+ * satisfies it trivially, and an unbalanced same-currency edit is refused
+ * by the RPC's own `raise exception 'a same-currency transfer must
+ * balance'`, translated to a readable error by `updateTransfer` via the
+ * same `KNOWN_TRANSFER_ERRORS` allowlist `createTransfer` already uses.
+ */
+export const transferEditInput = z.object({
+  transfer_id: z.uuid(),
+  amount_out: amountField,
+  amount_in: amountField,
+  occurred_on: dateField,
+  note: editableText(280, "Note is too long"),
+  merchant: editableText(120, "Merchant is too long"),
+});
+
+export type TransactionEditInput = z.infer<typeof transactionEditInput>;
+export type TransferEditInput = z.infer<typeof transferEditInput>;

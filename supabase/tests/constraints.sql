@@ -741,16 +741,20 @@ begin
           'ffffffff-0000-0000-0000-000000000003', 'monthly', '2026-01-01')
   returning id into r;
 
+  -- 0016_editable_transactions: recurring_occurrence_needs_rule now requires
+  -- recurring_occurrence_on wherever recurring_id is set. Set it equal to
+  -- occurred_on here, matching what a real Record call writes and preserving
+  -- this pre-0016 test's original identity (recurring_id, <that date>).
   insert into transactions (wallet_id, kind, amount_minor, currency_code,
-                            category_id, occurred_on, recurring_id)
+                            category_id, occurred_on, recurring_id, recurring_occurrence_on)
   values ('ffffffff-0000-0000-0000-000000000002', 'expense', -150000, 'USD',
-          'ffffffff-0000-0000-0000-000000000003', '2026-01-01', r);
+          'ffffffff-0000-0000-0000-000000000003', '2026-01-01', r, '2026-01-01');
 
   begin
     insert into transactions (wallet_id, kind, amount_minor, currency_code,
-                              category_id, occurred_on, recurring_id)
+                              category_id, occurred_on, recurring_id, recurring_occurrence_on)
     values ('ffffffff-0000-0000-0000-000000000002', 'expense', -150000, 'USD',
-            'ffffffff-0000-0000-0000-000000000003', '2026-01-01', r);
+            'ffffffff-0000-0000-0000-000000000003', '2026-01-01', r, '2026-01-01');
     raise exception 'expected the partial unique index to refuse a second record';
   exception when unique_violation then
     assert sqlerrm like '%transactions_recurring_occurrence%',
@@ -759,12 +763,17 @@ begin
 
   -- Soft-deleting the first frees the occurrence again: the index is partial
   -- on deleted_at, which is what makes an undone Record re-recordable.
+  -- Predicate deliberately still keyed on occurred_on, not
+  -- recurring_occurrence_on: both columns hold '2026-01-01' for this row
+  -- either way, but this pins which column the UPDATE is filtering by
+  -- rather than letting a fix-round edit quietly stop exercising this
+  -- pre-0016 test's own original shape.
   update transactions set deleted_at = now()
    where recurring_id = r and occurred_on = '2026-01-01';
   insert into transactions (wallet_id, kind, amount_minor, currency_code,
-                            category_id, occurred_on, recurring_id)
+                            category_id, occurred_on, recurring_id, recurring_occurrence_on)
   values ('ffffffff-0000-0000-0000-000000000002', 'expense', -150000, 'USD',
-          'ffffffff-0000-0000-0000-000000000003', '2026-01-01', r);
+          'ffffffff-0000-0000-0000-000000000003', '2026-01-01', r, '2026-01-01');
 end $$;
 
 -- Fix round 1 (task-2-fix-1) coverage. A second wallet/category, owned by
@@ -809,10 +818,12 @@ begin
     -- A transaction in the OTHER wallet, carrying this rule's id -- the
     -- squatting shape the reviewer proved live: nothing but this composite
     -- FK ties recurring_id to the SAME wallet as the rule it names.
+    -- recurring_occurrence_on set alongside recurring_id (0016): see the
+    -- comment on the same pattern above.
     insert into transactions (wallet_id, kind, amount_minor, currency_code,
-                              category_id, occurred_on, recurring_id)
+                              category_id, occurred_on, recurring_id, recurring_occurrence_on)
     values ('ffffffff-0000-0000-0000-000000000004', 'expense', -2000, 'USD',
-            'ffffffff-0000-0000-0000-000000000005', '2026-02-01', r);
+            'ffffffff-0000-0000-0000-000000000005', '2026-02-01', r, '2026-02-01');
     raise exception 'CONSTRAINT BROKEN: transactions_recurring_same_wallet accepted a cross-wallet recurring_id';
   exception
     when foreign_key_violation then
@@ -833,10 +844,12 @@ begin
           'ffffffff-0000-0000-0000-000000000003', 'monthly', '2026-03-01')
   returning id into r;
 
+  -- recurring_occurrence_on set alongside recurring_id (0016): see the
+  -- comment on the same pattern earlier in this file.
   insert into transactions (wallet_id, kind, amount_minor, currency_code,
-                            category_id, occurred_on, recurring_id)
+                            category_id, occurred_on, recurring_id, recurring_occurrence_on)
   values ('ffffffff-0000-0000-0000-000000000002', 'expense', -3000, 'USD',
-          'ffffffff-0000-0000-0000-000000000003', '2026-03-01', r)
+          'ffffffff-0000-0000-0000-000000000003', '2026-03-01', r, '2026-03-01')
   returning id into v_txn_id;
 
   delete from recurring_rules where id = r;
@@ -970,4 +983,399 @@ begin
   select count(*) into n from transactions where wallet_id = v_wallet;
   assert n = 0,
     format('SAFETY BROKEN: deleting a wallet with transactions did not cascade-delete them (%s row(s) remain) -- transactions_currency_matches_wallet''s ON DELETE CASCADE disagrees with transactions_wallet_id_fkey''s', n);
+end $$;
+
+-- 0016_editable_transactions: merchant, and splitting a recorded
+-- occurrence's identity (recurring_occurrence_on) from the actual date
+-- (occurred_on). Fresh fixtures, following this file's own convention of
+-- literal UUIDs and inline inserts inside do $$ ... $$ blocks.
+insert into auth.users (id, email) values
+  ('90909090-0000-0000-0000-000000000001', 'ivy@x.io');
+insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+  values ('90909090-0000-0000-0000-000000000002',
+          '90909090-0000-0000-0000-000000000001', 'Ivy Bank', 'bank', 'USD', 1, 'landmark');
+insert into categories (id, wallet_id, name, kind, color_slot, icon)
+  values ('90909090-0000-0000-0000-000000000003',
+          '90909090-0000-0000-0000-000000000002', 'Editable Txn Test Category', 'expense', 1, 'shopping-cart');
+
+\echo '--- 0016: transactions_merchant_check rejects a merchant over 120 characters ---'
+do $$
+declare v_sqlstate text; v_constraint text;
+begin
+  insert into public.transactions (wallet_id, kind, amount_minor, currency_code, category_id, occurred_on, merchant)
+  values ('90909090-0000-0000-0000-000000000002', 'expense', -500, 'USD',
+          '90909090-0000-0000-0000-000000000003', current_date, repeat('x', 121));
+  raise exception 'CONSTRAINT BROKEN: transactions_merchant_check accepted a 121-character merchant';
+exception
+  when others then
+    get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+    assert v_sqlstate = '23514' and v_constraint = 'transactions_merchant_check',
+      format('expected check_violation (23514) from transactions_merchant_check, got SQLSTATE %s (constraint %s): %s',
+             v_sqlstate, v_constraint, sqlerrm);
+end $$;
+
+-- POSITIVE, paired with the REJECT above: exactly 120 characters (the cap
+-- itself) must be accepted -- a check that rejected everything would sail
+-- through the REJECT above and look identical to a correct one.
+do $$
+declare n int;
+begin
+  insert into public.transactions (wallet_id, kind, amount_minor, currency_code, category_id, occurred_on, merchant)
+  values ('90909090-0000-0000-0000-000000000002', 'expense', -100, 'USD',
+          '90909090-0000-0000-0000-000000000003', current_date, repeat('y', 120));
+
+  select count(*) into n from public.transactions
+  where wallet_id = '90909090-0000-0000-0000-000000000002' and merchant = repeat('y', 120);
+  assert n = 1,
+    format('CONSTRAINT BROKEN: transactions_merchant_check rejected a merchant at exactly the 120-character cap (%s row(s) landed)', n);
+end $$;
+
+\echo '--- 0016: recurring_occurrence_needs_rule rejects recurring_id set with recurring_occurrence_on null ---'
+do $$
+declare r uuid; v_sqlstate text; v_constraint text;
+begin
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('90909090-0000-0000-0000-000000000002', 'Editable Rule', 'expense', -1500, 'USD',
+          '90909090-0000-0000-0000-000000000003', 'monthly', '2026-07-01')
+  returning id into r;
+
+  insert into transactions (wallet_id, kind, amount_minor, currency_code, category_id,
+                            occurred_on, recurring_id, recurring_occurrence_on)
+  values ('90909090-0000-0000-0000-000000000002', 'expense', -1500, 'USD',
+          '90909090-0000-0000-0000-000000000003', '2026-07-01', r, null);
+  raise exception 'CONSTRAINT BROKEN: recurring_occurrence_needs_rule accepted recurring_id set with recurring_occurrence_on null';
+exception
+  when others then
+    get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+    assert v_sqlstate = '23514' and v_constraint = 'recurring_occurrence_needs_rule',
+      format('expected check_violation (23514) from recurring_occurrence_needs_rule, got SQLSTATE %s (constraint %s): %s',
+             v_sqlstate, v_constraint, sqlerrm);
+end $$;
+
+\echo '--- 0016: deleting a rule with a recorded occurrence still SUCCEEDS, leaving recurring_id null and recurring_occurrence_on set (the property a symmetric CHECK would have destroyed) ---'
+do $$
+declare r uuid; v_txn_id uuid;
+  v_recurring_id uuid; v_recurring_occurrence_on date; v_occurred_on date; v_deleted_at timestamptz;
+begin
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('90909090-0000-0000-0000-000000000002', 'Doomed Editable Rule', 'expense', -2500, 'USD',
+          '90909090-0000-0000-0000-000000000003', 'monthly', '2026-08-01')
+  returning id into r;
+
+  -- Record 1 August, then edit the ACTUAL date to the 3rd -- occurred_on
+  -- diverges from recurring_occurrence_on, exactly the case this migration
+  -- exists to make safe.
+  insert into transactions (wallet_id, kind, amount_minor, currency_code, category_id,
+                            occurred_on, recurring_id, recurring_occurrence_on)
+  values ('90909090-0000-0000-0000-000000000002', 'expense', -2500, 'USD',
+          '90909090-0000-0000-0000-000000000003', '2026-08-01', r, '2026-08-01')
+  returning id into v_txn_id;
+  update transactions set occurred_on = '2026-08-03' where id = v_txn_id;
+
+  delete from recurring_rules where id = r;
+
+  select recurring_id, recurring_occurrence_on, occurred_on, deleted_at
+    into v_recurring_id, v_recurring_occurrence_on, v_occurred_on, v_deleted_at
+    from transactions where id = v_txn_id;
+  assert found,
+    'SAFETY BROKEN: transactions.recurring_id ON DELETE SET NULL let the whole row disappear (check for an accidental CASCADE)';
+  assert v_deleted_at is null,
+    'SAFETY BROKEN: deleting a recurring rule soft-deleted a real recorded transaction';
+  assert v_recurring_id is null,
+    'SAFETY BROKEN: recurring_id was not nulled after its rule was deleted';
+  assert v_recurring_occurrence_on = '2026-08-01',
+    format('SAFETY BROKEN: recurring_occurrence_on should survive the rule''s deletion unchanged (2026-08-01), found %s', v_recurring_occurrence_on);
+  assert v_occurred_on = '2026-08-03',
+    format('the actual paid date must be untouched by the rule''s deletion, found %s', v_occurred_on);
+end $$;
+
+\echo '--- 0016: the moved index still refuses two live transactions for one (recurring_id, recurring_occurrence_on), and frees the slot after a soft delete ---'
+do $$
+declare r uuid; v_sqlstate text; v_constraint text;
+begin
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('90909090-0000-0000-0000-000000000002', 'Index Move Rule', 'expense', -750, 'USD',
+          '90909090-0000-0000-0000-000000000003', 'monthly', '2026-09-01')
+  returning id into r;
+
+  insert into transactions (wallet_id, kind, amount_minor, currency_code, category_id,
+                            occurred_on, recurring_id, recurring_occurrence_on)
+  values ('90909090-0000-0000-0000-000000000002', 'expense', -750, 'USD',
+          '90909090-0000-0000-0000-000000000003', '2026-09-01', r, '2026-09-01');
+
+  begin
+    insert into transactions (wallet_id, kind, amount_minor, currency_code, category_id,
+                              occurred_on, recurring_id, recurring_occurrence_on)
+    values ('90909090-0000-0000-0000-000000000002', 'expense', -750, 'USD',
+            '90909090-0000-0000-0000-000000000003', '2026-09-05', r, '2026-09-01');
+    raise exception 'CONSTRAINT BROKEN: transactions_recurring_occurrence did not reject a second live row for the same (recurring_id, recurring_occurrence_on)';
+  exception
+    when unique_violation then
+      get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+      assert v_sqlstate = '23505' and v_constraint = 'transactions_recurring_occurrence',
+        format('expected unique_violation (23505) from transactions_recurring_occurrence, got SQLSTATE %s (constraint %s): %s',
+               v_sqlstate, v_constraint, sqlerrm);
+  end;
+
+  -- Soft-deleting the first frees the slot -- the index is still partial on
+  -- deleted_at, moved column and all.
+  update transactions set deleted_at = now()
+   where recurring_id = r and recurring_occurrence_on = '2026-09-01';
+  insert into transactions (wallet_id, kind, amount_minor, currency_code, category_id,
+                            occurred_on, recurring_id, recurring_occurrence_on)
+  values ('90909090-0000-0000-0000-000000000002', 'expense', -750, 'USD',
+          '90909090-0000-0000-0000-000000000003', '2026-09-05', r, '2026-09-01');
+end $$;
+
+\echo '--- 0016: two recorded occurrences of one rule may now share an occurred_on, because their identities (recurring_occurrence_on) differ ---'
+do $$
+declare r uuid; v_id1 uuid; v_id2 uuid; n int;
+begin
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('90909090-0000-0000-0000-000000000002', 'Split Identity Rule', 'expense', -900, 'USD',
+          '90909090-0000-0000-0000-000000000003', 'monthly', '2026-07-01')
+  returning id into r;
+
+  -- Record 1 July and 1 August.
+  insert into transactions (wallet_id, kind, amount_minor, currency_code, category_id,
+                            occurred_on, recurring_id, recurring_occurrence_on)
+  values ('90909090-0000-0000-0000-000000000002', 'expense', -900, 'USD',
+          '90909090-0000-0000-0000-000000000003', '2026-07-01', r, '2026-07-01')
+  returning id into v_id1;
+  insert into transactions (wallet_id, kind, amount_minor, currency_code, category_id,
+                            occurred_on, recurring_id, recurring_occurrence_on)
+  values ('90909090-0000-0000-0000-000000000002', 'expense', -900, 'USD',
+          '90909090-0000-0000-0000-000000000003', '2026-08-01', r, '2026-08-01')
+  returning id into v_id2;
+
+  -- Edit both to fall on 15 August: their identities (recurring_occurrence_on)
+  -- differ, so both persist -- the whole point of the split.
+  update transactions set occurred_on = '2026-08-15' where id in (v_id1, v_id2);
+
+  select count(*) into n from transactions
+  where id in (v_id1, v_id2) and occurred_on = '2026-08-15' and deleted_at is null;
+  assert n = 2,
+    format('SPLIT BROKEN: two occurrences with distinct recurring_occurrence_on could not share an occurred_on (%s row(s) landed)', n);
+end $$;
+
+-- 0016 fix round 1, CRITICAL 1: every fixture above writes
+-- recurring_occurrence_on BY HAND, which is exactly why this suite could
+-- not see that src/server/actions/recurring.ts's recordOccurrence still
+-- inserted without it -- every one of its own inserts violated
+-- recurring_occurrence_needs_rule (23514) in production, with the 23505-only
+-- handler falling through to "Could not record this occurrence. Please try
+-- again.", advice that could never work. Fixed there; this asserts the
+-- SAME column set that function's insert now uses -- wallet_id, created_by,
+-- kind, amount_minor, currency_code, category_id, occurred_on, recurring_id,
+-- recurring_occurrence_on, note -- actually succeeds, so a future edit to
+-- either the function or this migration that reintroduces the mismatch
+-- fails HERE, not silently in production.
+\echo '--- 0016 fix round 1: a recordOccurrence-shaped insert (exact column set, recurring_occurrence_on included) succeeds ---'
+do $$
+declare r uuid; v_id uuid;
+begin
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('90909090-0000-0000-0000-000000000002', 'Record Shape Rule', 'expense', -1999, 'USD',
+          '90909090-0000-0000-0000-000000000003', 'monthly', '2026-10-01')
+  returning id into r;
+
+  insert into transactions (wallet_id, created_by, kind, amount_minor, currency_code,
+                            category_id, occurred_on, recurring_id, recurring_occurrence_on, note)
+  values ('90909090-0000-0000-0000-000000000002', '90909090-0000-0000-0000-000000000001',
+          'expense', -1999, 'USD', '90909090-0000-0000-0000-000000000003',
+          '2026-10-01', r, '2026-10-01', null)
+  returning id into v_id;
+
+  assert v_id is not null,
+    'CONSTRAINT BROKEN: a recordOccurrence-shaped insert (with recurring_occurrence_on set) was rejected';
+  assert (select recurring_occurrence_on from transactions where id = v_id) = '2026-10-01',
+    'CONSTRAINT BROKEN: recurring_occurrence_on did not persist as inserted on a recordOccurrence-shaped row';
+end $$;
+
+-- 0016 fix round 2: the branch's central promise, proven live in an ad-hoc
+-- session during review but never captured anywhere permanent until now.
+-- src/server/actions/transactions.ts's updateTransaction never writes
+-- recurring_occurrence_on (it isn't even in transactionEditInput, and
+-- authenticated's own UPDATE grant on transactions doesn't include that
+-- column at all -- see 0004_rls.sql's grant, unchanged by this migration),
+-- so editing a recorded occurrence's occurred_on must not make it due
+-- again: its identity lives in recurring_occurrence_on, not occurred_on.
+-- Run as `authenticated` (not the table-owning superuser this file
+-- otherwise runs as) so this actually exercises the same column-scoped
+-- grant and RLS boundary updateTransaction's own callers are subject to,
+-- not a superuser bypass of it.
+\echo '--- 0016 fix round 2: an updateTransaction-shaped UPDATE run as authenticated moves occurred_on without disturbing recurring_occurrence_on or the dashboard''s handled-occurrence query ---'
+insert into recurring_rules (id, wallet_id, name, kind, amount_minor, currency_code,
+                             category_id, interval_unit, anchor_on)
+  values ('90909090-0000-0000-0000-0000000000e0', '90909090-0000-0000-0000-000000000002',
+          'Edit Does Not Unhandle Rule', 'expense', -1200, 'USD',
+          '90909090-0000-0000-0000-000000000003', 'monthly', current_date);
+insert into transactions (id, wallet_id, kind, amount_minor, currency_code, category_id,
+                          occurred_on, recurring_id, recurring_occurrence_on)
+  values ('90909090-0000-0000-0000-0000000000e1', '90909090-0000-0000-0000-000000000002',
+          'expense', -1200, 'USD', '90909090-0000-0000-0000-000000000003',
+          current_date, '90909090-0000-0000-0000-0000000000e0', current_date);
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"90909090-0000-0000-0000-000000000001"}';
+  do $$ begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
+    assert (select auth.uid()) = '90909090-0000-0000-0000-000000000001'::uuid,
+      'impersonation failed: auth.uid() did not resolve to ivy';
+  end $$;
+
+  -- The exact column set updateTransaction's own UPDATE writes (src/server/
+  -- actions/transactions.ts) -- amount_minor, category_id, occurred_on,
+  -- note, merchant, updated_at -- moving occurred_on five days away from
+  -- recurring_occurrence_on, which is not, and never is, in this payload.
+  do $$
+  declare n int;
+  begin
+    update transactions set
+      amount_minor = -1500,
+      category_id = '90909090-0000-0000-0000-000000000003',
+      occurred_on = current_date - 5,
+      note = 'Edited note',
+      merchant = 'Edited Merchant',
+      updated_at = now()
+    where id = '90909090-0000-0000-0000-0000000000e1'
+      and deleted_at is null;
+    get diagnostics n = row_count;
+    assert n = 1,
+      format('updateTransaction-shaped UPDATE matched %s row(s) as authenticated, expected 1 (RLS or grant regression?)', n);
+  end $$;
+commit;
+
+do $$
+declare v_recurring_occurrence_on date; v_occurred_on date; n int;
+begin
+  select recurring_occurrence_on, occurred_on into v_recurring_occurrence_on, v_occurred_on
+    from transactions where id = '90909090-0000-0000-0000-0000000000e1';
+
+  assert v_recurring_occurrence_on = current_date,
+    format('SAFETY BROKEN: editing occurred_on via an updateTransaction-shaped UPDATE changed recurring_occurrence_on to %s (expected it to stay %s)',
+           v_recurring_occurrence_on, current_date);
+  assert v_occurred_on = current_date - 5,
+    format('the edited occurred_on must persist as written, found %s', v_occurred_on);
+
+  -- Mirrors src/app/(app)/page.tsx's dashboard "handled occurrences" read
+  -- (around lines 222-227) exactly: recurring_id is not null, deleted_at is
+  -- null, recurring_occurrence_on >= dueFloor (lookbackFloor in src/lib/
+  -- recurrence.ts, 12 months back from today). occurred_on never appears in
+  -- that query at all -- this row's recurring_occurrence_on (current_date)
+  -- is untouched by the edit above, so it must still be found here even
+  -- though occurred_on moved to current_date - 5, i.e. the occurrence must
+  -- NOT have become due again.
+  select count(*) into n
+    from transactions
+   where recurring_id is not null
+     and deleted_at is null
+     and recurring_occurrence_on >= (current_date - interval '12 months')
+     and id = '90909090-0000-0000-0000-0000000000e1';
+  assert n = 1,
+    'SAFETY BROKEN: editing occurred_on made a recorded occurrence disappear from the dashboard''s own handled-occurrence query -- it would show up as due again';
+end $$;
+
+-- Task 7, Step 2 (SQL half): the moved unique index still holds the
+-- ORIGINAL slot after the actual date is edited away from it.
+--
+-- The block immediately above already proves the edit leaves
+-- recurring_occurrence_on untouched and leaves the dashboard's own
+-- handled-occurrence query still finding the row. What nothing proved is
+-- the other side of the same identity: that the (recurring_id,
+-- recurring_occurrence_on) slot is still OCCUPIED afterwards -- i.e. that
+-- Record could not be pressed a second time for the same occurrence and
+-- succeed, producing two transactions for one month's rent.
+--
+-- Both halves are asserted, and the second is the one that discriminates:
+--
+--   (a) the slot the row was recorded FOR (current_date) is still taken --
+--       a second live row for it must be rejected 23505; and
+--   (b) the slot matching the row's NEW occurred_on (current_date - 5) is
+--       FREE -- a recording for that scheduled date must succeed.
+--
+-- (b) is what tells an index on recurring_occurrence_on apart from the
+-- pre-0016 index on occurred_on. Under the old index, e1's occurred_on is
+-- current_date - 5, so (b)'s insert would collide and fail; under the moved
+-- index it is a different occurrence and must land. An assertion of (a)
+-- alone would pass in both worlds.
+\echo '--- Task 7: after an occurred_on edit, the ORIGINAL (recurring_id, recurring_occurrence_on) slot is still held, and the slot matching the new occurred_on is free ---'
+do $$
+declare v_sqlstate text; v_constraint text; v_new_id uuid; n int;
+begin
+  -- Guard the premise this block reads from the block above, so a future
+  -- edit there that changed the dates cannot make this pass vacuously.
+  assert (select recurring_occurrence_on from public.transactions
+            where id = '90909090-0000-0000-0000-0000000000e1') = current_date,
+    'test setup broken: the edited row''s recurring_occurrence_on is not current_date';
+  assert (select occurred_on from public.transactions
+            where id = '90909090-0000-0000-0000-0000000000e1') = current_date - 5,
+    'test setup broken: the edited row''s occurred_on is not current_date - 5';
+
+  -- (a) The original slot is still held.
+  begin
+    insert into public.transactions (wallet_id, kind, amount_minor, currency_code, category_id,
+                                     occurred_on, recurring_id, recurring_occurrence_on)
+    values ('90909090-0000-0000-0000-000000000002', 'expense', -1200, 'USD',
+            '90909090-0000-0000-0000-000000000003', current_date,
+            '90909090-0000-0000-0000-0000000000e0', current_date);
+    raise exception 'SAFETY BROKEN: editing occurred_on released the (recurring_id, recurring_occurrence_on) slot -- the same occurrence could be recorded twice';
+  exception
+    when unique_violation then
+      get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+      assert v_sqlstate = '23505' and v_constraint = 'transactions_recurring_occurrence',
+        format('expected unique_violation (23505) from transactions_recurring_occurrence, got SQLSTATE %s (constraint %s): %s',
+               v_sqlstate, v_constraint, sqlerrm);
+  end;
+
+  -- (b) The slot matching the edited row's NEW occurred_on is free. This
+  -- is a DIFFERENT occurrence of the same rule, and recording it must
+  -- succeed -- it only collides if the index is keyed on the actual date.
+  --
+  -- Wrapped in its own exception block rather than left to the `assert
+  -- v_new_id is not null` that used to carry this message alone (task 8,
+  -- item 5b): that assert could never fire on the case it described. A
+  -- colliding INSERT raises 23505 and aborts this DO block before the assert
+  -- is reached, so the check worked while its explanation never printed --
+  -- the reviewer who mutated the index back onto occurred_on saw only a bare
+  -- 'duplicate key value violates unique constraint'. Catching
+  -- unique_violation here and re-raising is what makes the diagnostic
+  -- reachable at the moment it is needed.
+  begin
+    insert into public.transactions (wallet_id, kind, amount_minor, currency_code, category_id,
+                                     occurred_on, recurring_id, recurring_occurrence_on)
+    values ('90909090-0000-0000-0000-000000000002', 'expense', -1200, 'USD',
+            '90909090-0000-0000-0000-000000000003', current_date - 5,
+            '90909090-0000-0000-0000-0000000000e0', current_date - 5)
+    returning id into v_new_id;
+  exception
+    when unique_violation then
+      get stacked diagnostics v_constraint = constraint_name;
+      raise exception
+        'SPLIT BROKEN: an occurrence scheduled for the edited row''s new occurred_on could not be recorded -- the unique index is keyed on the actual date, not the scheduled one (collided on %: %)',
+        coalesce(v_constraint, '<unknown constraint>'), sqlerrm;
+  end;
+  -- A genuinely different failure from the collision above, and the only one
+  -- this assert can still catch: an INSERT that reported success but wrote
+  -- no row (a BEFORE trigger returning NULL, say), which leaves `v_new_id`
+  -- null with no exception raised.
+  assert v_new_id is not null,
+    'SPLIT BROKEN: the INSERT for the edited row''s new occurred_on returned no row at all';
+
+  -- And the edited row is untouched by either attempt: two live recordings
+  -- of this rule now exist, for two DIFFERENT scheduled dates, sharing
+  -- nothing but the rule.
+  select count(*) into n from public.transactions
+   where recurring_id = '90909090-0000-0000-0000-0000000000e0' and deleted_at is null;
+  assert n = 2,
+    format('expected exactly 2 live recorded occurrences for this rule, found %s', n);
+  assert (select occurred_on from public.transactions
+            where id = '90909090-0000-0000-0000-0000000000e1') = current_date - 5,
+    'the edited row''s occurred_on was disturbed by the slot checks above';
 end $$;

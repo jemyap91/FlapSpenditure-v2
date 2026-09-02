@@ -2,6 +2,7 @@
 
 import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { ArrowRightLeft } from "lucide-react";
 import { formatMoney } from "@/lib/money";
 import { slotVar } from "@/lib/palette";
@@ -24,9 +25,10 @@ import { UndoToast, type ToastState } from "./UndoToast";
  * `supabase/migrations/0003_transactions.sql`), and that "Uncategorised"
  * case must render differently from a transfer.
  *
- * `note` is deliberately absent — see page.tsx's doc comment on its
- * select for why (review-caught: it was being fetched and typed here
- * without ever being rendered, a dead payload on every request).
+ * `note` and `merchant` are both carried and both rendered — see page.tsx's
+ * doc comment on its select for why (`note` was excluded for a while on
+ * review, having been fetched and typed here without ever being rendered, a
+ * dead payload on every request; that is no longer true of either column).
  */
 export type Row = {
   id: string;
@@ -35,9 +37,16 @@ export type Row = {
   currency_code: string;
   occurred_on: string;
   wallet_name: string;
-  /** The transactions table's own `note` column (<=280 chars). Typically a
-   *  merchant. Nullable, and may also arrive as "" — `noteOf` below treats
-   *  both as absent. */
+  /** The transactions table's own `merchant` column (<=120 chars). Who the
+   *  money went to/came from — a shorter, more structured cousin of `note`
+   *  (below), and the row's primary line when present (`merchantOf`).
+   *  Nullable, and may also arrive as "" — `merchantOf` below treats both as
+   *  absent, for the same reason `noteOf` does. */
+  merchant: string | null;
+  /** The transactions table's own `note` column (<=280 chars). Freeform,
+   *  and secondary to `merchant` when both are present (see `rowLabel`).
+   *  Nullable, and may also arrive as "" — `noteOf` below treats both as
+   *  absent. */
   note: string | null;
   category_name: string | null;
   category_icon: string | null;
@@ -88,12 +97,27 @@ function noteOf(row: Row): string | null {
   return trimmed ? trimmed : null;
 }
 
-/** What the row's primary line says. The note wins when present: it is the
- *  name the user chose for this transaction, and it is more specific than
- *  the category. The category is not dropped — it moves to the secondary
- *  line beside the wallet (see the row markup below). */
+/** A merchant that is present but blank is not a name — the same reasoning
+ *  as `noteOf` above, for the same reason: the zod schemas accept `""` (the
+ *  actions coerce it to null on write), so a row can still reach the client
+ *  with one, and rendering that as the primary line would give the row an
+ *  empty heading. */
+function merchantOf(row: Row): string | null {
+  const trimmed = row.merchant?.trim();
+  return trimmed ? trimmed : null;
+}
+
+/** What the row's primary line says. The merchant wins when present: it is
+ *  the most specific name available for this transaction — who the money
+ *  actually went to/came from. The note is next: still a name the user
+ *  chose, just less structured than a merchant. The category is last before
+ *  the generic fallback. Nothing is dropped when a more specific field
+ *  wins — whatever loses moves to the secondary line beside the wallet (see
+ *  the row markup below). */
 function rowLabel(row: Row): string {
-  return noteOf(row) ?? row.category_name ?? (row.kind === "transfer" ? "Transfer" : "Uncategorised");
+  return (
+    merchantOf(row) ?? noteOf(row) ?? row.category_name ?? (row.kind === "transfer" ? "Transfer" : "Uncategorised")
+  );
 }
 
 /**
@@ -104,7 +128,9 @@ function rowLabel(row: Row): string {
  * only the toast's wording differs.
  */
 function toastSubject(row: Row): string {
-  return noteOf(row) ?? row.category_name ?? (row.kind === "transfer" ? "Transfer" : "Transaction");
+  return (
+    merchantOf(row) ?? noteOf(row) ?? row.category_name ?? (row.kind === "transfer" ? "Transfer" : "Transaction")
+  );
 }
 
 function RowIcon({ row }: { row: Row }) {
@@ -236,11 +262,20 @@ export function TransactionList({
   // below are shared unmodified.
   listLabel = "Transaction list",
   emptyMessage = "No transactions yet. Add your first one to get started.",
+  // Fix round 1, Minor 1 (editable-transactions plan): where a row's edit
+  // link should send the user BACK to after a successful save. An origin
+  // IDENTIFIER (`wallet:<uuid>`) — never a path or a URL. Undefined on the
+  // screens that have no more specific home than the global list
+  // (/transactions), which keeps their behaviour byte-identical: no query
+  // string on the href at all, and `parseOrigin(undefined)` resolves to
+  // "/transactions", the destination those screens already used.
+  origin,
 }: {
   rows: Row[];
   showAttribution?: boolean;
   listLabel?: string;
   emptyMessage?: string;
+  origin?: string;
 }) {
   const router = useRouter();
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -401,23 +436,66 @@ export function TransactionList({
                   >
                     <RowIcon row={r} />
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate" style={{ color: "var(--ink)" }}>
+                      {/* Task 6 (editable-transactions plan): the row's
+                          PRIMARY LABEL is the entry point into editing it,
+                          not the whole row — the row already contains a
+                          Delete <button>, and wrapping that in a link would
+                          nest one interactive element inside another
+                          (invalid HTML, ambiguous click target).
+                          `WalletList.tsx` already solved this exact problem
+                          (its own doc comment: "the wallet's NAME is the
+                          link into its detail screen"); this follows that
+                          precedent for the same reason.
+
+                          The link's accessible name is `label` alone —
+                          nothing else inside this anchor — so it matches
+                          exactly what the Delete button below already
+                          announces (`Delete ${label}, ${amountText}`): a
+                          row cannot name itself one thing to a link and
+                          another to its delete control.
+
+                          `?from=<origin>` (fix round 1, Minor 1) carries
+                          this screen's identity to the edit page, which
+                          threads it into TransactionForm so a save returns
+                          the user where they came from instead of dumping
+                          them on the global list. Written unencoded to match
+                          `WalletFab.tsx`'s identical `?from=wallet:<id>`
+                          construction — the identifier grammar is fixed
+                          (`wallet:` plus a uuid, both of them
+                          `parseOrigin`'s own contract in @/lib/origin), so
+                          there is no character in it to escape. Nothing here
+                          trusts it either way: `parseOrigin` re-validates
+                          the shape on arrival and BUILDS the path itself,
+                          which is what keeps a query param from becoming an
+                          open redirect. Omitted entirely when `origin` is
+                          undefined, so a caller that passes nothing gets
+                          exactly the href it had before. */}
+                      <Link
+                        href={`/transactions/${r.id}/edit${origin ? `?from=${origin}` : ""}`}
+                        className={`block truncate rounded-sm ${FOCUS_RING}`}
+                        style={{ color: "var(--ink)" }}
+                      >
                         {label}
-                      </span>
-                      {/* When the note has taken over the primary line, the
-                          category joins the wallet here rather than being
-                          dropped — the row still carries everything it did
-                          before, just reordered by specificity. Attribution
-                          (when `showAttribution` — a wallet with more than
-                          one member, see page.tsx) is appended last, and
-                          only when this row actually has an author: a
-                          departed account's rows (`created_by` is `on
-                          delete set null`) carry `created_by_name: null`
-                          and must render with no "added by" segment at
-                          all, not a blank/"undefined" one. */}
+                      </Link>
+                      {/* Whatever the primary line didn't use joins the
+                          wallet here rather than being dropped — the row
+                          still carries everything it did before, just
+                          reordered by specificity. When a merchant took the
+                          primary line, the note demotes to this line beside
+                          the category, exactly as the category already
+                          demoted when the note used to be the primary line
+                          on its own. Attribution (when `showAttribution` —
+                          a wallet with more than one member, see page.tsx)
+                          is appended last, and only when this row actually
+                          has an author: a departed account's rows
+                          (`created_by` is `on delete set null`) carry
+                          `created_by_name: null` and must render with no
+                          "added by" segment at all, not a blank/"undefined"
+                          one. */}
                       <span className="block truncate text-xs" style={{ color: "var(--ink-2)" }}>
                         {[
-                          noteOf(r) && r.category_name ? r.category_name : null,
+                          merchantOf(r) && noteOf(r) ? noteOf(r) : null,
+                          (merchantOf(r) || noteOf(r)) && r.category_name ? r.category_name : null,
                           r.wallet_name,
                           showAttribution && r.created_by_name ? `added by ${r.created_by_name}` : null,
                         ]

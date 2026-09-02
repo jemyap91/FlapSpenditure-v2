@@ -11,22 +11,11 @@ DB_URL="${DB_URL:-postgresql://postgres:postgres@127.0.0.1:54322/postgres}"
 
 # Same guard as scripts/test-rls.sh, and for the same reason -- parse the
 # actual host libpq would connect to, rather than substring-matching the
-# raw URL (see that file's comment for why a glob is not safe here).
-authority="${DB_URL#postgres://}"
-authority="${authority#postgresql://}"
-authority="${authority%%/*}"
-hostport="${authority##*@}"
-db_host="${hostport%%:*}"
-
-case "$db_host" in
-  127.0.0.1|localhost)
-    ;;
-  *)
-    echo "refusing to run: DB_URL must point at a loopback host (127.0.0.1/localhost)." >&2
-    echo "got host: $db_host (from DB_URL: $DB_URL)" >&2
-    exit 1
-    ;;
-esac
+# raw URL (see scripts/require-loopback.sh, where the shared implementation
+# and that reasoning now live).
+# shellcheck source=scripts/require-loopback.sh
+. "$(dirname "${BASH_SOURCE[0]}")/require-loopback.sh"
+require_loopback "$DB_URL" DB_URL
 
 npx supabase db reset --no-seed >/dev/null
 psql "$DB_URL" -f supabase/tests/constraints.sql
