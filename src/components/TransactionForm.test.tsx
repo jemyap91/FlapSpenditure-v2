@@ -434,6 +434,53 @@ describe("TransactionForm — edit mode (Task 6)", () => {
     });
   });
 
+  /**
+   * Fix round 1, Minor 1: the edit path's post-save redirect was hardcoded
+   * to "/transactions", reintroducing on the edit path the exact regression
+   * the create path documents having fixed — a user on /wallets/<id> who
+   * taps a row, fixes a note and saves was dumped on the global list.
+   *
+   * Asserted on `push`'s ARGUMENT, the same rule the create-path suite at the
+   * top of this file states: "the edit succeeded" would still pass with the
+   * redirect wired straight to `router.push(from)`, which is the open
+   * redirect `parseOrigin` exists to remove. The garbage-`from` case below is
+   * what guards that boundary — without it, this pair is satisfied by
+   * `router.push(from ?? "/transactions")`.
+   */
+  it("returns to the originating wallet after an edit when from names one", async () => {
+    const user = userEvent.setup();
+    render(
+      <TransactionForm
+        mode="edit"
+        wallets={wallets}
+        categories={categories}
+        edit={editTxnSeed}
+        from={`wallet:${ORIGIN_UUID}`}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith(`/wallets/${ORIGIN_UUID}`));
+  });
+
+  it("refuses an attacker-supplied from after an edit and goes to /transactions instead", async () => {
+    const user = userEvent.setup();
+    render(
+      <TransactionForm
+        mode="edit"
+        wallets={wallets}
+        categories={categories}
+        edit={editTxnSeed}
+        from="https://evil.example"
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/transactions"));
+  });
+
   it("surfaces the server's error and does not redirect when the edit fails", async () => {
     vi.mocked(updateTransaction).mockResolvedValue({ error: "This wallet has been archived." });
     const user = userEvent.setup();

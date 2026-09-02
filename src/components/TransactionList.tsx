@@ -262,11 +262,20 @@ export function TransactionList({
   // below are shared unmodified.
   listLabel = "Transaction list",
   emptyMessage = "No transactions yet. Add your first one to get started.",
+  // Fix round 1, Minor 1 (editable-transactions plan): where a row's edit
+  // link should send the user BACK to after a successful save. An origin
+  // IDENTIFIER (`wallet:<uuid>`) — never a path or a URL. Undefined on the
+  // screens that have no more specific home than the global list
+  // (/transactions), which keeps their behaviour byte-identical: no query
+  // string on the href at all, and `parseOrigin(undefined)` resolves to
+  // "/transactions", the destination those screens already used.
+  origin,
 }: {
   rows: Row[];
   showAttribution?: boolean;
   listLabel?: string;
   emptyMessage?: string;
+  origin?: string;
 }) {
   const router = useRouter();
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -443,9 +452,26 @@ export function TransactionList({
                           exactly what the Delete button below already
                           announces (`Delete ${label}, ${amountText}`): a
                           row cannot name itself one thing to a link and
-                          another to its delete control. */}
+                          another to its delete control.
+
+                          `?from=<origin>` (fix round 1, Minor 1) carries
+                          this screen's identity to the edit page, which
+                          threads it into TransactionForm so a save returns
+                          the user where they came from instead of dumping
+                          them on the global list. Written unencoded to match
+                          `WalletFab.tsx`'s identical `?from=wallet:<id>`
+                          construction — the identifier grammar is fixed
+                          (`wallet:` plus a uuid, both of them
+                          `parseOrigin`'s own contract in @/lib/origin), so
+                          there is no character in it to escape. Nothing here
+                          trusts it either way: `parseOrigin` re-validates
+                          the shape on arrival and BUILDS the path itself,
+                          which is what keeps a query param from becoming an
+                          open redirect. Omitted entirely when `origin` is
+                          undefined, so a caller that passes nothing gets
+                          exactly the href it had before. */}
                       <Link
-                        href={`/transactions/${r.id}/edit`}
+                        href={`/transactions/${r.id}/edit${origin ? `?from=${origin}` : ""}`}
                         className={`block truncate rounded-sm ${FOCUS_RING}`}
                         style={{ color: "var(--ink)" }}
                       >

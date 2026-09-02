@@ -371,6 +371,39 @@ describe("TransactionList — edit entry point (Task 6)", () => {
     expect(del.contains(link)).toBe(false);
   });
 
+  /**
+   * Fix round 1, Minor 1: the edit link now carries the origin of the screen
+   * it was rendered on, so a save can return there instead of always landing
+   * on the global list.
+   *
+   * Both halves in one test, and both `toHaveAttribute` on the WHOLE href
+   * rather than a `toContain`: "the href mentions the origin somewhere" would
+   * pass on a malformed URL (`/transactions/row-3/editwallet:...`), and a
+   * separate no-origin test would not catch an implementation that appended a
+   * bare `?from=` or `?from=undefined` when the prop is absent — which is the
+   * regression that silently changes /transactions' existing hrefs.
+   */
+  it("appends ?from only when an origin is given, and leaves the href untouched otherwise", () => {
+    const WALLET = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const withOrigin = render(
+      <TransactionList
+        rows={[{ ...baseRow, id: "row-3", category_name: "Groceries" }]}
+        origin={`wallet:${WALLET}`}
+      />,
+    );
+    expect(screen.getByRole("link", { name: "Groceries" })).toHaveAttribute(
+      "href",
+      `/transactions/row-3/edit?from=wallet:${WALLET}`,
+    );
+    withOrigin.unmount();
+
+    render(<TransactionList rows={[{ ...baseRow, id: "row-3", category_name: "Groceries" }]} />);
+    expect(screen.getByRole("link", { name: "Groceries" })).toHaveAttribute(
+      "href",
+      "/transactions/row-3/edit",
+    );
+  });
+
   it("Delete still works with the label now a link (link and delete are independent controls)", async () => {
     vi.mocked(softDeleteTransaction).mockResolvedValue({ ok: true });
     render(<TransactionList rows={[{ ...baseRow, id: "row-9", category_name: "Groceries" }]} />);

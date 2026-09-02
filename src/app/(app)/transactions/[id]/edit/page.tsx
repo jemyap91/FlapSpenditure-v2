@@ -76,13 +76,46 @@ const uuid = z.uuid();
  * already include it, so the picker/chip can still show and preselect the
  * transaction's real category rather than silently rendering "Choose
  * category" for a row that has one.
+ *
+ * ## `?from` — where a successful save returns to
+ *
+ * Fix round 1, Minor 1. `TransactionList` appends `?from=<identifier>` to a
+ * row's edit link on any screen with a home more specific than the global
+ * list (today: the wallet detail page). It is an origin IDENTIFIER
+ * (`wallet:<uuid>`), NOT a path or a URL, it is untrusted (it comes straight
+ * off the query string), and it is never parsed here — it is threaded
+ * unmodified into `TransactionForm`, which is the only consumer, via
+ * `parseOrigin` (`@/lib/origin`). That function never returns its input: it
+ * matches a shape, validates the id, and BUILDS the path itself, which is
+ * what keeps a query param from becoming an open redirect. An absent or
+ * unrecognised `from` falls back to "/transactions", the destination this
+ * page's saves already used.
  */
 export default async function EditTransactionPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  /**
+   * `string | string[] | undefined`, not just `string` — the identical
+   * gotcha `/transactions/new/page.tsx`'s own doc comment writes up (review
+   * round 1, fix 1 there). A `string`-only annotation is never actually
+   * checked: Next's generated page-prop validator widens with `& any`
+   * (.next/types/validator.ts), while its generated route type is
+   * `Record<string, string | string[] | undefined>` (.next/types/routes.d.ts).
+   * A URL with a repeated param (`?from=a&from=b`) really does deliver a
+   * `string[]` at runtime, and an unnormalised array reaching `parseOrigin`
+   * threw `from.split is not a function` inside TransactionForm's post-save
+   * transition — AFTER the save had already succeeded, so the row was
+   * written but the user landed on an error boundary instead of the
+   * redirect. Normalised to the first value at this page boundary, exactly
+   * as that page does; `src/lib/origin.ts` stays untouched.
+   */
+  searchParams: Promise<{ from?: string | string[] }>;
 }) {
   const { id } = await params;
+  const { from: fromParam } = await searchParams;
+  const from = Array.isArray(fromParam) ? fromParam[0] : fromParam;
 
   if (!uuid.safeParse(id).success) {
     return <TransactionNotFound />;
@@ -190,7 +223,13 @@ export default async function EditTransactionPage({
     return (
       <>
         <h1 className="sr-only">Edit transfer</h1>
-        <TransactionForm mode="edit" wallets={[fromWallet, toWallet]} categories={[]} edit={edit} />
+        <TransactionForm
+          mode="edit"
+          wallets={[fromWallet, toWallet]}
+          categories={[]}
+          edit={edit}
+          from={from}
+        />
       </>
     );
   }
@@ -248,7 +287,13 @@ export default async function EditTransactionPage({
           doesn't grow past what its own sticky-Save reachability budget
           already accounts for. */}
       <h1 className="sr-only">Edit transaction</h1>
-      <TransactionForm mode="edit" wallets={[wallet]} categories={categories} edit={edit} />
+      <TransactionForm
+        mode="edit"
+        wallets={[wallet]}
+        categories={categories}
+        edit={edit}
+        from={from}
+      />
     </>
   );
 }

@@ -180,6 +180,29 @@ describe("WalletDetailPage", () => {
     expect(screen.getByRole("region", { name: "Transactions in Everyday" })).toBeInTheDocument();
   });
 
+  /**
+   * Fix round 1, Minor 1 (editable-transactions plan). `TransactionList` owns
+   * the "append ?from only when an origin is given" contract and
+   * `TransactionForm` owns what the redirect does with it; the only thing
+   * observable HERE is whether this page passes an origin at all. Without
+   * this test the whole return trip could be wired end to end and never
+   * activated from the one screen that needs it, and everything would still
+   * pass. The full href is asserted, not a substring, so a malformed join
+   * fails too.
+   */
+  it("gives each transaction row an edit link that returns here after a save", async () => {
+    walletsById.set(WALLET_A, wallet(WALLET_A, { name: "Everyday" }));
+    transactionsData.push(txn("t1", WALLET_A, { note: "Coffee" }));
+
+    const ui = await WalletDetailPage({ params: Promise.resolve({ id: WALLET_A }) });
+    render(ui);
+
+    expect(screen.getByRole("link", { name: "Coffee" })).toHaveAttribute(
+      "href",
+      `/transactions/t1/edit?from=wallet:${WALLET_A}`,
+    );
+  });
+
   it("states the pinned empty-state copy when this wallet has no transactions", async () => {
     walletsById.set(WALLET_A, wallet(WALLET_A, { name: "Everyday" }));
     // transactionsData stays empty.

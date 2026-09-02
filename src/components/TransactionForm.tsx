@@ -218,6 +218,15 @@ export function TransactionForm(
         categories: Category[];
         /** The row (or transfer pair) being edited. See `EditSeed` above. */
         edit: EditSeed;
+        /**
+         * Identical in kind, meaning and trust level to the create branch's
+         * `from` above (fix round 1, Minor 1): the `?from` search param, an
+         * origin IDENTIFIER, untrusted, consumed only through `parseOrigin`.
+         * Present on BOTH branches because both submit paths redirect, and
+         * hardcoding the edit path's destination is exactly the regression
+         * the create path already fixed once.
+         */
+        from?: string | null;
       },
 ) {
   const router = useRouter();
@@ -231,7 +240,10 @@ export function TransactionForm(
   // Only meaningful in create mode — see the props union above. Read only
   // from branches already known (by that same union) to be in create mode.
   const defaultWalletId = props.mode === "edit" ? undefined : props.defaultWalletId;
-  const from = props.mode === "edit" ? undefined : props.from;
+  // On BOTH branches of the union (fix round 1, Minor 1), so no narrowing is
+  // needed — and so neither submit path can quietly drift back to a
+  // hardcoded destination.
+  const from = props.from;
 
   // Kind is fixed for the life of an edited row (see the component doc
   // comment above) — `createKind` is the CREATE path's own selectable
@@ -512,12 +524,16 @@ export function TransactionForm(
           return;
         }
 
-        // No `from`/`parseOrigin` return trip in edit mode (unlike the
-        // create path below) — out of this task's scope, see this task's
-        // report. `/transactions` is always a safe landing spot: it is the
-        // same fallback destination `parseOrigin` itself resolves to for
-        // every input it doesn't recognise.
-        router.push("/transactions");
+        // The SAME return trip the create path below takes (fix round 1,
+        // Minor 1 — this used to be a hardcoded router.push("/transactions"),
+        // reintroducing on the edit path exactly the regression the create
+        // path's own comment below documents having fixed: a user on
+        // /wallets/<id> who taps a row, fixes a note and saves was dumped on
+        // the global list). See that comment for why `parseOrigin`
+        // (@/lib/origin) is the only thing allowed to turn `from` into a
+        // navigation target, and why an absent or unrecognised value still
+        // lands on "/transactions" — the destination this path always used.
+        router.push(parseOrigin(from));
       });
       return;
     }

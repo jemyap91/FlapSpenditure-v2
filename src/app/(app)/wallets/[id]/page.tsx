@@ -309,6 +309,13 @@ export default async function WalletDetailPage({
           showAttribution={showAttribution}
           listLabel={`Transactions in ${walletRow.name}`}
           emptyMessage="No transactions in this wallet yet."
+          // Fix round 1, Minor 1 (editable-transactions plan): a user who
+          // taps a row here, fixes a note and saves should land back on
+          // THIS wallet, not on the global list. The identifier is the same
+          // one `WalletFab` below already constructs for the add path — one
+          // origin grammar for both, resolved by `parseOrigin`
+          // (@/lib/origin) at the far end, never by string concatenation.
+          origin={`wallet:${walletRow.id}`}
         />
       </div>
 

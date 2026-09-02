@@ -13,14 +13,31 @@
 // able to tell those apart, and this mock deliberately can't either.
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 // TransactionForm calls `useRouter()` unconditionally (its post-save
 // redirect) — outside a real Next router this throws "invariant expected
 // app router to be mounted", the same reason
 // src/components/TransactionForm.test.tsx and
 // src/app/(app)/transactions/new/page.test.tsx mock this module.
+//
+// `push` is hoisted and shared (fix round 1, Minor 1) rather than a fresh
+// `vi.fn()` per call: the `?from` threading test below has to read the
+// argument the form actually pushed, and a per-call mock is unobservable.
+const { push } = vi.hoisted(() => ({ push: vi.fn() }));
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn() }),
+  useRouter: () => ({ push }),
+}));
+
+// The form dispatches a real Server Function on Save. Mocked here for the
+// same reason src/components/TransactionForm.test.tsx mocks it — and because
+// this file's Supabase mock stands in for the READ path only; it has no
+// `auth` at all, so the real action would throw before reaching a redirect.
+vi.mock("@/server/actions/transactions", () => ({
+  createTransaction: vi.fn(),
+  createTransfer: vi.fn(),
+  updateTransaction: vi.fn(async () => ({ ok: true })),
+  updateTransfer: vi.fn(async () => ({ ok: true })),
 }));
 
 // TransactionForm mounts CategoryPicker, which independently imports
@@ -206,6 +223,7 @@ function category(id: string, over: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  push.mockClear();
   txnById.clear();
   legsByTransferId.clear();
   walletsById.clear();
@@ -226,12 +244,12 @@ describe("EditTransactionPage — 404 collapse", () => {
    * short-circuits it first).
    */
   it("renders byte-identical not-found markup for an invisible transaction and a malformed id", async () => {
-    const invisibleUi = await EditTransactionPage({ params: Promise.resolve({ id: TXN_B }) });
+    const invisibleUi = await EditTransactionPage({ params: Promise.resolve({ id: TXN_B }), searchParams: Promise.resolve({}) });
     const invisible = render(invisibleUi);
     const invisibleHtml = invisible.container.innerHTML;
     invisible.unmount();
 
-    const malformedUi = await EditTransactionPage({ params: Promise.resolve({ id: "not-a-uuid" }) });
+    const malformedUi = await EditTransactionPage({ params: Promise.resolve({ id: "not-a-uuid" }), searchParams: Promise.resolve({}) });
     const malformed = render(malformedUi);
     const malformedHtml = malformed.container.innerHTML;
     malformed.unmount();
@@ -249,7 +267,7 @@ describe("EditTransactionPage — 404 collapse", () => {
       { wallet_id: WALLET_A, amount_minor: -1250, currency_code: "USD", occurred_on: "2026-08-01", note: null, merchant: null },
     ]);
 
-    const ui = await EditTransactionPage({ params: Promise.resolve({ id: TXN_A }) });
+    const ui = await EditTransactionPage({ params: Promise.resolve({ id: TXN_A }), searchParams: Promise.resolve({}) });
     render(ui);
 
     expect(screen.getByText("Transaction not found")).toBeInTheDocument();
@@ -262,7 +280,7 @@ describe("EditTransactionPage — seeds an expense/income transaction", () => {
     walletsById.set(WALLET_A, wallet(WALLET_A, { name: "Everyday" }));
     categoriesByWalletId.set(WALLET_A, [category(CATEGORY_A, { name: "Groceries" })]);
 
-    const ui = await EditTransactionPage({ params: Promise.resolve({ id: TXN_A }) });
+    const ui = await EditTransactionPage({ params: Promise.resolve({ id: TXN_A }), searchParams: Promise.resolve({}) });
     render(ui);
 
     expect(screen.getByRole("status", { name: "Amount" }).textContent).toContain("12.50");
@@ -284,10 +302,60 @@ describe("EditTransactionPage — seeds an expense/income transaction", () => {
     // ...but the row's own category is still fetchable directly.
     categoryById.set(CATEGORY_A, category(CATEGORY_A, { name: "Old Category", archived_at: "2026-01-01T00:00:00Z" }));
 
-    const ui = await EditTransactionPage({ params: Promise.resolve({ id: TXN_A }) });
+    const ui = await EditTransactionPage({ params: Promise.resolve({ id: TXN_A }), searchParams: Promise.resolve({}) });
     render(ui);
 
     expect(screen.getByRole("button", { name: "Old Category" })).toHaveAttribute("aria-pressed", "true");
+  });
+});
+
+/**
+ * Fix round 1, Minor 1. `TransactionForm.test.tsx` owns the redirect contract
+ * itself (given a `from` prop, where does it push?); what is only observable
+ * HERE is whether this page actually reads `?from` off the query string and
+ * hands it to the form at all. Without this, the whole return trip could be
+ * wired end to end and never activated, and every test would still pass.
+ *
+ * The repeated-param case is the fixture on purpose: `?from=a&from=b`
+ * delivers a `string[]` at runtime, and an unnormalised array reaching
+ * `parseOrigin` threw `from.split is not a function` INSIDE the post-save
+ * transition — after the save had already succeeded — which is the gotcha
+ * `/transactions/new/page.tsx` writes up and this page was told to follow
+ * exactly. Asserting the FIRST value's wallet proves both that the param is
+ * read and that it is normalised, and it fails (with that same TypeError)
+ * if the normalisation is dropped.
+ */
+describe("EditTransactionPage — the ?from return trip", () => {
+  it("reads ?from and hands it to the form, normalising a repeated param to its first value", async () => {
+    txnById.set(TXN_A, txn(TXN_A));
+    walletsById.set(WALLET_A, wallet(WALLET_A));
+    categoriesByWalletId.set(WALLET_A, [category(CATEGORY_A)]);
+
+    const ui = await EditTransactionPage({
+      params: Promise.resolve({ id: TXN_A }),
+      searchParams: Promise.resolve({ from: [`wallet:${WALLET_B}`, `wallet:${WALLET_A}`] }),
+    });
+    render(ui);
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Save changes" }));
+
+    await vi.waitFor(() => expect(push).toHaveBeenCalledWith(`/wallets/${WALLET_B}`));
+  });
+
+  it("lands on /transactions when there is no ?from, exactly as before", async () => {
+    txnById.set(TXN_A, txn(TXN_A));
+    walletsById.set(WALLET_A, wallet(WALLET_A));
+    categoriesByWalletId.set(WALLET_A, [category(CATEGORY_A)]);
+
+    const ui = await EditTransactionPage({
+      params: Promise.resolve({ id: TXN_A }),
+      searchParams: Promise.resolve({}),
+    });
+    render(ui);
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Save changes" }));
+
+    await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/transactions"));
   });
 });
 
@@ -354,7 +422,7 @@ describe("EditTransactionPage — seeds a transfer", () => {
     walletsById.set(WALLET_A, wallet(WALLET_A, { name: "Everyday", currency_code: "USD" }));
     walletsById.set(WALLET_B, wallet(WALLET_B, { name: "Holiday", currency_code: "JPY" }));
 
-    const ui = await EditTransactionPage({ params: Promise.resolve({ id: TXN_A }) });
+    const ui = await EditTransactionPage({ params: Promise.resolve({ id: TXN_A }), searchParams: Promise.resolve({}) });
     render(ui);
 
     // TransactionForm states a transfer's fixed wallets as text:
