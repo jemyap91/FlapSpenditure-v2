@@ -3709,11 +3709,33 @@ begin;
     -- outgoing leg is still the negative one. update_transfer_pair takes no
     -- argument saying which leg is which -- it reads each row's own current
     -- sign -- so a CASE written backwards would flip both legs' direction
-    -- while keeping the pair balanced, and this is what catches that.
+    -- while keeping the pair balanced.
+    --
+    -- These two lines are NOT what catches that, and an earlier version of
+    -- this comment claiming they were is the kind of over-claim this branch
+    -- has shipped before (task 8, item 5a). Two separate things are true:
+    --
+    --   * a backwards CASE never reaches this block at all. The
+    --     same-currency positive control at :3346-3350 above asserts the
+    --     exact signed amounts (-6000 / +6000) of an earlier edit, and
+    --     aborts first under ON_ERROR_STOP.
+    --   * even here, `out_amt = -7300` two lines below STRICTLY SUBSUMES
+    --     `out_amt < 0` (and `in_amt = 7300` subsumes `in_amt > 0`). There
+    --     is no mutation these can fail under that the exact-amount
+    --     assertions do not also fail under.
+    --
+    -- They are kept for their diagnostics, not their coverage: "the outgoing
+    -- leg lost its negative sign" names the direction bug in its own
+    -- vocabulary, ahead of a message about a wrong number. So do NOT delete
+    -- the exact-amount assertions below as "redundant with the sign checks"
+    -- -- the dependency runs the other way, and doing so would remove all
+    -- amount coverage from this block while leaving two assertions that
+    -- cannot fail without them.
     assert out_amt < 0, format('the outgoing leg lost its negative sign: %s', out_amt);
     assert in_amt  > 0, format('the incoming leg lost its positive sign: %s', in_amt);
 
-    -- Equal in magnitude, and equal to what was asked for.
+    -- Equal in magnitude, and equal to what was asked for. THESE are the
+    -- load-bearing amount assertions in this block.
     assert out_amt = -7300, format('outgoing leg amount wrong: %s (expected -7300)', out_amt);
     assert in_amt  =  7300, format('incoming leg amount wrong: %s (expected 7300)', in_amt);
     assert abs(out_amt) = abs(in_amt),
