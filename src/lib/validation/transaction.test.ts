@@ -17,7 +17,17 @@ const baseEdit = {
 
 const baseTransferEdit = {
   transfer_id: "33333333-3333-4333-8333-333333333333",
-  amount: "50.00",
+  // amount_out/amount_in, not a single amount (task-4 fix round 1 — see
+  // transferEditInput's own doc comment in ./transaction.ts for the full
+  // defect writeup: a single shared amount cannot represent what
+  // create_transfer already models, since a cross-currency transfer's two
+  // legs are genuinely different amounts). Equal here because this fixture
+  // stands in for the common same-currency case; the balance invariant
+  // itself is enforced by update_transfer_pair (0016_editable_transactions.
+  // sql), not by this schema — see that function and updateTransfer's own
+  // doc comments.
+  amount_out: "50.00",
+  amount_in: "50.00",
   occurred_on: "2026-01-15",
   note: "Move to savings",
   merchant: "My Bank",
@@ -71,6 +81,36 @@ describe("transactionEditInput", () => {
 describe("transferEditInput", () => {
   it("accepts a well-formed edit", () => {
     expect(transferEditInput.safeParse(baseTransferEdit).success).toBe(true);
+  });
+
+  /**
+   * Task-4 fix round 1: this schema must be able to represent what
+   * create_transfer already models on the create side — a cross-currency
+   * transfer's two legs as independent amounts. Unlike this schema's
+   * original single-`amount` field (which could only ever express a
+   * same-currency edit), amount_out and amount_in are free to differ; the
+   * balance invariant for the SAME-currency case lives in
+   * update_transfer_pair (0016_editable_transactions.sql), not here — see
+   * that function's own doc comment.
+   */
+  it("accepts different amount_out and amount_in — a cross-currency edit", () => {
+    const r = transferEditInput.safeParse({ ...baseTransferEdit, amount_out: "100.00", amount_in: "92.00" });
+    expect(r.success).toBe(true);
+  });
+
+  it("requires amount_out", () => {
+    // Built by deletion rather than destructuring-to-omit: this project's
+    // eslint config has no underscore ignore pattern, so `const { x: _x,
+    // ...rest }` reports an unused binding.
+    const rest: Record<string, unknown> = { ...baseTransferEdit };
+    delete rest.amount_out;
+    expect(transferEditInput.safeParse(rest).success).toBe(false);
+  });
+
+  it("requires amount_in", () => {
+    const rest: Record<string, unknown> = { ...baseTransferEdit };
+    delete rest.amount_in;
+    expect(transferEditInput.safeParse(rest).success).toBe(false);
   });
 
   it("coerces an empty merchant to null, like note", () => {

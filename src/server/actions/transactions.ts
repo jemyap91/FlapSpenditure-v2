@@ -463,38 +463,38 @@ export async function createTransfer(input: TransferInput): Promise<TransferResu
  * own `transactions_member` RLS and column-scoped UPDATE grant
  * (0004_rls.sql, extended by 0016), not with elevated rights.
  *
- * **Why `amount` alone (no per-leg amount, unlike `create_transfer`'s
- * `amount_out`/`amount_in`).** `transferEditInput` (Task 2) carries a
- * single `amount` field — deliberately, per that schema's own doc comment,
- * since a transfer's `category_id`/`wallet_id`/`kind` are all excluded from
- * an edit. That is correct for a same-currency transfer (create_transfer's
- * own "a same-currency transfer must balance" rule already requires both
- * legs to carry the identical magnitude there). It is a real gap for a
- * CROSS-currency transfer, where the two legs are independently valued
- * (create_transfer's `amount_out`/`amount_in`) — there is no way for a
- * single edited `amount` to represent two different currencies' worth of
- * money without silently overwriting whatever exchange rate the transfer
- * was originally recorded at. Rather than guess which leg the one `amount`
- * field is meant to apply to (or silently reinterpret it in both
- * currencies, which is worse), a cross-currency transfer's amount is
- * refused outright below, with a readable message — see this task's report
- * for the full reasoning. Editing the date/note/merchant of a
- * cross-currency transfer is refused too, as a consequence of `amount`
- * being a required field on `transferEditInput` with no way to say "leave
- * this alone" — a real, load-bearing limitation of the current interface,
- * not an edge case, and out of this task's scope to redesign (Task 2's
- * schema is a fixed input to this task).
+ * **`amount_out`/`amount_in`, mirroring `create_transfer` exactly (fix
+ * round 1).** The original version of this function took a single shared
+ * `amount` — a defect in `transferEditInput` (Task 2), not something this
+ * function could correctly work around: `create_transfer` takes independent
+ * `amount_out`/`amount_in` bigints because a cross-currency transfer's two
+ * legs are genuinely different amounts in different currencies, while a
+ * same-currency transfer must additionally balance. A single shared amount
+ * can only ever express the same-currency case, so the original version
+ * refused every edit to a cross-currency transfer — not just its amount,
+ * its date/note/merchant too, since `amount` was required with no "leave
+ * this alone" option. `transferEditInput` now carries both fields (that
+ * schema's own doc comment has the full defect writeup), and this function
+ * no longer needs its own currency-mismatch guard: the balance invariant
+ * that guard existed to protect now lives in `update_transfer_pair` itself
+ * (mirroring how `create_transfer` is the one place that enforces it for
+ * creation), which raises `'a same-currency transfer must balance'` — the
+ * exact string `create_transfer` already raises, so no change was needed to
+ * `KNOWN_TRANSFER_ERRORS` below to forward it.
  *
  * A lookup precedes the RPC call (`.eq("transfer_id", ...).is("deleted_at",
- * null)`, no `.select("id")`/`.single()` — a transfer is always exactly
- * two rows) for two reasons: it is what makes `amount`'s precision/parsing
- * currency-aware at all (the wallet's `currency_code` has to come from
- * somewhere), and it fails fast with a readable error before ever calling
- * the RPC. It is NOT a substitute for the RPC's own `deleted_at is null`
- * filter and exactly-two-rows check below — a delete racing between the
- * lookup and the RPC call must still land on "not found," not a stray
- * write to a row the user believes is gone, exactly like
- * `updateTransaction`'s identical two-checkpoint reasoning.
+ * null)`, no `.select("id")`/`.single()` — a transfer is always exactly two
+ * rows) for two reasons: it is what makes each amount's precision/parsing
+ * currency-aware at all (a leg's `currency_code` has to come from
+ * somewhere, and `amount_out`/`amount_in` are parsed against the OUTGOING
+ * and INCOMING leg's own currency respectively, read by sign off the rows —
+ * never assumed to be the same currency, unlike the original version), and
+ * it fails fast with a readable error before ever calling the RPC. It is
+ * NOT a substitute for the RPC's own `deleted_at is null` filter and
+ * exactly-two-rows check below — a delete racing between the lookup and
+ * the RPC call must still land on "not found," not a stray write to a row
+ * the user believes is gone, exactly like `updateTransaction`'s identical
+ * two-checkpoint reasoning.
  */
 export async function updateTransfer(input: TransferEditInput): Promise<MutationResult> {
   const parsed = transferEditInput.safeParse(input);
@@ -506,7 +506,7 @@ export async function updateTransfer(input: TransferEditInput): Promise<Mutation
   } = await supabase.auth.getUser();
   if (!user) return { error: "Not signed in" };
 
-  const { transfer_id, amount, occurred_on, note, merchant } = parsed.data;
+  const { transfer_id, amount_out, amount_in, occurred_on, note, merchant } = parsed.data;
 
   // `transactions_member` RLS means this only ever sees legs the caller is
   // a member of — a caller who has lost membership on one of the two
@@ -516,34 +516,51 @@ export async function updateTransfer(input: TransferEditInput): Promise<Mutation
   // never touch one leg of a pair without the other.
   const { data: legs } = await supabase
     .from("transactions")
-    .select("currency_code")
+    .select("amount_minor, currency_code")
     .eq("transfer_id", transfer_id)
     .is("deleted_at", null);
   if (!legs || legs.length !== 2) return { error: "Transfer not found" };
-  if (legs[0]!.currency_code !== legs[1]!.currency_code) {
-    return {
-      error: "Editing the amount isn't supported for a cross-currency transfer yet",
-    };
-  }
 
-  const minorUnit = minorUnitFor(legs[0]!.currency_code);
-  const precisionIssue = precisionError(amount, minorUnit, legs[0]!.currency_code);
-  if (precisionIssue) return { error: precisionIssue };
+  // Which leg is "out" (amount_out applies) and which is "in" (amount_in
+  // applies) is read from each row's OWN current sign, never guessed from
+  // array order — the identical discipline update_transfer_pair's own CASE
+  // follows for the actual write. A malformed pair (both legs the same
+  // sign — nothing in the schema's CHECK constraints rules that out, only
+  // `create_transfer` itself ever producing opposite signs) is reported as
+  // "not found" rather than silently misapplied to the wrong leg.
+  const outLeg = legs.find((l) => l.amount_minor < 0);
+  const inLeg = legs.find((l) => l.amount_minor > 0);
+  if (!outLeg || !inLeg) return { error: "Transfer not found" };
 
-  let magnitude: number;
+  const outMinorUnit = minorUnitFor(outLeg.currency_code);
+  const outPrecisionIssue = precisionError(amount_out, outMinorUnit, outLeg.currency_code);
+  if (outPrecisionIssue) return { error: outPrecisionIssue };
+
+  const inMinorUnit = minorUnitFor(inLeg.currency_code);
+  const inPrecisionIssue = precisionError(amount_in, inMinorUnit, inLeg.currency_code);
+  if (inPrecisionIssue) return { error: inPrecisionIssue };
+
+  let outMagnitude: number;
+  let inMagnitude: number;
   try {
-    magnitude = parseAmountInput(amount, minorUnit);
+    outMagnitude = parseAmountInput(amount_out, outMinorUnit);
+    inMagnitude = parseAmountInput(amount_in, inMinorUnit);
   } catch {
     return { error: "That amount isn't valid" };
   }
-  if (magnitude === 0) return { error: "Enter an amount greater than zero" };
+  if (outMagnitude === 0 || inMagnitude === 0) {
+    return { error: "Enter an amount greater than zero" };
+  }
 
   // Built field by field and named explicitly, matching updateTransaction's
   // own discipline — there is no `category_id` (or `wallet_id`/`kind`) to
   // spread in the first place, since transferEditInput never carries one
   // (that schema's own doc comment: the transfer_shape CHECK forces a
   // transfer's category_id to null), so this call can never put one on
-  // the wire no matter what `parsed.data` contains.
+  // the wire no matter what `parsed.data` contains. The same-currency
+  // balance check is deliberately NOT duplicated here — see this
+  // function's own doc comment above for why that invariant lives in
+  // update_transfer_pair alone.
   //
   // `note ?? undefined` / `merchant ?? undefined`: the same codegen quirk
   // createTransfer's own `note: note || undefined` comment already covers —
@@ -560,13 +577,25 @@ export async function updateTransfer(input: TransferEditInput): Promise<Mutation
   // parsing), so there is no remaining falsy-but-meaningful case to fold in.
   const { data: updated, error } = await supabase.rpc("update_transfer_pair", {
     p_transfer_id: transfer_id,
-    p_amount: magnitude,
+    p_amount_out: outMagnitude,
+    p_amount_in: inMagnitude,
     p_occurred_on: occurred_on,
     p_note: note ?? undefined,
     p_merchant: merchant ?? undefined,
   });
 
-  if (error) return { error: "Could not save transfer. Please try again." };
+  if (error) {
+    // update_transfer_pair raises the identical strings create_transfer
+    // does for the null/positivity/balance guards (this function's own doc
+    // comment) — already covered by KNOWN_TRANSFER_ERRORS, so forwarding
+    // them here is the same allowlisted, no-raw-provider-text path
+    // createTransfer already uses, not a new hole.
+    return {
+      error: KNOWN_TRANSFER_ERRORS.has(error.message)
+        ? error.message
+        : "Could not save transfer. Please try again.",
+    };
+  }
   // A zero- or one-row result is not a Postgres error — same
   // reported-success-database-untouched concern archiveWallet,
   // archiveCategory and updateTransaction's own check all guard against.

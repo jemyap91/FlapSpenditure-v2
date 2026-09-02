@@ -3233,3 +3233,202 @@ begin;
       'LEAK: wallet_id changed despite bob''s denied UPDATE';
   end $$;
 commit;
+
+-- =====================================================================
+-- Task 4 fix round 1: update_transfer_pair (0016_editable_transactions.sql)
+-- adversarial + positive coverage, mirroring create_transfer's own Task 9
+-- section above for the identical reason -- this is a new SECURITY
+-- INVOKER function that moves money, and it had no adversarial coverage of
+-- its own before this round. A suite proving only that a stranger is
+-- blocked cannot distinguish a correct policy from one that denies
+-- everybody, so the positive half (a genuine member succeeds) is proven
+-- here too, exactly like every other section in this file.
+--
+-- Fresh wallets (a4a40000-...), not a reuse of cccccccc-003/77777777-007:
+-- those wallets' transaction counts are asserted to an EXACT number by
+-- several blocks earlier in this file (e.g. "count(*) ... = 3"), and
+-- adding more transfer legs to them here would silently break those counts
+-- for anyone editing this file later -- the same reasoning the Task 9
+-- section's own comment gives for using 77777777-007/88888888-008 instead
+-- of cccccccc-003 for ITS cross-currency control.
+--
+-- The two transfer legs per pair are inserted directly with fixed ids,
+-- rather than through create_transfer (whose id is a fresh
+-- gen_random_uuid() this file has no established way to capture across
+-- separate impersonated transactions) -- the same fixed-id-across-blocks
+-- technique the recurring_rules section (60606060-...) and the merchant
+-- section (61616161-...) immediately above already use, for the identical
+-- reason: this section needs one stable transfer_id visible across several
+-- separate `begin;...commit;` blocks (setup as alice, attack as bob,
+-- verify as alice, edit as alice, attack as alice again).
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+  end $$;
+
+  insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon) values
+    ('a4a40000-0000-0000-0000-00000000a001', 'aaaaaaaa-0000-0000-0000-000000000001', 'Task4 A', 'bank', 'USD', 5, 'wallet'),
+    ('a4a40000-0000-0000-0000-00000000a002', 'aaaaaaaa-0000-0000-0000-000000000001', 'Task4 B', 'bank', 'USD', 6, 'wallet'),
+    ('a4a40000-0000-0000-0000-00000000a003', 'aaaaaaaa-0000-0000-0000-000000000001', 'Task4 C', 'bank', 'EUR', 7, 'wallet');
+
+  -- Same-currency pair (A -> B, USD/USD, balanced 5000/5000) -- used for
+  -- the membership attack/positive-control pair and the unbalanced-edit
+  -- attack below.
+  insert into transactions (id, wallet_id, created_by, kind, amount_minor, currency_code, transfer_id, occurred_on) values
+    ('a4a40000-0000-0000-0000-0000000e0001', 'a4a40000-0000-0000-0000-00000000a001', 'aaaaaaaa-0000-0000-0000-000000000001', 'transfer', -5000, 'USD', 'a4a40000-0000-0000-0000-0000000f0001', current_date),
+    ('a4a40000-0000-0000-0000-0000000e0002', 'a4a40000-0000-0000-0000-00000000a002', 'aaaaaaaa-0000-0000-0000-000000000001', 'transfer',  5000, 'USD', 'a4a40000-0000-0000-0000-0000000f0001', current_date);
+
+  -- Cross-currency pair (A -> C, USD/EUR, independently valued 10000/9200)
+  -- -- the control paired with the unbalanced-edit attack below.
+  insert into transactions (id, wallet_id, created_by, kind, amount_minor, currency_code, transfer_id, occurred_on) values
+    ('a4a40000-0000-0000-0000-0000000e0003', 'a4a40000-0000-0000-0000-00000000a001', 'aaaaaaaa-0000-0000-0000-000000000001', 'transfer', -10000, 'USD', 'a4a40000-0000-0000-0000-0000000f0002', current_date),
+    ('a4a40000-0000-0000-0000-0000000e0004', 'a4a40000-0000-0000-0000-00000000a003', 'aaaaaaaa-0000-0000-0000-000000000001', 'transfer',   9200, 'EUR', 'a4a40000-0000-0000-0000-0000000f0002', current_date);
+commit;
+
+-- Attack: bob is a member of NEITHER a4a40000-...-a001 nor -a002 -- must
+-- not be able to edit the same-currency pair at all. update_transfer_pair
+-- is security invoker, so the SELECTs inside it that determine each leg's
+-- currency run under BOB's own transactions_member RLS -- both rows are
+-- invisible to him, so the function's own "incomplete pair" branch fires
+-- and it returns the empty set, the identical outcome a genuinely missing
+-- transfer_id would produce (updateTransfer's own doc comment in
+-- src/server/actions/transactions.ts already documents this).
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+    assert is_wallet_member('a4a40000-0000-0000-0000-00000000a001'::uuid) = false,
+      'test setup broken: bob should not be a member of Task4 A';
+    assert is_wallet_member('a4a40000-0000-0000-0000-00000000a002'::uuid) = false,
+      'test setup broken: bob should not be a member of Task4 B';
+  end $$;
+
+  do $$
+  declare n int;
+  begin
+    select count(*) into n from update_transfer_pair(
+      'a4a40000-0000-0000-0000-0000000f0001', 6000, 6000, current_date, 'pwned', 'pwned');
+    assert n = 0, 'LEAK: non-member bob edited a transfer pair he has no access to';
+  end $$;
+commit;
+
+-- Verify from alice's side that bob's attempt left no trace.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select amount_minor from transactions where id = 'a4a40000-0000-0000-0000-0000000e0001') = -5000,
+      'LEAK: non-member bob''s rejected call changed the out-leg''s amount';
+    assert (select amount_minor from transactions where id = 'a4a40000-0000-0000-0000-0000000e0002') = 5000,
+      'LEAK: non-member bob''s rejected call changed the in-leg''s amount';
+    assert (select note from transactions where id = 'a4a40000-0000-0000-0000-0000000e0001') is null,
+      'LEAK: non-member bob''s rejected call wrote a note';
+  end $$;
+commit;
+
+-- Positive control -- the load-bearing half: a suite proving only that a
+-- stranger is blocked cannot distinguish a correct policy from one that
+-- denies everybody. Alice, a genuine member of both wallets (owner of
+-- both, via add_owner_as_member()), successfully edits the same-currency
+-- pair, balanced 6000/6000.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$
+  declare legs int;
+  begin
+    select count(*) into legs from update_transfer_pair(
+      'a4a40000-0000-0000-0000-0000000f0001', 6000, 6000, current_date, 'edited', 'Bank');
+    assert legs = 2, 'PERMISSION BROKEN: member alice could not edit her own transfer pair';
+    assert (select amount_minor from transactions where id = 'a4a40000-0000-0000-0000-0000000e0001') = -6000,
+      'out-leg amount not updated';
+    assert (select amount_minor from transactions where id = 'a4a40000-0000-0000-0000-0000000e0002') = 6000,
+      'in-leg amount not updated';
+    assert (select note from transactions where id = 'a4a40000-0000-0000-0000-0000000e0001') = 'edited',
+      'note not updated on the out-leg';
+    assert (select note from transactions where id = 'a4a40000-0000-0000-0000-0000000e0002') = 'edited',
+      'note not updated on the in-leg';
+  end $$;
+commit;
+
+-- Control, paired with the unbalanced-edit attack below: a genuine
+-- CROSS-currency edit with two genuinely different amounts must still
+-- succeed -- the critical control for the balance guard, mirroring
+-- create_transfer's own "Control, paired with the unbalanced-transfer
+-- attacks below" section (Task 9, above). A guard written to reject
+-- everything (not just same-currency mismatches) would pass the attack
+-- test below and look identical to a correct fix unless this also runs
+-- and passes.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$
+  declare legs int; out_amt bigint; in_amt bigint;
+  begin
+    select count(*) into legs from update_transfer_pair(
+      'a4a40000-0000-0000-0000-0000000f0002', 12000, 11000, current_date, 'fx edit', null);
+    assert legs = 2, 'cross-currency edit must update exactly two legs';
+    select amount_minor into out_amt from transactions where id = 'a4a40000-0000-0000-0000-0000000e0003';
+    select amount_minor into in_amt  from transactions where id = 'a4a40000-0000-0000-0000-0000000e0004';
+    assert out_amt = -12000, format('cross-currency out-leg wrong: %s', out_amt);
+    assert in_amt  =  11000, format('cross-currency in-leg wrong: %s', in_amt);
+  end $$;
+commit;
+
+-- Attack: update_transfer_pair must reject an UNBALANCED same-currency
+-- edit. Both a4a40000-...-a001 and -a002 are USD, so amount_out <>
+-- amount_in has no exchange rate to justify it -- it would either destroy
+-- money (out > in) or fabricate it (out < in) with no error and no record.
+-- Tested in both directions, mirroring create_transfer's own identical
+-- attack pair (Task 9, above). THIS is the block whose discrimination was
+-- verified by temporarily removing the balance check from
+-- update_transfer_pair, re-running `npm run test:rls`, watching it fail,
+-- and restoring -- see this task's report for both observed outputs.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$
+  begin
+    begin
+      perform update_transfer_pair(
+        'a4a40000-0000-0000-0000-0000000f0001', 7000, 1, current_date, null, null);
+      raise exception 'LEAK: update_transfer_pair allowed an unbalanced same-currency edit (destroys money)';
+    exception
+      when others then
+        assert sqlerrm = 'a same-currency transfer must balance',
+          format('wrong rejection reason: %s', sqlerrm);
+    end;
+
+    begin
+      perform update_transfer_pair(
+        'a4a40000-0000-0000-0000-0000000f0001', 1, 7000, current_date, null, null);
+      raise exception 'LEAK: update_transfer_pair allowed an unbalanced same-currency edit (fabricates money)';
+    exception
+      when others then
+        assert sqlerrm = 'a same-currency transfer must balance',
+          format('wrong rejection reason: %s', sqlerrm);
+    end;
+  end $$;
+commit;
+
+-- Verify the unbalanced attack left the pair exactly as the positive
+-- control above left it (6000/6000) -- no before/after row-count assertion
+-- is needed around either caught raise above (the same "a raised call
+-- inside a plpgsql exception block rolls back its implicit subtransaction"
+-- reasoning the Task 9 section's own comment gives for create_transfer's
+-- identical attack shape); this is the assertion that actually proves
+-- nothing persisted.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select amount_minor from transactions where id = 'a4a40000-0000-0000-0000-0000000e0001') = -6000,
+      'LEAK: unbalanced attack changed the out-leg despite being rejected';
+    assert (select amount_minor from transactions where id = 'a4a40000-0000-0000-0000-0000000e0002') = 6000,
+      'LEAK: unbalanced attack changed the in-leg despite being rejected';
+  end $$;
+commit;

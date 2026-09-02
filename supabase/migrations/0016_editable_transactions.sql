@@ -67,17 +67,30 @@ grant update (merchant) on transactions to authenticated;
 -- half-updated pair. Wrapping both writes in one PL/pgSQL statement makes
 -- them one Postgres transaction, exactly like create_transfer's own two
 -- INSERTs. See src/server/actions/transactions.ts's updateTransfer doc
--- comment and this task's report for the full reasoning, including why
--- p_amount is a single shared magnitude rather than a per-leg pair.
+-- comment and this task's report for the full reasoning.
 --
--- p_amount is the POSITIVE magnitude both legs are set to; each row's
--- EXISTING sign (read from the row itself, never from an argument) decides
--- which side of the pair it lands on -- the outgoing leg (already
--- negative) gets -p_amount, the incoming leg (already positive) gets
--- +p_amount. A row can never change which side it's on through this
--- function: there is no argument that identifies "the outgoing leg" for a
--- caller to get backwards, only the CASE reading the row's own current
--- sign.
+-- p_amount_out/p_amount_in (task-4 fix round 1 -- originally a single
+-- shared p_amount; see transferEditInput's own doc comment in
+-- src/lib/validation/transaction.ts for why that was a defect). Mirrors
+-- create_transfer's own amount_out/amount_in exactly, for the identical
+-- reason: a cross-currency transfer's two legs are genuinely different
+-- amounts in different currencies, and a single shared magnitude cannot
+-- represent that. Each row's EXISTING sign (read from the row itself,
+-- never from an argument) decides which side of the pair it lands on --
+-- the outgoing leg (already negative) gets -p_amount_out, the incoming leg
+-- (already positive) gets +p_amount_in. A row can never change which side
+-- it's on through this function: there is no argument that identifies
+-- "the outgoing leg" for a caller to get backwards, only the CASE reading
+-- the row's own current sign.
+--
+-- The same-currency balance invariant lives HERE, not in
+-- transferEditInput/updateTransfer, exactly the way create_transfer is the
+-- one place that enforces it for creation -- both legs' CURRENT
+-- currency_code (already fixed at creation time; this function never
+-- changes it) decide whether the check applies, read from the rows
+-- themselves rather than trusted from an argument, the same "never trust
+-- the caller for something the row already knows" discipline the sign CASE
+-- above follows.
 --
 -- security invoker, like create_transfer, and for the identical reason:
 -- this must run under the CALLER's own transactions_member RLS (`for all
@@ -88,34 +101,81 @@ grant update (merchant) on transactions to authenticated;
 -- only one row here, exactly like a genuinely missing transfer_id would --
 -- there is no privilege this function grants to reach the other leg, and
 -- updateTransfer's own exactly-two-rows check turns that into a readable
--- "not found" rather than a silent single-leg write.
+-- "not found" rather than a silent single-leg write. supabase/tests/rls.sql
+-- carries the adversarial coverage for this (a non-member is refused, a
+-- member succeeds), mirroring create_transfer's own coverage there.
 --
 -- search_path is set to '' (0004/0005's convention), so every reference
 -- below is schema-qualified.
 create function update_transfer_pair(
   p_transfer_id uuid,
-  p_amount bigint,
+  p_amount_out bigint,
+  p_amount_in bigint,
   p_occurred_on date,
   p_note text default null,
   p_merchant text default null
 ) returns setof transactions
   language plpgsql security invoker set search_path = '' as $$
+declare
+  out_ccy char(3);
+  in_ccy  char(3);
 begin
-  -- Same reasoning as create_transfer's identical null/positivity checks:
-  -- a plpgsql parameter list can't carry `not null`, so an explicit JSON
-  -- null for p_amount/p_occurred_on would otherwise fall through to the
-  -- UPDATE below and die on a NOT NULL column constraint instead of this
+  -- Same reasoning as create_transfer's identical null/positivity checks,
+  -- and the identical message text (both already sit in
+  -- src/server/actions/transactions.ts's KNOWN_TRANSFER_ERRORS allowlist,
+  -- so no change was needed there to forward these verbatim): a plpgsql
+  -- parameter list can't carry `not null`, so an explicit JSON null for
+  -- either amount or the date would otherwise fall through to the UPDATE
+  -- below and die on a NOT NULL column constraint instead of this
   -- function's own message.
-  if p_amount is null or p_occurred_on is null then
-    raise exception 'transfer amount and date must not be null';
+  if p_amount_out is null or p_amount_in is null or p_occurred_on is null then
+    raise exception 'transfer amounts and date must not be null';
   end if;
-  if p_amount <= 0 then
-    raise exception 'transfer amount must be positive';
+  if p_amount_out <= 0 or p_amount_in <= 0 then
+    raise exception 'transfer amounts must be positive';
+  end if;
+
+  -- Read each leg's CURRENT currency directly off the rows -- not passed
+  -- in by the caller, and not assumed from wallet_id (the rows already
+  -- carry their own currency_code, fixed at creation time). `limit 1`
+  -- (ordered, not `select ... into strict`) is deliberate: the schema has
+  -- no CHECK enforcing that a transfer's two legs actually carry opposite
+  -- signs (0003_transactions.sql's transfer_shape only requires
+  -- category_id null and transfer_id set), so a malformed pair -- however
+  -- it got that way -- must not raise an unhandled "more than one row"
+  -- error here. Absent (RLS-filtered, soft-deleted, or genuinely missing)
+  -- leaves the variable NULL rather than erroring, which the check right
+  -- below turns into "incomplete pair" instead of a crash.
+  select currency_code into out_ccy from public.transactions
+    where transfer_id = p_transfer_id and amount_minor < 0 and deleted_at is null
+    order by created_at limit 1;
+  select currency_code into in_ccy from public.transactions
+    where transfer_id = p_transfer_id and amount_minor > 0 and deleted_at is null
+    order by created_at limit 1;
+
+  -- Incomplete pair (missing transfer_id, RLS hid a leg the caller isn't a
+  -- member of, or a malformed same-signed pair) -- return the empty set
+  -- rather than raising, so updateTransfer's own exactly-two-rows check
+  -- reports it as "not found" the same uniform way a missing row anywhere
+  -- else in this app is reported, not a distinct Postgres exception
+  -- message a caller would have to special-case.
+  if out_ccy is null or in_ccy is null then
+    return;
+  end if;
+
+  -- The identical rule create_transfer enforces on creation, applied again
+  -- on edit for the same reason: when both legs are in the same currency
+  -- there is no exchange rate to justify amount_out <> amount_in -- that
+  -- would either destroy money (out > in) or fabricate it (out < in) with
+  -- no error and no record. A cross-currency pair keeps two independent
+  -- amounts, since a real exchange rate applies there.
+  if out_ccy = in_ccy and p_amount_out <> p_amount_in then
+    raise exception 'a same-currency transfer must balance';
   end if;
 
   return query
     update public.transactions
-       set amount_minor = case when amount_minor < 0 then -p_amount else p_amount end,
+       set amount_minor = case when amount_minor < 0 then -p_amount_out else p_amount_in end,
            occurred_on  = p_occurred_on,
            note         = p_note,
            merchant     = p_merchant,
@@ -125,4 +185,4 @@ begin
      returning *;
 end $$;
 
-grant execute on function update_transfer_pair(uuid, bigint, date, text, text) to authenticated;
+grant execute on function update_transfer_pair(uuid, bigint, bigint, date, text, text) to authenticated;

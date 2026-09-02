@@ -90,8 +90,10 @@ const {
   categoryResult: { data: null as { kind: string; archived_at: string | null } | null },
   // updateTransfer's pre-flight lookup — the transfer's own legs, keyed by
   // transfer_id rather than id, so an array rather than txnLookupResult's
-  // single object.
-  legsLookupResult: { data: null as { currency_code: string }[] | null },
+  // single object. amount_minor's sign is what tells the outgoing leg from
+  // the incoming one (fix round 1: each leg is now parsed against its OWN
+  // currency, since amount_out/amount_in replaced the single amount field).
+  legsLookupResult: { data: null as { amount_minor: number; currency_code: string }[] | null },
   // Shared by updateTransaction's UPDATE and updateTransfer's RPC call —
   // both represent "the rows the write actually touched."
   updateResult: { data: null as { id: string; amount_minor?: number }[] | null, error: null as unknown },
@@ -199,7 +201,10 @@ beforeEach(() => {
   txnLookupResult.data = { wallet_id: WALLET_ID, kind: "expense" };
   walletLookupResult.data = { archived_at: null, currency_code: "SGD" };
   categoryResult.data = { kind: "expense", archived_at: null };
-  legsLookupResult.data = [{ currency_code: "SGD" }, { currency_code: "SGD" }];
+  legsLookupResult.data = [
+    { amount_minor: -4250, currency_code: "SGD" },
+    { amount_minor: 4250, currency_code: "SGD" },
+  ];
   updateResult.data = [{ id: TXN_ID }];
   updateResult.error = null;
 });
@@ -228,7 +233,8 @@ function edit(
 function transferEdit(
   overrides: Partial<{
     transfer_id: string;
-    amount: string;
+    amount_out: string;
+    amount_in: string;
     occurred_on: string;
     note: string | null;
     merchant: string | null;
@@ -236,7 +242,11 @@ function transferEdit(
 ) {
   return {
     transfer_id: TRANSFER_ID,
-    amount: "42.50",
+    // Matches the default legsLookupResult fixture (-4250/+4250, both SGD)
+    // — equal magnitudes, so the default case is a balanced same-currency
+    // edit unless a test overrides one side or the fixture.
+    amount_out: "42.50",
+    amount_in: "42.50",
     occurred_on: "2026-07-01",
     note: null,
     merchant: null,
@@ -585,8 +595,9 @@ describe("updateTransaction", () => {
 describe("updateTransfer", () => {
   beforeEach(() => {
     // The RPC's canned return for a successful call — two legs, opposite
-    // signs, matching transferEdit()'s default "42.50" (4250 minor units).
-    // Individual tests override this where the scenario needs to.
+    // signs, matching transferEdit()'s default "42.50"/"42.50" (4250 minor
+    // units each). Individual tests override this where the scenario needs
+    // to.
     updateResult.data = [
       { id: "leg-out", amount_minor: -4250 },
       { id: "leg-in", amount_minor: 4250 },
@@ -598,34 +609,100 @@ describe("updateTransfer", () => {
    * version didn't have. As literally written, the brief's test only reads
    * back `updateResult.data` — this suite's OWN canned mock value — which
    * would still read `[-2500, 2500]` even if `updateTransfer` sent the wrong
-   * `p_amount` to the RPC, or never called it at all: nothing about reading
-   * a variable this test itself just set proves `updateTransfer` computed or
+   * amounts to the RPC, or never called it at all: nothing about reading a
+   * variable this test itself just set proves `updateTransfer` computed or
    * forwarded anything. (Compare `updateTransaction`'s "scopes both the
    * initial lookup..." test above, which documents the identical class of
    * problem in the brief that test was written from.) The `rpcSpy` assertion
    * is what actually ties the sorted output to THIS call's input — that
-   * `updateTransfer` correctly parsed "25.00" into a single shared 2500-minor
-   * -unit magnitude and forwarded it, under this transfer's own id, to the
-   * one statement (`update_transfer_pair`) that applies it to both legs
-   * with each leg's existing sign preserved. See this task's report for how
-   * Step 5's discrimination proof was actually carried out, given that a
+   * `updateTransfer` correctly parsed a balanced same-currency edit into
+   * two EQUAL 2500-minor-unit magnitudes and forwarded them, under this
+   * transfer's own id, to the one statement (`update_transfer_pair`) that
+   * applies them to both legs with each leg's existing sign preserved.
+   * This is also "a same-currency edit posts equal magnitudes" (fix round
+   * 1's first requested test) — `p_amount_out === p_amount_in` here IS that
+   * property. See this task's report for how the RPC-layer discrimination
+   * proof (supabase/tests/rls.sql) was carried out, given that a
    * fully-mocked unit test cannot observe a bug in the RPC's own SQL.
    */
-  it("updates BOTH legs, keeping their signs opposite", async () => {
+  it("updates BOTH legs, keeping their signs opposite, with equal magnitudes for a same-currency edit", async () => {
     updateResult.data = [
       { id: "leg-out", amount_minor: -2500 },
       { id: "leg-in", amount_minor: 2500 },
     ];
 
-    await updateTransfer(transferEdit({ amount: "25.00" }));
+    await updateTransfer(transferEdit({ amount_out: "25.00", amount_in: "25.00" }));
 
     const rows = updateResult.data!;
     expect(rows).toHaveLength(2);
     expect(rows.map((r) => r.amount_minor!).sort((a, b) => a - b)).toEqual([-2500, 2500]);
     expect(rpcSpy).toHaveBeenCalledWith(
       "update_transfer_pair",
-      expect.objectContaining({ p_transfer_id: TRANSFER_ID, p_amount: 2500 }),
+      expect.objectContaining({ p_transfer_id: TRANSFER_ID, p_amount_out: 2500, p_amount_in: 2500 }),
     );
+  });
+
+  /**
+   * Fix round 1's second requested test: "a cross-currency edit carries two
+   * DIFFERENT amounts through to the RPC and succeeds." legsLookupResult's
+   * two legs carry different currencies here (USD out, JPY in), so each
+   * amount is parsed against its OWN leg's minor unit — a JS-level proof
+   * that `updateTransfer` no longer forces one shared magnitude onto both
+   * legs (fix round 1's whole point) and no longer refuses the edit outright
+   * the way the removed currency-mismatch guard used to.
+   */
+  it("carries two different amounts through to the RPC for a cross-currency edit", async () => {
+    legsLookupResult.data = [
+      { amount_minor: -10000, currency_code: "USD" },
+      { amount_minor: 920000, currency_code: "JPY" },
+    ];
+    updateResult.data = [
+      { id: "leg-out", amount_minor: -12000 },
+      { id: "leg-in", amount_minor: 1100000 },
+    ];
+
+    const result = await updateTransfer(transferEdit({ amount_out: "120.00", amount_in: "11000" }));
+
+    expect(result).toEqual({ ok: true });
+    expect(rpcSpy).toHaveBeenCalledWith(
+      "update_transfer_pair",
+      expect.objectContaining({ p_transfer_id: TRANSFER_ID, p_amount_out: 12000, p_amount_in: 11000 }),
+    );
+  });
+
+  /**
+   * Fix round 1's third requested test: "an unbalanced SAME-currency edit
+   * is refused." The balance invariant now lives entirely inside
+   * update_transfer_pair (0016_editable_transactions.sql), not in this
+   * action — see updateTransfer's own doc comment for why it was moved
+   * there rather than duplicated. That means this mocked test can only
+   * prove the JS-level HALF of the property: that when the RPC rejects an
+   * unbalanced pair (`raise exception 'a same-currency transfer must
+   * balance'`, identical to create_transfer's own message), updateTransfer
+   * forwards that specific, readable error rather than masking it behind
+   * the generic "Could not save transfer" fallback — KNOWN_TRANSFER_ERRORS
+   * already allowlists this exact string (createTransfer's own use), so no
+   * change was needed there. This test cannot prove the invariant is
+   * actually ENFORCED — a fully-mocked test never calls real Postgres, so a
+   * broken or missing balance check inside update_transfer_pair's SQL is
+   * invisible here by construction, the identical limitation this task's
+   * original Step 5 wrote up for the sign-preservation CASE. That proof
+   * lives in supabase/tests/rls.sql instead (an unbalanced same-currency
+   * edit against the real RPC, with the discrimination proof — temporarily
+   * removing the check, re-running, watching it fail, restoring — captured
+   * in this task's report).
+   */
+  it("forwards update_transfer_pair's unbalanced-same-currency rejection as a readable error", async () => {
+    updateResult.data = null;
+    updateResult.error = { message: "a same-currency transfer must balance", code: "P0001" };
+
+    const result = await updateTransfer(transferEdit({ amount_out: "50.00", amount_in: "25.00" }));
+
+    expect(result).toEqual({ error: "a same-currency transfer must balance" });
+    // The rejection came from the RPC, not a JS-side guard — proving the
+    // call was actually made distinguishes this from the (removed)
+    // currency-mismatch guard that used to refuse before ever reaching it.
+    expect(rpcSpy).toHaveBeenCalled();
   });
 
   /**
@@ -637,10 +714,10 @@ describe("updateTransfer", () => {
    * the RPC mechanism this task chose, there IS no client-side `.eq()` call
    * for the write itself — `update_transfer_pair`'s WHERE clause does that
    * scoping inside Postgres, invisible to this mock. What eqSpy CAN observe
-   * is the pre-flight lookup (`.eq("transfer_id", ...)`, used to learn the
-   * legs' currency and fail fast on an incomplete pair before ever calling
-   * the RPC) — scoped by transfer_id, not by either leg's own id, which is
-   * the property this test is actually named for.
+   * is the pre-flight lookup (`.eq("transfer_id", ...)`, used to learn each
+   * leg's own currency and fail fast on an incomplete pair before ever
+   * calling the RPC) — scoped by transfer_id, not by either leg's own id,
+   * which is the property this test is actually named for.
    */
   it("scopes the pre-flight lookup by transfer_id, not by either leg's own id", async () => {
     await updateTransfer(transferEdit());
@@ -673,7 +750,29 @@ describe("updateTransfer", () => {
    * all), so both are asserted.
    */
   it("reports not found when the pre-flight lookup itself finds an incomplete pair", async () => {
-    legsLookupResult.data = [{ currency_code: "SGD" }];
+    legsLookupResult.data = [{ amount_minor: -4250, currency_code: "SGD" }];
+
+    const result = await updateTransfer(transferEdit());
+
+    if (!("error" in result)) throw new Error("expected an error result");
+    expect(result.error).toMatch(/not found|both/i);
+    expect(rpcSpy).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A malformed pair — both legs sharing the same sign — is a distinct
+   * failure mode from "fewer than two rows": the SELECT itself returns two
+   * rows, but neither `outLeg`/`inLeg` can be identified. Nothing in
+   * 0003_transactions.sql's CHECK constraints actually rules this out (only
+   * create_transfer's own INSERT ever produces opposite signs), so this is
+   * a real, if unlikely, shape updateTransfer must not crash on or silently
+   * misapply an amount against.
+   */
+  it("reports not found when both legs share the same sign", async () => {
+    legsLookupResult.data = [
+      { amount_minor: 4250, currency_code: "SGD" },
+      { amount_minor: 4250, currency_code: "SGD" },
+    ];
 
     const result = await updateTransfer(transferEdit());
 
@@ -701,40 +800,64 @@ describe("updateTransfer", () => {
     expect(isSpy).toHaveBeenCalledWith("transactions", "deleted_at", null);
   });
 
-  it("refuses to edit the amount of a cross-currency transfer", async () => {
-    legsLookupResult.data = [{ currency_code: "SGD" }, { currency_code: "USD" }];
-
-    const result = await updateTransfer(transferEdit());
-
-    if (!("error" in result)) throw new Error("expected an error result");
-    expect(result.error).toMatch(/cross-currency/i);
-    expect(rpcSpy).not.toHaveBeenCalled();
-  });
-
-  it("writes the shared amount, occurred_on, note and merchant to the RPC", async () => {
-    await updateTransfer(transferEdit({ note: "  Rent  ", merchant: "Landlord", amount: "10.00" }));
+  it("writes both amounts, occurred_on, note and merchant to the RPC", async () => {
+    await updateTransfer(
+      transferEdit({ note: "  Rent  ", merchant: "Landlord", amount_out: "10.00", amount_in: "10.00" }),
+    );
 
     expect(rpcSpy).toHaveBeenCalledWith("update_transfer_pair", {
       p_transfer_id: TRANSFER_ID,
-      p_amount: 1000,
+      p_amount_out: 1000,
+      p_amount_in: 1000,
       p_occurred_on: "2026-07-01",
       p_note: "Rent",
       p_merchant: "Landlord",
     });
   });
 
-  it("rejects a zero amount", async () => {
-    const result = await updateTransfer(transferEdit({ amount: "0" }));
+  it("rejects a zero outgoing amount", async () => {
+    const result = await updateTransfer(transferEdit({ amount_out: "0" }));
 
     if (!("error" in result)) throw new Error("expected an error result");
     expect(result.error).toMatch(/greater than zero/i);
     expect(rpcSpy).not.toHaveBeenCalled();
   });
 
-  it("rejects a fraction the currency cannot hold, rather than truncating it", async () => {
-    legsLookupResult.data = [{ currency_code: "JPY" }, { currency_code: "JPY" }];
+  it("rejects a zero incoming amount", async () => {
+    const result = await updateTransfer(transferEdit({ amount_in: "0" }));
 
-    const result = await updateTransfer(transferEdit({ amount: "12.999" }));
+    if (!("error" in result)) throw new Error("expected an error result");
+    expect(result.error).toMatch(/greater than zero/i);
+    expect(rpcSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects a fraction the outgoing leg's currency cannot hold, rather than truncating it", async () => {
+    legsLookupResult.data = [
+      { amount_minor: -4250, currency_code: "JPY" },
+      { amount_minor: 4250, currency_code: "JPY" },
+    ];
+
+    const result = await updateTransfer(transferEdit({ amount_out: "12.999", amount_in: "12" }));
+
+    if (!("error" in result)) throw new Error("expected an error result");
+    expect(result.error).toMatch(/no decimal places/i);
+    expect(rpcSpy).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Each leg is parsed against its OWN currency (fix round 1) — this is the
+   * test that would have failed against the original single-`amount`
+   * version, which only ever checked one currency. USD out / JPY in: a
+   * fraction that's fine for USD but invalid for JPY must still be caught,
+   * scoped to the INCOMING leg specifically.
+   */
+  it("rejects a fraction the incoming leg's currency cannot hold, even when the outgoing leg's is fine", async () => {
+    legsLookupResult.data = [
+      { amount_minor: -1200, currency_code: "USD" },
+      { amount_minor: 1200, currency_code: "JPY" },
+    ];
+
+    const result = await updateTransfer(transferEdit({ amount_out: "12.00", amount_in: "12.999" }));
 
     if (!("error" in result)) throw new Error("expected an error result");
     expect(result.error).toMatch(/no decimal places/i);
@@ -742,14 +865,14 @@ describe("updateTransfer", () => {
   });
 
   it("returns a validation error for malformed input, never touching the database", async () => {
-    const result = await updateTransfer(transferEdit({ amount: "" }));
+    const result = await updateTransfer(transferEdit({ amount_out: "" }));
 
     if (!("error" in result)) throw new Error("expected an error result");
     expect(result.error).toBeTruthy();
     expect(fromSpy).not.toHaveBeenCalled();
   });
 
-  it("returns an error, never throws, when the RPC itself fails", async () => {
+  it("returns an error, never throws, when the RPC itself fails for an unrecognized reason", async () => {
     updateResult.data = null;
     updateResult.error = { message: "boom", code: "XX000" };
 

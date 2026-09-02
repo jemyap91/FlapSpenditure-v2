@@ -249,9 +249,8 @@ export const transactionEditInput = z.object({
 
 /**
  * Editing an existing transfer leg. Modeled on `transferInput` above the
- * same way `transactionEditInput` is modeled on `transactionInput`: `amount`
- * and `occurred_on` share `amountField`/`dateField`, `note`/`merchant`
- * share `editableText`.
+ * same way `transactionEditInput` is modeled on `transactionInput`:
+ * `occurred_on` shares `dateField`, `note`/`merchant` share `editableText`.
  *
  * No `from_wallet_id`/`to_wallet_id` (wallets aren't editable — same reason
  * as `transactionEditInput`'s missing `wallet_id`) and, unlike
@@ -260,10 +259,46 @@ export const transactionEditInput = z.object({
  * schema that accepted one here would let a caller's payload reach Postgres
  * as a constraint violation instead of a message this action can return.
  * `transfer_id` identifies which pair of linked rows to update.
+ *
+ * `amount_out`/`amount_in`, not a single `amount` (task-4 fix round 1 —
+ * this schema's own defect, found and fixed after Task 4 shipped
+ * `updateTransfer` against the original single-`amount` version). A single
+ * shared amount cannot represent what `create_transfer`
+ * (0005_transfer_fn.sql) already models on the CREATE side: that function
+ * takes independent `amount_out`/`amount_in` bigints precisely because a
+ * cross-currency transfer's two legs are genuinely different amounts in
+ * different currencies, while a same-currency transfer must additionally
+ * balance (`amount_out = amount_in`, enforced by `create_transfer` itself,
+ * not by this schema). The original single-`amount` field could only
+ * express the same-currency case; editing a cross-currency transfer's
+ * amount had no correct encoding at all, so Task 4's `updateTransfer`
+ * refused every edit to one (not just the amount — `amount` was a
+ * *required* field with no "leave this alone" option, so a cross-currency
+ * transfer's date/note/merchant were unreachable too). Naming the fields
+ * `amount_out`/`amount_in` (not `amount`/`amount_in` the way `transferInput`
+ * does above) mirrors `create_transfer`'s own parameter names exactly, and
+ * both are required here — unlike `transferInput.amount_in`, which is
+ * optional because *creating* a same-currency transfer only needs one
+ * number to be typed twice. There is no equivalent convenience being
+ * preserved on the edit path (the caller already knows both legs' amounts
+ * from what it is displaying), so there is no reason to special-case one
+ * as optional.
+ *
+ * The same-currency balance invariant is intentionally NOT re-checked here
+ * (or anywhere in `updateTransfer`) — `update_transfer_pair`
+ * (0016_editable_transactions.sql) is the one place that enforces it,
+ * exactly the way `create_transfer` is the one place that enforces it for
+ * creation. Duplicating the check in this schema would let the two drift;
+ * a same-currency edit that posts `amount_out === amount_in` satisfies it
+ * trivially, and an unbalanced same-currency edit is refused by the RPC's
+ * own `raise exception 'a same-currency transfer must balance'`, translated
+ * to a readable error by `updateTransfer` via the same `KNOWN_TRANSFER_ERRORS`
+ * allowlist `createTransfer` already uses.
  */
 export const transferEditInput = z.object({
   transfer_id: z.uuid(),
-  amount: amountField,
+  amount_out: amountField,
+  amount_in: amountField,
   occurred_on: dateField,
   note: editableText(280, "Note is too long"),
   merchant: editableText(120, "Merchant is too long"),
