@@ -39,6 +39,13 @@ const CATEGORY_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
  * second one — `updateTransaction`'s own scoping test below only means
  * anything because `eqSpy` can be asked which table and column a call
  * actually landed on.
+ *
+ * `isSpy` (fix round 1, "decide and state" item) is the identical pattern
+ * applied to `.is(col, val)` — the method `updateTransaction`'s
+ * `deleted_at is null` filters use, since `.eq` can't express "IS NULL".
+ * Without it, tagging `.is("deleted_at", null)` calls in production would be
+ * unobservable to any test the same way an untagged `.eq` was before
+ * `eqSpy` existed.
  */
 const {
   getUser,
@@ -49,6 +56,7 @@ const {
   updateSpy,
   fromSpy,
   eqSpy,
+  isSpy,
   revalidatePath,
 } = vi.hoisted(() => ({
   getUser: vi.fn(),
@@ -63,6 +71,7 @@ const {
   updateSpy: vi.fn(),
   fromSpy: vi.fn(),
   eqSpy: vi.fn(),
+  isSpy: vi.fn(),
   revalidatePath: vi.fn(),
 }));
 
@@ -114,6 +123,10 @@ vi.mock("@/lib/supabase/server", () => ({
         },
         eq: (col: string, val: unknown) => {
           eqSpy(table, col, val);
+          return builder;
+        },
+        is: (col: string, val: unknown) => {
+          isSpy(table, col, val);
           return builder;
         },
         single: () => builder,
@@ -266,6 +279,28 @@ describe("updateTransaction", () => {
     expect(idCalls).toHaveLength(2);
   });
 
+  /**
+   * Fix round 1, "decide and state": a soft-deleted transaction was
+   * editable by direct POST — neither the lookup nor the UPDATE excluded
+   * `deleted_at is not null` rows. Decided to filter both (see the doc
+   * comment on the lookup in transactions.ts), rather than leave it as an
+   * unstated asymmetry with `setDeletedAt`'s restore/delete pair: editing a
+   * deleted transaction is treated as "not found," the same way editing one
+   * from another wallet is. Both call sites are asserted, the same
+   * count-based shape as the id-scoping test above, for the same reason —
+   * `.is("deleted_at", null)` appearing ANYWHERE would satisfy a bare
+   * `toHaveBeenCalledWith`, but only a count of 2 proves both the lookup
+   * AND the UPDATE carry it.
+   */
+  it("excludes a soft-deleted row from both the lookup and the UPDATE", async () => {
+    await updateTransaction(edit());
+
+    const deletedAtCalls = isSpy.mock.calls.filter(
+      ([table, col, val]) => table === "transactions" && col === "deleted_at" && val === null,
+    );
+    expect(deletedAtCalls).toHaveLength(2);
+  });
+
   it("refuses an archived wallet", async () => {
     walletLookupResult.data = { archived_at: "2026-06-01T00:00:00Z", currency_code: "SGD" };
 
@@ -283,6 +318,57 @@ describe("updateTransaction", () => {
 
     if (!("error" in result)) throw new Error("expected an error result");
     expect(result.error).toMatch(/doesn't match/i);
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Fix round 1, IMPORTANT 1: unasserted before this — deleting
+   * `.eq("wallet_id", wallet_id)` from the category lookup (transactions.ts)
+   * left all 30 tests green. `createTransaction`'s own comment on the
+   * identical filter explains what's actually at stake: without it, a
+   * category id from a DIFFERENT wallet that happens to satisfy the kind
+   * check reaches the UPDATE and dies on the composite FK
+   * `transactions_category_same_wallet`, surfacing as the generic "Could
+   * not save transaction. Please try again." instead of this readable
+   * validation error. Mirrors recurring.test.ts's "scopes the category
+   * lookup to the rule's own wallet_id" test.
+   */
+  it("scopes the category lookup to the transaction's own wallet_id", async () => {
+    await updateTransaction(edit());
+
+    expect(eqSpy).toHaveBeenCalledWith("categories", "wallet_id", WALLET_ID);
+  });
+
+  /**
+   * Fix round 1, IMPORTANT 2: unasserted before this — deleting
+   * `if (!category || category.archived_at) return { error: "Choose a
+   * category" };` (transactions.ts) also left all 30 tests green. That line
+   * is not just the archived-category rejection the brief named; it is
+   * ALSO the null guard protecting `category.kind` on the very next line —
+   * removing it turns a missing category into an uncaught TypeError
+   * (`Cannot read properties of null`), the exact never-throw violation the
+   * transfer guard above exists to prevent. Both branches of that `||` — a
+   * category that can't be found at all, and one that's archived — are
+   * covered here, both expecting the same "Choose a category" message
+   * `createTransaction` uses for the identical situation.
+   */
+  it("rejects when the category lookup finds nothing", async () => {
+    categoryResult.data = null;
+
+    const result = await updateTransaction(edit());
+
+    if (!("error" in result)) throw new Error("expected an error result");
+    expect(result.error).toMatch(/choose a category/i);
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects an archived category, even if its kind matches", async () => {
+    categoryResult.data = { kind: "expense", archived_at: "2026-01-01T00:00:00Z" };
+
+    const result = await updateTransaction(edit());
+
+    if (!("error" in result)) throw new Error("expected an error result");
+    expect(result.error).toMatch(/choose a category/i);
     expect(updateSpy).not.toHaveBeenCalled();
   });
 
@@ -348,15 +434,14 @@ describe("updateTransaction", () => {
     expect(payload.category_id).toBeNull();
   });
 
-  it("signs an expense negative", async () => {
-    txnLookupResult.data = { wallet_id: WALLET_ID, kind: "expense" };
-
-    await updateTransaction(edit({ amount: "12.50" }));
-
-    const payload = updateSpy.mock.calls[0]![0] as Record<string, unknown>;
-    expect(payload.amount_minor).toBe(-1250);
-  });
-
+  /**
+   * Fix round 1, MINOR 3: "signs an expense negative" (formerly here) was
+   * deleted — it exercised the same amount_minor sign, on the same
+   * `kind: "expense"` beforeEach default, on the same code path as "writes
+   * amount, occurred_on, category_id, note and merchant" below, so nothing
+   * could fail one without also failing the other. This test is the only
+   * one exercising `kind: "income"` and is kept for that reason.
+   */
   it("signs an income positive", async () => {
     txnLookupResult.data = { wallet_id: WALLET_ID, kind: "income" };
     categoryResult.data = { kind: "income", archived_at: null };

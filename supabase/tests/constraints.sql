@@ -1196,3 +1196,88 @@ begin
   assert (select recurring_occurrence_on from transactions where id = v_id) = '2026-10-01',
     'CONSTRAINT BROKEN: recurring_occurrence_on did not persist as inserted on a recordOccurrence-shaped row';
 end $$;
+
+-- 0016 fix round 2: the branch's central promise, proven live in an ad-hoc
+-- session during review but never captured anywhere permanent until now.
+-- src/server/actions/transactions.ts's updateTransaction never writes
+-- recurring_occurrence_on (it isn't even in transactionEditInput, and
+-- authenticated's own UPDATE grant on transactions doesn't include that
+-- column at all -- see 0004_rls.sql's grant, unchanged by this migration),
+-- so editing a recorded occurrence's occurred_on must not make it due
+-- again: its identity lives in recurring_occurrence_on, not occurred_on.
+-- Run as `authenticated` (not the table-owning superuser this file
+-- otherwise runs as) so this actually exercises the same column-scoped
+-- grant and RLS boundary updateTransaction's own callers are subject to,
+-- not a superuser bypass of it.
+\echo '--- 0016 fix round 2: an updateTransaction-shaped UPDATE run as authenticated moves occurred_on without disturbing recurring_occurrence_on or the dashboard''s handled-occurrence query ---'
+insert into recurring_rules (id, wallet_id, name, kind, amount_minor, currency_code,
+                             category_id, interval_unit, anchor_on)
+  values ('90909090-0000-0000-0000-0000000000e0', '90909090-0000-0000-0000-000000000002',
+          'Edit Does Not Unhandle Rule', 'expense', -1200, 'USD',
+          '90909090-0000-0000-0000-000000000003', 'monthly', current_date);
+insert into transactions (id, wallet_id, kind, amount_minor, currency_code, category_id,
+                          occurred_on, recurring_id, recurring_occurrence_on)
+  values ('90909090-0000-0000-0000-0000000000e1', '90909090-0000-0000-0000-000000000002',
+          'expense', -1200, 'USD', '90909090-0000-0000-0000-000000000003',
+          current_date, '90909090-0000-0000-0000-0000000000e0', current_date);
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"90909090-0000-0000-0000-000000000001"}';
+  do $$ begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
+    assert (select auth.uid()) = '90909090-0000-0000-0000-000000000001'::uuid,
+      'impersonation failed: auth.uid() did not resolve to ivy';
+  end $$;
+
+  -- The exact column set updateTransaction's own UPDATE writes (src/server/
+  -- actions/transactions.ts) -- amount_minor, category_id, occurred_on,
+  -- note, merchant, updated_at -- moving occurred_on five days away from
+  -- recurring_occurrence_on, which is not, and never is, in this payload.
+  do $$
+  declare n int;
+  begin
+    update transactions set
+      amount_minor = -1500,
+      category_id = '90909090-0000-0000-0000-000000000003',
+      occurred_on = current_date - 5,
+      note = 'Edited note',
+      merchant = 'Edited Merchant',
+      updated_at = now()
+    where id = '90909090-0000-0000-0000-0000000000e1'
+      and deleted_at is null;
+    get diagnostics n = row_count;
+    assert n = 1,
+      format('updateTransaction-shaped UPDATE matched %s row(s) as authenticated, expected 1 (RLS or grant regression?)', n);
+  end $$;
+commit;
+
+do $$
+declare v_recurring_occurrence_on date; v_occurred_on date; n int;
+begin
+  select recurring_occurrence_on, occurred_on into v_recurring_occurrence_on, v_occurred_on
+    from transactions where id = '90909090-0000-0000-0000-0000000000e1';
+
+  assert v_recurring_occurrence_on = current_date,
+    format('SAFETY BROKEN: editing occurred_on via an updateTransaction-shaped UPDATE changed recurring_occurrence_on to %s (expected it to stay %s)',
+           v_recurring_occurrence_on, current_date);
+  assert v_occurred_on = current_date - 5,
+    format('the edited occurred_on must persist as written, found %s', v_occurred_on);
+
+  -- Mirrors src/app/(app)/page.tsx's dashboard "handled occurrences" read
+  -- (around lines 222-227) exactly: recurring_id is not null, deleted_at is
+  -- null, recurring_occurrence_on >= dueFloor (lookbackFloor in src/lib/
+  -- recurrence.ts, 12 months back from today). occurred_on never appears in
+  -- that query at all -- this row's recurring_occurrence_on (current_date)
+  -- is untouched by the edit above, so it must still be found here even
+  -- though occurred_on moved to current_date - 5, i.e. the occurrence must
+  -- NOT have become due again.
+  select count(*) into n
+    from transactions
+   where recurring_id is not null
+     and deleted_at is null
+     and recurring_occurrence_on >= (current_date - interval '12 months')
+     and id = '90909090-0000-0000-0000-0000000000e1';
+  assert n = 1,
+    'SAFETY BROKEN: editing occurred_on made a recorded occurrence disappear from the dashboard''s own handled-occurrence query -- it would show up as due again';
+end $$;

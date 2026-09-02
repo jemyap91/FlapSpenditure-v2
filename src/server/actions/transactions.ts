@@ -226,10 +226,20 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
   // Load the row first to learn its wallet_id and kind — a posted one is
   // never trusted, and there is no such field on transactionEditInput to
   // trust in the first place.
+  //
+  // `.is("deleted_at", null)` here (and on the UPDATE below) is a deliberate
+  // choice, not an oversight: a soft-deleted row is not offered anywhere in
+  // the UI (fix round 1 review) and editing one directly would be an
+  // unstated asymmetry with `setDeletedAt`'s own restore/delete pair — this
+  // action is for editing a LIVE transaction, and a deleted one must be
+  // restored first. Filtered at both steps rather than just the lookup so a
+  // delete racing between them still lands on "Transaction not found"
+  // instead of a stray write to a row the user believes is gone.
   const { data: existing } = await supabase
     .from("transactions")
     .select("wallet_id, kind")
     .eq("id", id)
+    .is("deleted_at", null)
     .single();
   if (!existing) return { error: "Transaction not found" };
   const { wallet_id, kind } = existing;
@@ -309,6 +319,7 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
       updated_at: new Date().toISOString(),
     })
     .eq("id", id)
+    .is("deleted_at", null)
     .select("id");
 
   if (error) return { error: "Could not save transaction. Please try again." };
