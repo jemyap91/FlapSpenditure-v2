@@ -103,8 +103,11 @@ describe("buildDueRows", () => {
       recorded: [],
     };
     const { rows } = buildDueRows(input, "2026-09-01");
-    expect(rows[0]!.blockedReason).toMatch(/category/i);
-    expect(rows[0]!.blockedReason).toMatch(/archived/i);
+    // The exact wording, not just `/category/i` — that pattern also matches
+    // the KIND-MISMATCH message below, so a mutation that swapped the two
+    // (telling a user to un-archive a category that isn't archived) would
+    // have passed silently under the looser assertion (fix round 2, small).
+    expect(rows[0]!.blockedReason).toBe("This rule's category has been archived.");
   });
 
   it("marks a rule whose category kind no longer matches the rule's kind as blocked", () => {
@@ -114,19 +117,48 @@ describe("buildDueRows", () => {
       recorded: [],
     };
     const { rows } = buildDueRows(input, "2026-09-01");
-    expect(rows[0]!.blockedReason).toMatch(/category/i);
+    // Exact wording (see the archived-category test's identical note): this
+    // message must be distinguishable from "has been archived" specifically
+    // because both would satisfy a bare `/category/i` match.
+    expect(rows[0]!.blockedReason).toBe("This rule's category doesn't match this rule's type.");
   });
 
   it("marks a paused rule as blocked", () => {
     // A rule can be paused AFTER an occurrence became due but before it was
-    // recorded or skipped — the occurrence must not silently vanish.
+    // recorded or skipped — the occurrence must not silently vanish. The
+    // rule's anchor (1 Aug) is BEFORE the pause (20 Aug), so that one
+    // occurrence is still generated (fix round 2, I1: `dueOccurrences` now
+    // stops MINTING new ones after the pause, but a pre-pause occurrence is
+    // unaffected) and must render blocked, not hidden.
     const input = {
-      rules: [rule({ archivedAt: "2026-08-20T00:00:00Z" })],
+      rules: [rule({ anchorOn: "2026-08-01", archivedAt: "2026-08-20T00:00:00Z" })],
       skips: [],
       recorded: [],
     };
     const { rows } = buildDueRows(input, "2026-09-01");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.occurrenceOn).toBe("2026-08-01");
     expect(rows[0]!.blockedReason).toMatch(/paused/i);
+  });
+
+  /**
+   * Fix round 2, I1 — the live defect the whole-branch review proved:
+   * before `archivedAt` was wired into `dueOccurrences`, pausing a rule
+   * mid-schedule did not stop it minting a NEW occurrence every period
+   * after the pause, each rendered as a permanently-blocked row nobody
+   * could ever clear (spec §6: there is no un-archive action). Anchored 1
+   * January, paused 15 February, read on 5 June: only 1 January and 1
+   * February (the one due before the pause) may appear — 1 March through 1
+   * June must not.
+   */
+  it("stops generating new rows for a rule after it was paused, rather than minting one every period forever", () => {
+    const input = {
+      rules: [rule({ anchorOn: "2026-01-01", archivedAt: "2026-02-15T00:00:00Z" })],
+      skips: [],
+      recorded: [],
+    };
+    const { rows } = buildDueRows(input, "2026-06-05");
+    expect(rows.map((r) => r.occurrenceOn)).toEqual(["2026-01-01", "2026-02-01"]);
   });
 
   it("leaves blockedReason null for a fully valid, unblocked rule", () => {

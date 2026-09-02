@@ -294,6 +294,22 @@ describe("createRule", () => {
     expect(insertSpy).toHaveBeenCalledWith(expect.objectContaining({ created_by: OWNER_ID }));
   });
 
+  /**
+   * Fix round 2, I5: `fromSpy`/`eqSpy` were already instrumented into this
+   * suite's fake (see the module comment above), but createRule/updateRule/
+   * archiveRule never actually asserted on them — proven live: a mutation
+   * pointing this INSERT at `transactions` instead of `recurring_rules`
+   * left 62/62 green. The shared fake accepts either table name silently
+   * (it has to, for `recordOccurrence`'s own INSERT into `transactions`),
+   * so only `fromSpy`'s own record of WHICH table this call actually
+   * reached can catch it.
+   */
+  it("inserts into recurring_rules, never a different table", async () => {
+    await createRule({}, form());
+
+    expect(fromSpy).toHaveBeenLastCalledWith("recurring_rules");
+  });
+
   it("rejects a fraction the currency cannot hold, rather than truncating it", async () => {
     // The wallet's own currency must agree with the rule's for this test to
     // reach the precision check at all — otherwise `checkWalletCurrency`
@@ -548,6 +564,26 @@ describe("updateRule", () => {
     expect(eqSpy).toHaveBeenCalledWith("categories", "wallet_id", OTHER_WALLET_ID);
     expect(eqSpy).not.toHaveBeenCalledWith("categories", "wallet_id", WALLET_ID);
   });
+
+  /**
+   * Fix round 2, I5: proven live — dropping the UPDATE's own `.eq("id",
+   * id)` left 62/62 green, which means editing ONE rule would rewrite
+   * EVERY rule in the household (RLS still scopes it to the caller's own
+   * wallets, but not to this one rule). `updateRule` calls `.eq("id", id)`
+   * TWICE on `recurring_rules` in the success path — once for the initial
+   * `.select("wallet_id")` lookup, once for the UPDATE itself — so the
+   * mutation is caught by the count dropping from two to one, not merely
+   * by the call having happened at all (which the lookup alone would
+   * already satisfy).
+   */
+  it("scopes both the initial lookup and the UPDATE itself to this rule's id", async () => {
+    await updateRule(RULE_ID, {}, form());
+
+    const recurringRuleIdCalls = eqSpy.mock.calls.filter(
+      ([table, col, val]) => table === "recurring_rules" && col === "id" && val === RULE_ID,
+    );
+    expect(recurringRuleIdCalls).toHaveLength(2);
+  });
 });
 
 describe("archiveRule", () => {
@@ -563,6 +599,19 @@ describe("archiveRule", () => {
 
     expect(revalidatePath).toHaveBeenCalledWith("/", "layout");
     expect(revalidatePath).toHaveBeenCalledWith("/recurring");
+  });
+
+  /**
+   * Fix round 2, I5: proven live — dropping this UPDATE's `.eq("id", id)`
+   * left 62/62 green, which means pausing ONE rule would pause EVERY rule
+   * in the household. `archiveRule` has no separate lookup step (unlike
+   * `updateRule`), so a single `eqSpy` call is the entire filter this
+   * UPDATE carries.
+   */
+  it("scopes the UPDATE to this rule's id", async () => {
+    await archiveRule(RULE_ID);
+
+    expect(eqSpy).toHaveBeenCalledWith("recurring_rules", "id", RULE_ID);
   });
 
   /**
@@ -864,6 +913,24 @@ describe("skipOccurrence", () => {
     expect(insertSpy).toHaveBeenCalledWith(
       expect.objectContaining({ rule_id: RULE_ID, occurrence_on: "2026-07-01" }),
     );
+  });
+
+  // Fix round 2, small finding: `recordOccurrence` already shape-validates
+  // `occurrenceOn` with `z.iso.date()` (see its own identical pair of
+  // tests); this action didn't, so a calendar-invalid date reached Postgres
+  // as a raw driver error instead of this file's own translated messages.
+  it("rejects a shape-invalid occurrence date", async () => {
+    const res = await skipOccurrence(RULE_ID, "07/01/2026");
+
+    expect(res.error).toMatch(/valid date/i);
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects a calendar-invalid occurrence date", async () => {
+    const res = await skipOccurrence(RULE_ID, "2026-02-30");
+
+    expect(res.error).toMatch(/valid date/i);
+    expect(insertSpy).not.toHaveBeenCalled();
   });
 
   /**

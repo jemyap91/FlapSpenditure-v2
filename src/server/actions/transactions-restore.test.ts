@@ -28,21 +28,35 @@ const TXN_ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 /**
  * `vi.hoisted` — same reason as wallets.test.ts/budgets.test.ts: `vi.mock`
  * factories are hoisted above this file's own top-level `const`s.
+ *
+ * `fromSpy`/`eqSpy` (fix round 2, I3) tag EVERY `.from(table)` and
+ * `.eq(col, val)` call, the identical pattern src/server/actions/
+ * recurring.test.ts's own module comment describes and this file's own
+ * `eq: () => builder` did NOT follow — proven live: changing
+ * `transactions.ts`'s `await query.eq("id", id).select("id")` to
+ * `await query.select("id")` (the UPDATE running with no WHERE at all,
+ * soft-deleting/restoring EVERY transaction RLS lets the caller see) left
+ * this file's 18/18 green, because the discarded `eq` arguments meant
+ * nothing here could observe WHICH row (or whether any row at all) the
+ * UPDATE was actually scoped to.
  */
-const { getUser, readResult, countResult, updateResult, updateSpy, revalidatePath } = vi.hoisted(() => ({
-  getUser: vi.fn(),
-  // The initial `.select("transfer_id").eq("id", id).single()` read.
-  readResult: { data: null as { transfer_id: string | null } | null, error: null as unknown },
-  // The `expectedCount` head-count query, only reached for a transfer leg
-  // (row.transfer_id truthy) — irrelevant to every test in this file, which
-  // uses ordinary (non-transfer) transactions, but the builder needs SOME
-  // response if it's ever hit by accident.
-  countResult: { count: 1 as number | null },
-  // The UPDATE ... .select("id") result.
-  updateResult: { data: null as { id: string }[] | null, error: null as unknown },
-  updateSpy: vi.fn(),
-  revalidatePath: vi.fn(),
-}));
+const { getUser, readResult, countResult, updateResult, updateSpy, fromSpy, eqSpy, revalidatePath } =
+  vi.hoisted(() => ({
+    getUser: vi.fn(),
+    // The initial `.select("transfer_id").eq("id", id).single()` read.
+    readResult: { data: null as { transfer_id: string | null } | null, error: null as unknown },
+    // The `expectedCount` head-count query, only reached for a transfer leg
+    // (row.transfer_id truthy) — irrelevant to every test in this file, which
+    // uses ordinary (non-transfer) transactions, but the builder needs SOME
+    // response if it's ever hit by accident.
+    countResult: { count: 1 as number | null },
+    // The UPDATE ... .select("id") result.
+    updateResult: { data: null as { id: string }[] | null, error: null as unknown },
+    updateSpy: vi.fn(),
+    fromSpy: vi.fn(),
+    eqSpy: vi.fn(),
+    revalidatePath: vi.fn(),
+  }));
 
 vi.mock("next/cache", () => ({ revalidatePath }));
 
@@ -50,6 +64,7 @@ vi.mock("@/lib/supabase/server", () => ({
   createClient: async () => ({
     auth: { getUser },
     from: (table: string) => {
+      fromSpy(table);
       if (table !== "transactions") throw new Error(`unexpected table ${table}`);
       // Distinguishes the initial read (`.select("transfer_id")`) from the
       // UPDATE (`.update({...})`) the same way wallets.test.ts's fake
@@ -66,7 +81,10 @@ vi.mock("@/lib/supabase/server", () => ({
           updateSpy(payload);
           return builder;
         },
-        eq: () => builder,
+        eq: (col: string, val: unknown) => {
+          eqSpy(table, col, val);
+          return builder;
+        },
         single: async () => readResult,
         then: (resolve: (v: unknown) => void) => {
           if (mode === "count") return resolve(countResult);
@@ -129,6 +147,28 @@ describe("restoreTransaction", () => {
 
     expect(result).toEqual({ error: "Not signed in" });
   });
+
+  /**
+   * Fix round 2, I3: proven live — `transactions.ts`'s
+   * `await query.eq("id", id).select("id")` changed to
+   * `await query.select("id")` (dropping the UPDATE's own WHERE clause
+   * entirely, for a non-transfer row) left this file's 18/18 green before
+   * `eqSpy` existed. `setDeletedAt` calls `.eq("id", id)` on `transactions`
+   * TWICE for a non-transfer row in this flow — once for the initial
+   * `.select("transfer_id")` lookup, once for the UPDATE itself — so the
+   * mutation is caught by the count dropping from two to one, not merely by
+   * the call having happened at all (which the lookup alone would already
+   * satisfy).
+   */
+  it("scopes both the initial lookup and the UPDATE itself to this transaction's id", async () => {
+    await restoreTransaction(TXN_ID);
+
+    expect(fromSpy).toHaveBeenCalledWith("transactions");
+    const idFilterCalls = eqSpy.mock.calls.filter(
+      ([table, col, val]) => table === "transactions" && col === "id" && val === TXN_ID,
+    );
+    expect(idFilterCalls).toHaveLength(2);
+  });
 });
 
 describe("softDeleteTransaction", () => {
@@ -158,5 +198,16 @@ describe("softDeleteTransaction", () => {
       expect.objectContaining({ deleted_at: expect.any(String) }),
     );
     expect(revalidatePath).toHaveBeenCalledWith("/", "layout");
+  });
+
+  // Same coverage gap as restoreTransaction's identical test above, on the
+  // delete side of the same shared `setDeletedAt` implementation.
+  it("scopes both the initial lookup and the UPDATE itself to this transaction's id", async () => {
+    await softDeleteTransaction(TXN_ID);
+
+    const idFilterCalls = eqSpy.mock.calls.filter(
+      ([table, col, val]) => table === "transactions" && col === "id" && val === TXN_ID,
+    );
+    expect(idFilterCalls).toHaveLength(2);
   });
 });

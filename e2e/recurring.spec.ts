@@ -263,11 +263,31 @@ test.describe("recurring", () => {
     await expect(recordGym).toHaveCount(0);
     await expect(skipGym).toHaveCount(0);
 
+    // Skipping is undoable (spec §4: "Skipping is undoable by deleting the
+    // skip row") — clicking Undo brings Gym's occurrence right back onto
+    // the due list, proving the round trip end to end against the real
+    // Supabase stack, not just against a mocked `unskipOccurrence`.
+    const undoGym = page.getByRole("button", { name: "Undo" });
+    await expect(undoGym).toBeVisible();
+    await undoGym.click();
+    await expect(recordGym).toBeVisible();
+    await expect(skipGym).toBeVisible();
+
+    // Skip it again for real, so every occurrence is handled below.
+    await skipGym.click();
+    await expect(recordGym).toHaveCount(0);
+    await expect(skipGym).toHaveCount(0);
+
     await page.goto("/transactions");
     await expect(page.getByText("Health", { exact: true })).toHaveCount(0);
 
     // The skip doesn't move the hero total either.
     await page.goto("/");
     await expect(heroTotal(page)).toHaveText("$120.00");
+
+    // Spec §5: "Absent entirely when nothing is due." Every occurrence
+    // above has now been handled (two recorded, one skipped) — the DUE
+    // section's own heading must be gone, not merely empty of rows.
+    await expect(page.getByRole("heading", { name: "Due" })).toHaveCount(0);
   });
 });

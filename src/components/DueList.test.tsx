@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DueList } from "./DueList";
-import { recordOccurrence, skipOccurrence } from "@/server/actions/recurring";
+import { recordOccurrence, skipOccurrence, unskipOccurrence } from "@/server/actions/recurring";
 import { formatMoney } from "@/lib/money";
 import type { DueRow } from "@/app/(app)/due-rows";
 
@@ -12,6 +12,7 @@ import type { DueRow } from "@/app/(app)/due-rows";
 vi.mock("@/server/actions/recurring", () => ({
   recordOccurrence: vi.fn(),
   skipOccurrence: vi.fn(),
+  unskipOccurrence: vi.fn(),
 }));
 
 // `DueList` imports `shortDate` from `RecurringList.tsx` (fix round 1, I2:
@@ -26,8 +27,10 @@ vi.mock("@/server/actions/categories", () => ({
 beforeEach(() => {
   vi.mocked(recordOccurrence).mockReset();
   vi.mocked(skipOccurrence).mockReset();
+  vi.mocked(unskipOccurrence).mockReset();
   vi.mocked(recordOccurrence).mockResolvedValue({});
   vi.mocked(skipOccurrence).mockResolvedValue({});
+  vi.mocked(unskipOccurrence).mockResolvedValue({});
 });
 
 const TODAY = "2026-09-01";
@@ -213,5 +216,94 @@ describe("DueList", () => {
   it("says nothing about withheld occurrences when none were dropped", () => {
     render(<DueList rows={[row()]} olderDropped={false} today={TODAY} />);
     expect(screen.queryByText(/older occurrences/i)).not.toBeInTheDocument();
+  });
+
+  // Fix round 2, I2: Skip used to be one tap, unconfirmed and irreversible
+  // from the app — `unskipOccurrence` existed and was tested, but nothing
+  // outside its own test file ever called it. These three tests mirror
+  // TransactionList.test.tsx's own delete/undo suite.
+  describe("skip/undo", () => {
+    it("a successful skip shows the undo affordance", async () => {
+      const user = userEvent.setup();
+      render(
+        <DueList
+          rows={[row({ ruleId: "rule-9", occurrenceOn: "2026-07-01" })]}
+          olderDropped={false}
+          today={TODAY}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: "Skip Rent for 1 Jul" }));
+
+      expect(await screen.findByText("Rent skipped")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+    });
+
+    it("undo calls unskipOccurrence with the row's rule id and occurrence date", async () => {
+      const user = userEvent.setup();
+      render(
+        <DueList
+          rows={[row({ ruleId: "rule-9", occurrenceOn: "2026-07-01" })]}
+          olderDropped={false}
+          today={TODAY}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: "Skip Rent for 1 Jul" }));
+      await user.click(await screen.findByRole("button", { name: "Undo" }));
+
+      await waitFor(() => expect(unskipOccurrence).toHaveBeenCalledWith("rule-9", "2026-07-01"));
+    });
+
+    it("a successful undo clears the toast entirely", async () => {
+      const user = userEvent.setup();
+      render(<DueList rows={[row()]} olderDropped={false} today={TODAY} />);
+
+      await user.click(screen.getByRole("button", { name: "Skip Rent for 1 Jul" }));
+      await user.click(await screen.findByRole("button", { name: "Undo" }));
+
+      // The toast's message text is gone once cleared; the visible box
+      // (with Undo/Dismiss) unmounts along with it — same assertion shape
+      // as TransactionList's identical "a successful undo clears the toast
+      // entirely" test.
+      await waitFor(() => expect(screen.queryByText("Rent skipped")).not.toBeInTheDocument());
+      expect(screen.queryByRole("button", { name: "Dismiss notification" })).not.toBeInTheDocument();
+    });
+
+    it("keeps the toast (and its Undo) mounted once the row it was for is gone from `rows`, but drops the Due heading", async () => {
+      // The exact hazard this component's own doc comment names: skipping
+      // the LAST due row makes the parent's next render pass `rows={[]}`
+      // (page.tsx's revalidation no longer includes a skipped occurrence)
+      // on the very same beat the toast needs to appear on. `rerender`
+      // stands in for that parent re-render — `DueList` owns no row state
+      // of its own to fake this with internally.
+      const user = userEvent.setup();
+      const { rerender } = render(<DueList rows={[row()]} olderDropped={false} today={TODAY} />);
+
+      await user.click(screen.getByRole("button", { name: "Skip Rent for 1 Jul" }));
+      await screen.findByText("Rent skipped");
+
+      rerender(<DueList rows={[]} olderDropped={false} today={TODAY} />);
+
+      // An unconditional `if (rows.length === 0) return null` would unmount
+      // the toast (and the undo it offers) the instant `rows` went empty.
+      expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+      // The DUE heading itself is gone regardless — spec §5's "absent
+      // entirely when nothing is due" — even though the toast is still on
+      // screen.
+      expect(screen.queryByRole("heading", { name: "Due" })).not.toBeInTheDocument();
+    });
+
+    it("a failed undo keeps the action available, relabelled Retry", async () => {
+      vi.mocked(unskipOccurrence).mockResolvedValue({ error: "Could not undo the skip. Please try again." });
+      const user = userEvent.setup();
+      render(<DueList rows={[row()]} olderDropped={false} today={TODAY} />);
+
+      await user.click(screen.getByRole("button", { name: "Skip Rent for 1 Jul" }));
+      await user.click(await screen.findByRole("button", { name: "Undo" }));
+
+      expect(await screen.findByText("Could not undo the skip. Please try again.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    });
   });
 });

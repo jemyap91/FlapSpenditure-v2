@@ -40,7 +40,14 @@ export type DueRuleInput = {
    *  a deleted one. `recordOccurrence` refuses a paused rule outright
    *  ("This rule has been paused."); a due occurrence that became due
    *  before the pause must still be SHOWN, with that reason, rather than
-   *  silently vanishing the moment the rule is paused. */
+   *  silently vanishing the moment the rule is paused.
+   *
+   *  Fix round 2, I1: also fed straight into `dueOccurrences` below as
+   *  `RecurrenceRule.archivedAt` — an upper bound on GENERATION, not just a
+   *  label on an already-generated row. Before that field existed, this
+   *  value was consulted ONLY by `blockedReasonFor`, so a paused rule kept
+   *  minting a new permanently-blocked row every period forever; see that
+   *  field's own doc comment (src/lib/recurrence.ts) for the full story. */
   archivedAt: string | null;
   walletName: string;
   walletCurrencyCode: string;
@@ -149,7 +156,12 @@ export function buildDueRows(
   for (const rule of input.rules) {
     const handled = handledByRule.get(rule.id) ?? new Set<string>();
     const occurrences = dueOccurrences(
-      { anchorOn: rule.anchorOn, intervalUnit: rule.intervalUnit, endsOn: rule.endsOn },
+      {
+        anchorOn: rule.anchorOn,
+        intervalUnit: rule.intervalUnit,
+        endsOn: rule.endsOn,
+        archivedAt: rule.archivedAt,
+      },
       today,
       handled,
     );

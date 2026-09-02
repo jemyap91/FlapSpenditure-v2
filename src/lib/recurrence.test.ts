@@ -120,6 +120,58 @@ describe("occurrencesFor", () => {
     const { dates } = occurrencesFor(monthly("2026-09-01", "2026-09-01"), "2026-09-01");
     expect(dates).toEqual(["2026-09-01"]);
   });
+
+  /**
+   * Fix round 2, I1 — the exact scenario the whole-branch review proved
+   * live: a monthly rule anchored 2026-01-01, paused 2026-02-15, read on
+   * 2026-06-05. Before this fix, `archivedAt` was never consulted here at
+   * all, so this generated FOUR occurrences after the pause (1 Mar, 1 Apr,
+   * 1 May, 1 Jun) — each one a permanently-blocked row on the dashboard,
+   * with no un-archive action to ever clear it (spec §6). The occurrence
+   * already due BEFORE the pause (1 Feb) must still come back, matching
+   * page.tsx's own reasoning for reading `recurring_rules` WITHOUT
+   * `.is("archived_at", null)`.
+   */
+  it("stops minting occurrences after the rule was paused, but keeps the one already due before the pause", () => {
+    const { dates } = occurrencesFor(
+      {
+        anchorOn: "2026-01-01",
+        intervalUnit: "monthly",
+        endsOn: null,
+        archivedAt: "2026-02-15T00:00:00.000Z",
+      },
+      "2026-06-05",
+    );
+    expect(dates).toEqual(["2026-01-01", "2026-02-01"]);
+  });
+
+  it("keeps generating right up to and including an occurrence dated the same day as the pause", () => {
+    // Symmetric with `endsOn`'s own inclusive boundary (the test just
+    // above): a pause dated exactly on an occurrence does not withhold
+    // that occurrence, only ones strictly after it.
+    const { dates } = occurrencesFor(
+      {
+        anchorOn: "2026-01-01",
+        intervalUnit: "monthly",
+        endsOn: null,
+        archivedAt: "2026-03-01T09:30:00.000Z",
+      },
+      "2026-06-05",
+    );
+    expect(dates).toEqual(["2026-01-01", "2026-02-01", "2026-03-01"]);
+  });
+
+  it("an omitted archivedAt behaves exactly like an active (never-paused) rule", () => {
+    // Every other test in this file constructs a `RecurrenceRule` with no
+    // `archivedAt` at all — this pins that `archivedAt?` being optional
+    // really does default to "not paused" rather than silently excluding
+    // everything.
+    const { dates } = occurrencesFor(
+      { anchorOn: "2026-01-01", intervalUnit: "monthly", endsOn: null },
+      "2026-03-01",
+    );
+    expect(dates).toEqual(["2026-01-01", "2026-02-01", "2026-03-01"]);
+  });
 });
 
 describe("malformed input", () => {

@@ -99,6 +99,29 @@ describe("describeSchedule", () => {
     ).toMatch(/every 2 weeks from 3 Sep/i);
   });
 
+  // Fix round 2, small finding: the weekly branch had no test of its own —
+  // only fortnightly's identically-shaped sibling was covered.
+  it("describes a weekly rule as every week from its anchor", () => {
+    expect(
+      describeSchedule({ interval_unit: "weekly", anchor_on: "2026-09-03", ends_on: null }),
+    ).toMatch(/every week from 3 Sep/i);
+  });
+
+  // Fix round 2, small finding: `ordinal`'s 11/12/13 guard (`rem100 >= 11 &&
+  // rem100 <= 13`) had no test — every existing case anchored on the 1st,
+  // which the guard doesn't even apply to. Without the guard, `n % 10 === 1`
+  // would say "monthly on the 11st".
+  it.each([
+    ["2026-09-11", "11th"],
+    ["2026-09-12", "12th"],
+    ["2026-09-13", "13th"],
+    ["2026-09-21", "21st"],
+  ])("ordinal-suffixes the anchor day correctly for the %s -> %s case", (anchor_on, suffix) => {
+    expect(describeSchedule({ interval_unit: "monthly", anchor_on, ends_on: null })).toMatch(
+      new RegExp(`monthly on the ${suffix}`, "i"),
+    );
+  });
+
   it("describes a yearly rule by month and day, with no year", () => {
     const desc = describeSchedule({ interval_unit: "yearly", anchor_on: "2026-09-01", ends_on: null });
     expect(desc).toMatch(/yearly on 1 Sep/i);

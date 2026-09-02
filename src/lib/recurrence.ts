@@ -17,6 +17,38 @@ export type RecurrenceRule = {
   anchorOn: string;
   intervalUnit: RecurInterval;
   endsOn: string | null;
+  /**
+   * The rule's own `archived_at` (spec §5's "pause") — a paused rule stops
+   * MINTING new occurrences, exactly like an `endsOn` reached: an occurrence
+   * dated on or before the pause is kept (spec §5's "an occurrence already
+   * due before the pause stays visible" is what page.tsx's due-rules read
+   * relies on, by deliberately NOT filtering out paused rules — see that
+   * file's own comment), one dated after it is never generated at all.
+   *
+   * Optional and defaulting to "not paused" when omitted, so every existing
+   * caller/literal that predates pausing-as-a-schedule-bound (this whole
+   * test file, `recordOccurrence`'s own already-short-circuited call before
+   * fix round 2) keeps compiling and behaving unchanged.
+   *
+   * `recurring_rules.archived_at` is `timestamptz`, not a plain `date`
+   * column like `anchorOn`/`endsOn`/`today` — so only its UTC calendar-date
+   * PORTION (`.slice(0, 10)`) is compared against occurrence dates below,
+   * via the same pure-UTC convention this whole module's doc comment
+   * already commits to (never a local-timezone `Date` construction, which
+   * is exactly the class of bug src/lib/month-range.ts's own history warns
+   * against).
+   *
+   * Fix round 2, I1: before this field existed, NOTHING downstream of a
+   * pause ever consulted it when GENERATING occurrences — only
+   * `due-rows.ts`'s `blockedReasonFor` read it, to LABEL an already-
+   * generated row. A monthly rule paused mid-month kept minting one new
+   * permanently-blocked row every month forever, directly contradicting
+   * RecurringList.tsx's own pause-dialog copy ("no further occurrences
+   * will be generated") and spec §5's "absent entirely when nothing is
+   * due" for anyone who ever paused a rule with no un-archive action to
+   * undo it (spec §6: "Un-archiving a rule" is deliberately out of scope).
+   */
+  archivedAt?: string | null;
 };
 
 export type Occurrences = {
@@ -181,6 +213,12 @@ export function occurrencesFor(rule: RecurrenceRule, today: string): Occurrences
   const floorDate = lookbackFloor(today);
   const floor = floorDate > rule.anchorOn ? floorDate : rule.anchorOn;
 
+  // See `RecurrenceRule.archivedAt`'s own doc comment: a pause is treated as
+  // a second, independent upper bound alongside `endsOn`, using only the
+  // UTC calendar-date portion of the (timestamptz) pause moment.
+  const archivedDate = rule.archivedAt != null ? rule.archivedAt.slice(0, 10) : null;
+  if (archivedDate !== null) assertIsoDate("archivedAt", archivedDate);
+
   const n0 = firstIndexAtOrAfter(rule, floor);
   const kept: string[] = [];
 
@@ -191,6 +229,7 @@ export function occurrencesFor(rule: RecurrenceRule, today: string): Occurrences
     const d = nth(rule, n0 + i);
     if (d > today) break;
     if (rule.endsOn !== null && d > rule.endsOn) break;
+    if (archivedDate !== null && d > archivedDate) break;
     kept.push(d);
   }
 

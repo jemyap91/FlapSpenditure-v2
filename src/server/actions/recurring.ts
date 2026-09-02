@@ -494,8 +494,19 @@ export async function recordOccurrence(ruleId: string, occurrenceOn: string): Pr
   if (!kindParsed.success) return { error: "This rule's data is invalid and can't be recorded." };
   const kind = kindParsed.data;
 
+  // `archivedAt` is passed through for defence in depth even though the
+  // `rule.archived_at` check above already returns before this line is ever
+  // reached for a paused rule (fix round 2, I1) — this keeps the schedule
+  // computed here in permanent agreement with `due-rows.ts`'s, rather than
+  // relying on the early return above to be the ONLY place that fact is
+  // honoured.
   const schedule = occurrencesFor(
-    { anchorOn: rule.anchor_on, intervalUnit: rule.interval_unit, endsOn: rule.ends_on },
+    {
+      anchorOn: rule.anchor_on,
+      intervalUnit: rule.interval_unit,
+      endsOn: rule.ends_on,
+      archivedAt: rule.archived_at,
+    },
     todayLocalDate(),
   );
   if (!schedule.dates.includes(occurrenceOn)) {
@@ -574,8 +585,18 @@ export async function recordOccurrence(ruleId: string, occurrenceOn: string): Pr
  * function relies on. A future unique index added to this table would need
  * this branch revisited, since `23505` alone doesn't say which constraint
  * fired.
+ *
+ * `occurrenceOn` is shape-validated with `z.iso.date()` (fix round 2, small
+ * finding) -- `recordOccurrence` already carries this exact check (see that
+ * function's own doc comment); this one didn't, so a bare
+ * `\d{4}-\d{2}-\d{2}`-shaped-but-calendar-invalid string (`"2026-02-30"`)
+ * reached Postgres as a raw driver error instead of this file's own
+ * translated messages.
  */
 export async function skipOccurrence(ruleId: string, occurrenceOn: string): Promise<RecurringState> {
+  const dateCheck = z.iso.date().safeParse(occurrenceOn);
+  if (!dateCheck.success) return { error: "Enter a valid date" };
+
   const supabase = await createClient();
   const {
     data: { user },
