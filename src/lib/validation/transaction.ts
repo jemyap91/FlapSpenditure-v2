@@ -286,14 +286,18 @@ export const transactionEditInput = z.object({
  *
  * The same-currency balance invariant is intentionally NOT re-checked here
  * (or anywhere in `updateTransfer`) — `update_transfer_pair`
- * (0016_editable_transactions.sql) is the one place that enforces it,
- * exactly the way `create_transfer` is the one place that enforces it for
- * creation. Duplicating the check in this schema would let the two drift;
- * a same-currency edit that posts `amount_out === amount_in` satisfies it
- * trivially, and an unbalanced same-currency edit is refused by the RPC's
- * own `raise exception 'a same-currency transfer must balance'`, translated
- * to a readable error by `updateTransfer` via the same `KNOWN_TRANSFER_ERRORS`
- * allowlist `createTransfer` already uses.
+ * (0016_editable_transactions.sql) is what protects the EDIT path, the way
+ * `create_transfer` protects the CREATE path. Neither is the only thing
+ * that can move `amount_minor`: 0004_rls.sql:83 grants
+ * `update (amount_minor)` on `transactions` table-wide, so a member can
+ * unbalance a pair with an ordinary PATCH to one leg, no RPC involved at
+ * all — the database as a whole does not guarantee a transfer stays
+ * balanced. Duplicating the RPC's check in this schema would let the two
+ * drift; a same-currency edit that posts `amount_out === amount_in`
+ * satisfies it trivially, and an unbalanced same-currency edit is refused
+ * by the RPC's own `raise exception 'a same-currency transfer must
+ * balance'`, translated to a readable error by `updateTransfer` via the
+ * same `KNOWN_TRANSFER_ERRORS` allowlist `createTransfer` already uses.
  */
 export const transferEditInput = z.object({
   transfer_id: z.uuid(),

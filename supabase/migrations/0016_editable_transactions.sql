@@ -84,13 +84,18 @@ grant update (merchant) on transactions to authenticated;
 -- the row's own current sign.
 --
 -- The same-currency balance invariant lives HERE, not in
--- transferEditInput/updateTransfer, exactly the way create_transfer is the
--- one place that enforces it for creation -- both legs' CURRENT
--- currency_code (already fixed at creation time; this function never
--- changes it) decide whether the check applies, read from the rows
--- themselves rather than trusted from an argument, the same "never trust
--- the caller for something the row already knows" discipline the sign CASE
--- above follows.
+-- transferEditInput/updateTransfer -- this is what protects the EDIT path,
+-- the way create_transfer protects the CREATE path. Neither is the only
+-- thing that can move amount_minor: 0004_rls.sql:83 grants
+-- `update (amount_minor)` on transactions table-wide, so a member can
+-- unbalance a pair with an ordinary PostgREST PATCH to one leg, no RPC
+-- involved at all. The database as a whole does not guarantee a transfer
+-- stays balanced; this check only guarantees that going THROUGH THIS
+-- FUNCTION does. Both legs' CURRENT currency_code (already fixed at
+-- creation time; this function never changes it) decide whether the check
+-- applies, read from the rows themselves rather than trusted from an
+-- argument, the same "never trust the caller for something the row already
+-- knows" discipline the sign CASE above follows.
 --
 -- security invoker, like create_transfer, and for the identical reason:
 -- this must run under the CALLER's own transactions_member RLS (`for all
@@ -117,8 +122,9 @@ create function update_transfer_pair(
 ) returns setof transactions
   language plpgsql security invoker set search_path = '' as $$
 declare
-  out_ccy char(3);
-  in_ccy  char(3);
+  out_ccy  char(3);
+  in_ccy   char(3);
+  affected int;
 begin
   -- Same reasoning as create_transfer's identical null/positivity checks,
   -- and the identical message text (both already sit in
@@ -183,6 +189,31 @@ begin
      where transfer_id = p_transfer_id
        and deleted_at is null
      returning *;
+
+  -- Task 4 fix round 2, FIX 2: the guard above only catches FEWER than two
+  -- legs. transfer_id carries no UPDATE grant of its own (0004_rls.sql/0016
+  -- only grant UPDATE on named columns; transfer_id is not among them, so a
+  -- caller cannot re-link a row by hand) -- but INSERT on transactions is a
+  -- full-table grant, so a legitimate member can insert a THIRD row
+  -- carrying an EXISTING transfer_id, and the UPDATE above's
+  -- `where transfer_id = p_transfer_id` would then happily touch all
+  -- three, returning three rows and leaving the pair (now a trio)
+  -- unbalanced with no error -- the identical "money appears or vanishes"
+  -- corruption this function exists to prevent, reached from a different
+  -- angle than the balance check above. GET DIAGNOSTICS ... ROW_COUNT is
+  -- documented to be readable immediately after a RETURN QUERY / RETURN
+  -- QUERY EXECUTE statement, giving the exact row count of the UPDATE just
+  -- executed. Raising here aborts the whole top-level statement this
+  -- function was called from, rolling back the UPDATE above (and anything
+  -- else this call did) along with it -- nothing is left half-written, and
+  -- nothing already appended to this function's result set is returned to
+  -- the caller, extending this function's "both legs or neither" contract
+  -- to cover more-than-two the same way the guard above covers fewer-than-
+  -- two.
+  get diagnostics affected = row_count;
+  if affected <> 2 then
+    raise exception 'a transfer edit must update exactly two legs';
+  end if;
 end $$;
 
 grant execute on function update_transfer_pair(uuid, bigint, bigint, date, text, text) to authenticated;

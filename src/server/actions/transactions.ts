@@ -58,6 +58,13 @@ const KNOWN_TRANSFER_ERRORS = new Set([
   "transfer amounts must be positive",
   "not a member of both wallets",
   "a same-currency transfer must balance",
+  // update_transfer_pair (0016_editable_transactions.sql, task-4 fix round
+  // 2): raised when a transfer's UPDATE touched something other than
+  // exactly two rows -- e.g. a third row inserted onto an existing
+  // transfer_id via the full-table INSERT grant. Without this in the
+  // allowlist, updateTransfer below would fall through to the generic
+  // "Could not save transfer" message instead of a readable one.
+  "a transfer edit must update exactly two legs",
 ]);
 
 /**
@@ -476,10 +483,15 @@ export async function createTransfer(input: TransferInput): Promise<TransferResu
  * this alone" option. `transferEditInput` now carries both fields (that
  * schema's own doc comment has the full defect writeup), and this function
  * no longer needs its own currency-mismatch guard: the balance invariant
- * that guard existed to protect now lives in `update_transfer_pair` itself
- * (mirroring how `create_transfer` is the one place that enforces it for
- * creation), which raises `'a same-currency transfer must balance'` — the
- * exact string `create_transfer` already raises, so no change was needed to
+ * that guard existed to protect now lives in `update_transfer_pair` itself,
+ * which protects the EDIT path the way `create_transfer` protects the
+ * CREATE path — neither is the only thing that can move `amount_minor`.
+ * 0004_rls.sql:83 grants `update (amount_minor)` on `transactions`
+ * table-wide, so a member can unbalance a pair with an ordinary PATCH to
+ * one leg, no RPC involved at all; the database as a whole does not
+ * guarantee a transfer stays balanced. `update_transfer_pair` raises
+ * `'a same-currency transfer must balance'` — the exact string
+ * `create_transfer` already raises, so no change was needed to
  * `KNOWN_TRANSFER_ERRORS` below to forward it.
  *
  * A lookup precedes the RPC call (`.eq("transfer_id", ...).is("deleted_at",

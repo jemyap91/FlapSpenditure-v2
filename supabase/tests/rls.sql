@@ -3432,3 +3432,202 @@ begin;
       'LEAK: unbalanced attack changed the in-leg despite being rejected';
   end $$;
 commit;
+
+-- =====================================================================
+-- Task 4 fix round 2, FIX 1: update_transfer_pair's PARTIAL-membership
+-- guard (0016_editable_transactions.sql, the `if out_ccy is null or
+-- in_ccy is null then return; end if;` block) had no regression coverage.
+-- The block above this one only proves a caller who is a member of
+-- NEITHER wallet is refused -- in that case BOTH out_ccy and in_ccy come
+-- back NULL, so the guard's `or` is satisfied by either arm alone, and a
+-- reviewer who deleted the guard entirely still saw that block pass
+-- (RLS's own `using (is_wallet_member(wallet_id))` on the UPDATE below
+-- still empty-matches for a total stranger, independent of this guard).
+-- A caller who is a member of ONE of the two wallets is a materially
+-- different case: exactly one of out_ccy/in_ccy comes back non-NULL, so
+-- only ONE arm of the `or` is doing any work, and removing the guard lets
+-- the UPDATE's own RLS filter (not this function) silently narrow the
+-- write to the one leg the caller can see -- a single-leg write that
+-- destroys or fabricates money depending on which side was visible.
+--
+-- A fresh wallet (a4a40000-...-a004, "Task4 D"), not a reuse of
+-- -a001/-a002/-a003: this needs a wallet BOB is a real member of (the
+-- other three are Alice-only), and reusing -a001/-a002 here would add
+-- extra transactions to wallets whose row-by-id assertions elsewhere in
+-- this file don't expect them -- the identical reasoning the Task 4
+-- section's own opening comment gives for not reusing cccccccc-003.
+--
+-- Two new pairs, not one, to cover BOTH arms of the `or`: f0003 puts the
+-- wallet bob belongs to (a004) on the OUTGOING leg (so in_ccy is the NULL
+-- one), f0004 puts it on the INCOMING leg (so out_ccy is the NULL one).
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+  end $$;
+
+  insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon) values
+    ('a4a40000-0000-0000-0000-00000000a004', 'aaaaaaaa-0000-0000-0000-000000000001', 'Task4 D', 'bank', 'USD', 8, 'wallet');
+
+  -- Bob is a REAL member here (members_write's owner-only `with check`,
+  -- proven working back in section 8) -- not a superuser seed, so this
+  -- exercises the identical is_wallet_member() path update_transfer_pair's
+  -- own internal SELECTs run through.
+  insert into public.wallet_members (wallet_id, user_id, role)
+    values ('a4a40000-0000-0000-0000-00000000a004', 'bbbbbbbb-0000-0000-0000-000000000002', 'member');
+
+  -- f0003: bob's wallet (a004) holds the OUTGOING leg, Alice-only a001
+  -- holds the INCOMING leg -- in_ccy will be the NULL one.
+  insert into transactions (id, wallet_id, created_by, kind, amount_minor, currency_code, transfer_id, occurred_on) values
+    ('a4a40000-0000-0000-0000-0000000e0005', 'a4a40000-0000-0000-0000-00000000a004', 'aaaaaaaa-0000-0000-0000-000000000001', 'transfer', -8000, 'USD', 'a4a40000-0000-0000-0000-0000000f0003', current_date),
+    ('a4a40000-0000-0000-0000-0000000e0006', 'a4a40000-0000-0000-0000-00000000a001', 'aaaaaaaa-0000-0000-0000-000000000001', 'transfer',  8000, 'USD', 'a4a40000-0000-0000-0000-0000000f0003', current_date);
+
+  -- f0004: Alice-only a001 holds the OUTGOING leg, bob's wallet (a004)
+  -- holds the INCOMING leg -- out_ccy will be the NULL one.
+  insert into transactions (id, wallet_id, created_by, kind, amount_minor, currency_code, transfer_id, occurred_on) values
+    ('a4a40000-0000-0000-0000-0000000e0007', 'a4a40000-0000-0000-0000-00000000a001', 'aaaaaaaa-0000-0000-0000-000000000001', 'transfer', -3000, 'USD', 'a4a40000-0000-0000-0000-0000000f0004', current_date),
+    ('a4a40000-0000-0000-0000-0000000e0008', 'a4a40000-0000-0000-0000-00000000a004', 'aaaaaaaa-0000-0000-0000-000000000001', 'transfer',  3000, 'USD', 'a4a40000-0000-0000-0000-0000000f0004', current_date);
+commit;
+
+-- Attack, direction 1: bob is a member of a004 (the OUTGOING leg's
+-- wallet) but NOT a001 (the INCOMING leg's wallet). Removing the guard
+-- would leave the UPDATE's own row-level RLS to narrow the write to just
+-- the leg bob can see -- here, the outgoing leg alone -- destroying
+-- money by moving only that leg's amount while the far leg stays put.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+    assert is_wallet_member('a4a40000-0000-0000-0000-00000000a004'::uuid) = true,
+      'test setup broken: bob should be a member of Task4 D';
+    assert is_wallet_member('a4a40000-0000-0000-0000-00000000a001'::uuid) = false,
+      'test setup broken: bob should not be a member of Task4 A';
+  end $$;
+
+  do $$
+  declare n int;
+  begin
+    select count(*) into n from update_transfer_pair(
+      'a4a40000-0000-0000-0000-0000000f0003', 1, 1, current_date, 'pwned-out', 'pwned-out');
+    assert n = 0, 'LEAK: bob (member of only the OUTGOING leg''s wallet) edited a transfer pair he does not fully own';
+  end $$;
+commit;
+
+-- Verify from alice's side that direction 1's attempt left BOTH legs
+-- untouched -- this is the assertion that actually distinguishes "the
+-- guard blocked it" from "the guard is gone but the RLS-narrowed UPDATE
+-- happened to touch nothing anyway".
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select amount_minor from transactions where id = 'a4a40000-0000-0000-0000-0000000e0005') = -8000,
+      'LEAK: partial-member bob''s rejected call changed the (visible-to-him) outgoing leg''s amount';
+    assert (select amount_minor from transactions where id = 'a4a40000-0000-0000-0000-0000000e0006') = 8000,
+      'LEAK: partial-member bob''s rejected call changed the (invisible-to-him) incoming leg''s amount';
+    assert (select note from transactions where id = 'a4a40000-0000-0000-0000-0000000e0005') is null,
+      'LEAK: partial-member bob''s rejected call wrote a note onto the visible leg';
+  end $$;
+commit;
+
+-- Attack, direction 2: bob is a member of a004 (the INCOMING leg's
+-- wallet here) but NOT a001 (the OUTGOING leg's wallet). This exercises
+-- the OTHER arm of the guard's `or` -- out_ccy is the NULL one this time
+-- -- and, without the guard, would fabricate money by moving only the
+-- incoming leg's amount up while the far (outgoing) leg stays put.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+  end $$;
+
+  do $$
+  declare n int;
+  begin
+    select count(*) into n from update_transfer_pair(
+      'a4a40000-0000-0000-0000-0000000f0004', 1, 1, current_date, 'pwned-in', 'pwned-in');
+    assert n = 0, 'LEAK: bob (member of only the INCOMING leg''s wallet) edited a transfer pair he does not fully own';
+  end $$;
+commit;
+
+-- Verify from alice's side that direction 2's attempt also left BOTH
+-- legs untouched.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select amount_minor from transactions where id = 'a4a40000-0000-0000-0000-0000000e0007') = -3000,
+      'LEAK: partial-member bob''s rejected call changed the (invisible-to-him) outgoing leg''s amount';
+    assert (select amount_minor from transactions where id = 'a4a40000-0000-0000-0000-0000000e0008') = 3000,
+      'LEAK: partial-member bob''s rejected call changed the (visible-to-him) incoming leg''s amount';
+    assert (select note from transactions where id = 'a4a40000-0000-0000-0000-0000000e0008') is null,
+      'LEAK: partial-member bob''s rejected call wrote a note onto the visible leg';
+  end $$;
+commit;
+
+-- =====================================================================
+-- Task 4 fix round 2, FIX 2: update_transfer_pair must reject an UPDATE
+-- that touches something other than exactly two rows -- the guard at the
+-- top of the function only catches FEWER than two (an incomplete pair);
+-- nothing previously caught MORE than two. transfer_id carries no UPDATE
+-- grant (0004_rls.sql/0016 grant UPDATE only on named columns), but
+-- INSERT on transactions is a plain table-level grant, so a legitimate
+-- member of the pair can insert a THIRD row carrying an EXISTING
+-- transfer_id -- exactly what this block does, reusing the f0001 pair
+-- (currently 6000/6000, per the positive-control and unbalanced-edit
+-- sections above) so the "still 6000/6000 afterward" assertion is
+-- checking against a known-good baseline.
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+  end $$;
+
+  insert into transactions (id, wallet_id, created_by, kind, amount_minor, currency_code, category_id, transfer_id, occurred_on) values
+    ('a4a40000-0000-0000-0000-0000000e0009', 'a4a40000-0000-0000-0000-00000000a001', 'aaaaaaaa-0000-0000-0000-000000000001', 'transfer', -1, 'USD', null, 'a4a40000-0000-0000-0000-0000000f0001', current_date);
+
+  do $$ begin
+    assert (select count(*) from transactions where transfer_id = 'a4a40000-0000-0000-0000-0000000f0001') = 3,
+      'test setup broken: the third leg did not land';
+  end $$;
+
+  do $$
+  begin
+    begin
+      perform update_transfer_pair(
+        'a4a40000-0000-0000-0000-0000000f0001', 6500, 6500, current_date, 'attack3', null);
+      raise exception 'LEAK: update_transfer_pair updated a transfer_id with more than two rows';
+    exception
+      when others then
+        assert sqlerrm = 'a transfer edit must update exactly two legs',
+          format('wrong rejection reason: %s', sqlerrm);
+    end;
+  end $$;
+commit;
+
+-- Verify the more-than-two attack left every row -- both real legs AND
+-- the illegitimate third row -- exactly as it found them. The illegitimate
+-- row's own persistence (it was a genuine, RLS-permitted INSERT, not part
+-- of the aborted UPDATE) is expected; what matters is that NOTHING was
+-- rewritten by the raised call, proving the exception rolled back the
+-- UPDATE rather than leaving a partial three-way write in place.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select amount_minor from transactions where id = 'a4a40000-0000-0000-0000-0000000e0001') = -6000,
+      'LEAK: more-than-two attack changed the first leg despite being rejected';
+    assert (select amount_minor from transactions where id = 'a4a40000-0000-0000-0000-0000000e0002') = 6000,
+      'LEAK: more-than-two attack changed the second leg despite being rejected';
+    assert (select amount_minor from transactions where id = 'a4a40000-0000-0000-0000-0000000e0009') = -1,
+      'LEAK: more-than-two attack changed the illegitimate third leg despite being rejected';
+    assert (select note from transactions where id = 'a4a40000-0000-0000-0000-0000000e0001') = 'edited',
+      'LEAK: more-than-two attack overwrote the first leg''s note despite being rejected';
+  end $$;
+commit;
