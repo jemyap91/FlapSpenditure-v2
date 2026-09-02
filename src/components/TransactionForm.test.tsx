@@ -74,6 +74,27 @@ async function saveAnExpense(from?: string) {
   await waitFor(() => expect(push).toHaveBeenCalled());
 }
 
+/**
+ * Clears the amount on screen and types a new one through the keypad's own
+ * buttons, exactly as a user would.
+ *
+ * Deleting first is not padding: a SEEDED amount is already at its currency's
+ * full precision ("50.00" against USD's two decimals), and `appendDigit`
+ * (src/lib/money.ts) refuses to grow a value past that — pressing a digit on
+ * a seeded amount is a no-op. The keypad's Delete key is the only way to make
+ * room, and `backspace()` floors at "0", so pressing it more times than there
+ * are characters is harmless.
+ *
+ * Only ever used where ONE keypad is on screen (a non-transfer, or a
+ * same-currency transfer); the cross-currency case renders two, and every
+ * key would then be ambiguous.
+ */
+async function retypeAmount(user: ReturnType<typeof userEvent.setup>, next: string) {
+  const del = screen.getByRole("button", { name: "Delete" });
+  for (let i = 0; i < 8; i += 1) await user.click(del);
+  for (const ch of next) await user.click(screen.getByRole("button", { name: ch }));
+}
+
 beforeEach(() => {
   push.mockClear();
   vi.mocked(createTransaction).mockReset();
@@ -299,6 +320,87 @@ describe("TransactionForm — edit mode (Task 6)", () => {
       occurred_on: "2026-08-02",
       note: "",
       merchant: "",
+    });
+  });
+
+  /**
+   * Fix round 1, IMPORTANT 3. No test in this suite typed into a keypad in
+   * edit mode — every dispatch test clicked Save on untouched seed values, so
+   * the feature's entire purpose (changing something) was uncovered, and both
+   * transfer fixtures seed `amountOut === amountIn === "50.00"`, which made
+   * the same-currency arm of
+   *
+   *     amount_in: crossCurrency ? amountIn : amount
+   *
+   * invisible: the reviewer replaced it with `amount_in: amountIn` and all 18
+   * tests still passed.
+   *
+   * What that regression does in production: a user editing a same-currency
+   * transfer from 50.00 to 60.00 posts `amount_out: "60.00"` with
+   * `amount_in: "50.00"`; `update_transfer_pair` raises "a same-currency
+   * transfer must balance"; that transfer can never be edited again.
+   *
+   * This test cannot pass under it. A same-currency transfer renders only the
+   * SOURCE keypad, so `amountIn` state never leaves its "50.00" seed no
+   * matter what the user types — the one field the user CAN touch has to feed
+   * both legs, and asserting the new value in `amount_in` is what proves it
+   * does. (The seeds stay balanced at 50.00/50.00 on purpose: an unbalanced
+   * same-currency pair is a schema state `create_transfer` never produces,
+   * and the mismatch this test needs comes from the edit, not the fixture.)
+   */
+  it("sends a same-currency transfer's newly typed amount as BOTH legs' amounts", async () => {
+    const user = userEvent.setup();
+    render(
+      <TransactionForm
+        mode="edit"
+        wallets={editWallets}
+        categories={categories}
+        edit={editTransferSameCurrency}
+      />,
+    );
+
+    await retypeAmount(user, "60.00");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/transactions"));
+    expect(updateTransfer).toHaveBeenCalledWith({
+      transfer_id: TRANSFER_ID,
+      amount_out: "60.00",
+      amount_in: "60.00",
+      occurred_on: "2026-08-02",
+      note: "",
+      merchant: "",
+    });
+  });
+
+  /**
+   * The non-transfer half of the same gap: an edit that actually CHANGES
+   * something. Two fields at once (the amount, through the keypad; the note,
+   * through its input) so a regression that froze either one at its seed —
+   * sending `edit.amount` instead of the `amount` state, say — fails here
+   * rather than passing on values the fixture supplied in the first place.
+   * `merchant` is deliberately left untouched and still asserted: an
+   * unchanged field must survive an edit, not be blanked by it.
+   */
+  it("sends a non-transfer edit's newly typed amount and note to updateTransaction", async () => {
+    const user = userEvent.setup();
+    render(<TransactionForm mode="edit" wallets={wallets} categories={categories} edit={editTxnSeed} />);
+
+    await retypeAmount(user, "9.99");
+    const note = screen.getByLabelText("Note");
+    await user.clear(note);
+    await user.type(note, "corrected note");
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/transactions"));
+    expect(updateTransaction).toHaveBeenCalledWith({
+      id: TXN_ID,
+      amount: "9.99",
+      category_id: "cat-1",
+      occurred_on: "2026-08-01",
+      note: "corrected note",
+      merchant: "Tesco",
     });
   });
 

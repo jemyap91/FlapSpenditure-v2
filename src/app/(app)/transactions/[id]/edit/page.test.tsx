@@ -12,7 +12,7 @@
 // and one that exists but isn't visible to the caller. The page must not be
 // able to tell those apart, and this mock deliberately can't either.
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 
 // TransactionForm calls `useRouter()` unconditionally (its post-save
 // redirect) — outside a real Next router this throws "invariant expected
@@ -292,12 +292,56 @@ describe("EditTransactionPage — seeds an expense/income transaction", () => {
 });
 
 describe("EditTransactionPage — seeds a transfer", () => {
-  it("renders the edit form seeded from both legs, showing both wallets", async () => {
+  /**
+   * Fix round 1, IMPORTANT 2. This test's previous fixture could not fail:
+   * both legs were `-5000`/`+5000` in ONE currency across two same-currency
+   * wallets, so `amountOut` and `amountIn` came out identical, and the
+   * assertions only checked that both wallet names appeared SOMEWHERE — never
+   * in which role. The reviewer swapped page.tsx's `l.amount_minor < 0` and
+   * `> 0` and all 18 tests still passed.
+   *
+   * The legs are now distinguishable on all three axes at once — different
+   * wallets, different currencies (USD out / JPY in), different magnitudes
+   * (5000 minor / 920000 minor) — and the assertions below read the
+   * DIRECTION rather than mere presence:
+   *
+   * - the FROM wallet is the negative leg's wallet and the TO wallet is the
+   *   positive leg's, asserted as one ordered string so a swap cannot satisfy
+   *   it by having both names on screen;
+   * - the seeded outgoing amount is the negative leg's magnitude rendered in
+   *   the negative leg's own currency (`$50.00`, not `¥920,000`), read out of
+   *   the "You send" group specifically rather than whichever keypad the DOM
+   *   happens to yield first.
+   *
+   * The production change that breaks it: swapping those two comparisons in
+   * page.tsx. Under the swap the direction line reads "From Holiday to
+   * Everyday" and the send group is labelled `(JPY)` holding `¥920,000` —
+   * three independent failures, verified by mutation (see this round's
+   * report).
+   *
+   * The old "same-currency legs -> one amount field" assertion is deliberately
+   * not kept here: `TransactionForm.test.tsx` owns the one-vs-two-keypad
+   * contract off its own seeds, and asserting TWO fields here is the stronger
+   * page-level claim anyway — it proves the page passed each wallet's real
+   * currency through, which a same-currency fixture cannot show.
+   */
+  it("seeds the FROM side from the negative leg and the TO side from the positive leg", async () => {
     txnById.set(
       TXN_A,
       txn(TXN_A, { kind: "transfer", transfer_id: TRANSFER_A, category_id: null, wallet_id: WALLET_A }),
     );
     legsByTransferId.set(TRANSFER_A, [
+      // Deliberately listed POSITIVE-first, so array order and sign order
+      // disagree: a `legs[0]`/`legs[1]` implementation would also fail here,
+      // not just a swapped sign comparison.
+      {
+        wallet_id: WALLET_B,
+        amount_minor: 920000,
+        currency_code: "JPY",
+        occurred_on: "2026-08-02",
+        note: "",
+        merchant: "",
+      },
       {
         wallet_id: WALLET_A,
         amount_minor: -5000,
@@ -306,28 +350,34 @@ describe("EditTransactionPage — seeds a transfer", () => {
         note: "",
         merchant: "",
       },
-      {
-        wallet_id: WALLET_B,
-        amount_minor: 5000,
-        currency_code: "USD",
-        occurred_on: "2026-08-02",
-        note: "",
-        merchant: "",
-      },
     ]);
-    walletsById.set(WALLET_A, wallet(WALLET_A, { name: "Everyday" }));
-    walletsById.set(WALLET_B, wallet(WALLET_B, { name: "Savings" }));
+    walletsById.set(WALLET_A, wallet(WALLET_A, { name: "Everyday", currency_code: "USD" }));
+    walletsById.set(WALLET_B, wallet(WALLET_B, { name: "Holiday", currency_code: "JPY" }));
 
     const ui = await EditTransactionPage({ params: Promise.resolve({ id: TXN_A }) });
     render(ui);
 
-    expect(screen.getByText("Everyday")).toBeInTheDocument();
-    expect(screen.getByText("Savings")).toBeInTheDocument();
+    // TransactionForm states a transfer's fixed wallets as text:
+    // `From <name> to <name>`. Read as one ordered string — "both names are
+    // on screen" is exactly the assertion that let the swap through.
+    expect(screen.getByText("Everyday").parentElement).toHaveTextContent(
+      "From Everyday to Holiday",
+    );
+
+    // The outgoing keypad is identified by its own group label ("You send
+    // (USD)"), not by DOM order — both keypads' <output>s are named
+    // "Amount". Its preview is formatMoney(5000, "USD"): the NEGATIVE leg's
+    // magnitude, in the NEGATIVE leg's currency.
+    const sendGroup = screen.getByRole("group", { name: "You send (USD)" });
+    expect(within(sendGroup).getByRole("status", { name: "Amount" })).toHaveTextContent("$50.00");
+
+    // ...and the incoming keypad carries the positive leg's own magnitude and
+    // currency, so neither amount can be silently sourced from the other leg.
+    const receiveGroup = screen.getByRole("group", { name: "They receive (JPY)" });
+    expect(within(receiveGroup).getByRole("status", { name: "Amount" })).toHaveTextContent("¥920,000");
+
     expect(screen.getByText(/both legs/i)).toBeInTheDocument();
-    // Same-currency legs -> one amount field (TransactionForm.test.tsx owns
-    // the full contract; this just confirms the page fed it a same-currency
-    // pair, not a mismatched one).
-    expect(screen.getAllByLabelText("Amount")).toHaveLength(1);
+    expect(screen.getAllByLabelText("Amount")).toHaveLength(2);
     // No category control on a transfer.
     expect(screen.queryByLabelText("Search categories")).not.toBeInTheDocument();
   });
