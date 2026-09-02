@@ -232,4 +232,56 @@ describe("buildDueRows", () => {
     // Salary's identical-date occurrence must still be due.
     expect(rows.map((r) => [r.ruleId, r.occurrenceOn])).toEqual([["salary", "2026-09-01"]]);
   });
+
+  /**
+   * Task 7, Step 2 (unit half) — spec §1.2, the reason
+   * `recurring_occurrence_on` exists as a column at all.
+   *
+   * A recorded occurrence carries TWO dates: `recurring_occurrence_on`
+   * (which occurrence it satisfies — 1 September's rent) and `occurred_on`
+   * (when the money actually moved — the 3rd, after the user corrected it).
+   * The handled set must be keyed on the first. Keyed on the second, a
+   * date correction un-records the occurrence: 1 September comes back as
+   * due and the app asks the user to pay rent they already paid.
+   *
+   * Both halves are asserted deliberately, because the first alone would
+   * be vacuous — `buildDueRows` is handed an already-mapped
+   * `HandledOccurrence[]` and cannot see either column name, so the ONLY
+   * thing that makes the first assertion mean anything is the second one
+   * proving the two dates produce genuinely different answers. The choice
+   * between them is made in `page.tsx`'s `.select(...)`/map (covered, with
+   * a real mutation, by `page.test.tsx`'s "still treats an occurrence as
+   * handled after its actual paid date is edited away" test); what is
+   * proven HERE is that the choice is load-bearing rather than cosmetic.
+   */
+  it("treats an occurrence handled by its SCHEDULED date as handled, and would re-offer it if keyed on the ACTUAL date", () => {
+    // The recorded transaction, as it sits in the database after the user
+    // corrected the paid date from the 1st to the 3rd.
+    const recordedTransaction = {
+      recurring_id: "rule-1",
+      recurring_occurrence_on: "2026-09-01", // its identity — never edited
+      occurred_on: "2026-09-03", // the actual date money moved — edited
+    };
+    const rules = [rule({ anchorOn: "2026-09-01" })];
+
+    // Keyed on the scheduled date, the way page.tsx keys it: nothing is due.
+    const handledCorrectly = buildDueRows(
+      {
+        rules,
+        skips: [],
+        recorded: [handled(recordedTransaction.recurring_id, recordedTransaction.recurring_occurrence_on)],
+      },
+      "2026-09-01",
+    );
+    expect(handledCorrectly.rows).toEqual([]);
+
+    // Keyed on the actual date instead — the pre-0016 behaviour — 1
+    // September is offered for recording a second time. This is the
+    // counterfactual that makes the assertion above discriminate at all.
+    const handledByActualDate = buildDueRows(
+      { rules, skips: [], recorded: [handled(recordedTransaction.recurring_id, recordedTransaction.occurred_on)] },
+      "2026-09-01",
+    );
+    expect(handledByActualDate.rows.map((r) => r.occurrenceOn)).toEqual(["2026-09-01"]);
+  });
 });

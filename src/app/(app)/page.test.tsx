@@ -101,8 +101,21 @@ vi.mock("@/lib/supabase/server", () => ({
         // independently). `occurred_on` still lives on each row below
         // purely so tests can prove the two diverging doesn't matter.
         let occurrenceOnGte: string | undefined;
+        // The columns page.tsx actually asked for. Task 7: this used to be
+        // ignored, and `then` below returned a fixed
+        // `{recurring_id, recurring_occurrence_on}` shape no matter what —
+        // which meant the date-edit test below "failed" under a mutation
+        // that mapped `occurred_on` only because the value came back
+        // `undefined`, not because the wrong DATE was used. Projecting the
+        // requested columns (what PostgREST does) makes that mutation
+        // produce the real "2026-09-03" and the test catch it for the
+        // reason it claims to.
+        let selected: string[] = [];
         const builder = {
-          select: () => builder,
+          select: (cols: string) => {
+            selected = cols.split(",").map((c) => c.trim());
+            return builder;
+          },
           not: (col: string, op: string, val: unknown) => {
             if (col === "recurring_id" && op === "is" && val === null) excludeNullRecurringId = true;
             return builder;
@@ -115,15 +128,15 @@ vi.mock("@/lib/supabase/server", () => ({
             if (col === "recurring_occurrence_on") occurrenceOnGte = val;
             return builder;
           },
-          then: (
-            resolve: (v: { data: { recurring_id: string; recurring_occurrence_on: string }[]; error: null }) => void,
-          ) => {
+          then: (resolve: (v: { data: Record<string, unknown>[]; error: null }) => void) => {
             let rows = transactionsData;
             if (excludeNullRecurringId) rows = rows.filter((r) => r.recurring_id !== null);
             if (requireDeletedAtNull) rows = rows.filter((r) => r.deleted_at === null);
             if (occurrenceOnGte) rows = rows.filter((r) => r.recurring_occurrence_on >= occurrenceOnGte!);
             resolve({
-              data: rows.map((r) => ({ recurring_id: r.recurring_id!, recurring_occurrence_on: r.recurring_occurrence_on })),
+              data: rows.map((r) =>
+                Object.fromEntries(selected.map((c) => [c, (r as unknown as Record<string, unknown>)[c]])),
+              ),
               error: null,
             });
           },

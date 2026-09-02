@@ -3631,3 +3631,134 @@ begin;
       'LEAK: more-than-two attack overwrote the first leg''s note despite being rejected';
   end $$;
 commit;
+
+-- =====================================================================
+-- Task 7, Step 1: the transfer pair, proven against the real database.
+--
+-- Task 4's unit tests already assert that updateTransfer sends both
+-- amounts and that both legs come back -- against a MOCKED client, which
+-- returns whatever the fixture says and can therefore agree with a broken
+-- statement. This block asserts the same property where the mock cannot
+-- lie, and adds the one that actually matters and that no unit test can
+-- see: after an edit, a same-currency pair's two legs are still EQUAL IN
+-- MAGNITUDE and OPPOSITE IN SIGN, so sum(amount_minor) over the pair is
+-- still exactly zero. A transfer whose legs disagree is money created or
+-- destroyed, silently, with every unit test green.
+--
+-- It also closes a gap the Task 4 section above genuinely had: every
+-- update_transfer_pair call in this file so far passes `current_date` for
+-- p_occurred_on, which is the SAME date the fixtures were inserted with --
+-- so a function that ignored p_occurred_on entirely, or wrote it to only
+-- one leg, passed every one of them. Here the date is moved to a literal
+-- that no fixture uses, and BOTH legs are checked.
+--
+-- A fresh pair (f0005 / e0010+e0011) in the existing Alice-only wallets
+-- a001/a002: every assertion in the Task 4 sections above is keyed by row
+-- id or by transfer_id, so new rows in those wallets disturb nothing, and
+-- reusing f0001 would have broken the "still 6000/6000" baselines that
+-- section's own attack blocks depend on.
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid,
+      'impersonation failed: auth.uid() did not resolve to alice';
+  end $$;
+
+  -- Both legs USD (a001 and a002 are both USD wallets), so the balance
+  -- invariant applies: this is the pair whose sum must stay zero.
+  insert into transactions (id, wallet_id, created_by, kind, amount_minor, currency_code, transfer_id, occurred_on) values
+    ('a4a40000-0000-0000-0000-0000000e0010', 'a4a40000-0000-0000-0000-00000000a001', 'aaaaaaaa-0000-0000-0000-000000000001', 'transfer', -4500, 'USD', 'a4a40000-0000-0000-0000-0000000f0005', date '2026-03-01'),
+    ('a4a40000-0000-0000-0000-0000000e0011', 'a4a40000-0000-0000-0000-00000000a002', 'aaaaaaaa-0000-0000-0000-000000000001', 'transfer',  4500, 'USD', 'a4a40000-0000-0000-0000-0000000f0005', date '2026-03-01');
+
+  do $$ begin
+    assert (select sum(amount_minor) from transactions
+             where transfer_id = 'a4a40000-0000-0000-0000-0000000f0005' and deleted_at is null) = 0,
+      'test setup broken: the fixture pair does not start balanced';
+  end $$;
+commit;
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$
+  declare
+    legs int;
+    out_amt bigint; in_amt bigint;
+    out_on date;    in_on date;
+    total bigint;   n int;
+  begin
+    -- The exact call src/server/actions/transactions.ts's updateTransfer
+    -- makes: p_transfer_id, p_amount_out, p_amount_in, p_occurred_on,
+    -- p_note, p_merchant. Amount changed (4500 -> 7300) AND date moved
+    -- (2026-03-01 -> 2026-04-17) in one call, because both have to move
+    -- together on both legs.
+    select count(*) into legs from update_transfer_pair(
+      'a4a40000-0000-0000-0000-0000000f0005', 7300, 7300, date '2026-04-17', 'pair edit', 'Ferry Co');
+    assert legs = 2,
+      format('PERMISSION BROKEN: member alice''s transfer edit touched %s leg(s), expected 2', legs);
+
+    select amount_minor, occurred_on into out_amt, out_on
+      from transactions where id = 'a4a40000-0000-0000-0000-0000000e0010';
+    select amount_minor, occurred_on into in_amt, in_on
+      from transactions where id = 'a4a40000-0000-0000-0000-0000000e0011';
+
+    -- Signs stayed opposite, and on the SAME side each leg started on: the
+    -- outgoing leg is still the negative one. update_transfer_pair takes no
+    -- argument saying which leg is which -- it reads each row's own current
+    -- sign -- so a CASE written backwards would flip both legs' direction
+    -- while keeping the pair balanced, and this is what catches that.
+    assert out_amt < 0, format('the outgoing leg lost its negative sign: %s', out_amt);
+    assert in_amt  > 0, format('the incoming leg lost its positive sign: %s', in_amt);
+
+    -- Equal in magnitude, and equal to what was asked for.
+    assert out_amt = -7300, format('outgoing leg amount wrong: %s (expected -7300)', out_amt);
+    assert in_amt  =  7300, format('incoming leg amount wrong: %s (expected 7300)', in_amt);
+    assert abs(out_amt) = abs(in_amt),
+      format('SAFETY BROKEN: the pair''s legs disagree in magnitude (%s vs %s) -- money was created or destroyed',
+             out_amt, in_amt);
+
+    -- The property no unit test can see: the pair still nets to zero.
+    -- Asserted over the transfer_id, not over the two known ids, so a third
+    -- leg appearing would break it too.
+    select sum(amount_minor) into total from transactions
+      where transfer_id = 'a4a40000-0000-0000-0000-0000000f0005' and deleted_at is null;
+    assert total = 0,
+      format('SAFETY BROKEN: sum(amount_minor) over the edited transfer pair is %s, not 0 -- the ledger gained or lost money', total);
+
+    -- BOTH legs moved to the new date. Neither leg started on 2026-04-17,
+    -- so a function that ignored p_occurred_on, or wrote it to only the leg
+    -- the CASE happened to touch first, fails here.
+    assert out_on = date '2026-04-17', format('the outgoing leg''s date did not move: %s', out_on);
+    assert in_on  = date '2026-04-17', format('the incoming leg''s date did not move: %s', in_on);
+    assert out_on = in_on, 'SAFETY BROKEN: the pair''s two legs are dated differently after one edit';
+
+    -- Note and merchant likewise land on both legs, and identically -- a
+    -- transfer is one movement of money described twice, so two legs
+    -- describing it differently is a defect, not a preference.
+    select count(*) into n from transactions
+      where transfer_id = 'a4a40000-0000-0000-0000-0000000f0005'
+        and deleted_at is null
+        and note = 'pair edit' and merchant = 'Ferry Co';
+    assert n = 2,
+      format('note/merchant reached %s leg(s) of the pair, expected 2', n);
+
+    -- Neither leg changed wallets, and neither gained a category: the
+    -- transfer_shape CHECK forbids a category on a transfer, and §1.4
+    -- forbids an edit moving a row between wallets. Both are enforced
+    -- elsewhere, but an edit path that quietly rewrote either would be a
+    -- different bug with the same symptom (a row leaving the wallet the
+    -- user is looking at).
+    assert (select wallet_id from transactions where id = 'a4a40000-0000-0000-0000-0000000e0010')
+             = 'a4a40000-0000-0000-0000-00000000a001',
+      'SAFETY BROKEN: the outgoing leg changed wallets during an edit';
+    assert (select wallet_id from transactions where id = 'a4a40000-0000-0000-0000-0000000e0011')
+             = 'a4a40000-0000-0000-0000-00000000a002',
+      'SAFETY BROKEN: the incoming leg changed wallets during an edit';
+    assert (select count(*) from transactions
+             where transfer_id = 'a4a40000-0000-0000-0000-0000000f0005' and category_id is null) = 2,
+      'SAFETY BROKEN: a transfer leg gained a category during an edit';
+  end $$;
+commit;

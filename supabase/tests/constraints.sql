@@ -1281,3 +1281,79 @@ begin
   assert n = 1,
     'SAFETY BROKEN: editing occurred_on made a recorded occurrence disappear from the dashboard''s own handled-occurrence query -- it would show up as due again';
 end $$;
+
+-- Task 7, Step 2 (SQL half): the moved unique index still holds the
+-- ORIGINAL slot after the actual date is edited away from it.
+--
+-- The block immediately above already proves the edit leaves
+-- recurring_occurrence_on untouched and leaves the dashboard's own
+-- handled-occurrence query still finding the row. What nothing proved is
+-- the other side of the same identity: that the (recurring_id,
+-- recurring_occurrence_on) slot is still OCCUPIED afterwards -- i.e. that
+-- Record could not be pressed a second time for the same occurrence and
+-- succeed, producing two transactions for one month's rent.
+--
+-- Both halves are asserted, and the second is the one that discriminates:
+--
+--   (a) the slot the row was recorded FOR (current_date) is still taken --
+--       a second live row for it must be rejected 23505; and
+--   (b) the slot matching the row's NEW occurred_on (current_date - 5) is
+--       FREE -- a recording for that scheduled date must succeed.
+--
+-- (b) is what tells an index on recurring_occurrence_on apart from the
+-- pre-0016 index on occurred_on. Under the old index, e1's occurred_on is
+-- current_date - 5, so (b)'s insert would collide and fail; under the moved
+-- index it is a different occurrence and must land. An assertion of (a)
+-- alone would pass in both worlds.
+\echo '--- Task 7: after an occurred_on edit, the ORIGINAL (recurring_id, recurring_occurrence_on) slot is still held, and the slot matching the new occurred_on is free ---'
+do $$
+declare v_sqlstate text; v_constraint text; v_new_id uuid; n int;
+begin
+  -- Guard the premise this block reads from the block above, so a future
+  -- edit there that changed the dates cannot make this pass vacuously.
+  assert (select recurring_occurrence_on from public.transactions
+            where id = '90909090-0000-0000-0000-0000000000e1') = current_date,
+    'test setup broken: the edited row''s recurring_occurrence_on is not current_date';
+  assert (select occurred_on from public.transactions
+            where id = '90909090-0000-0000-0000-0000000000e1') = current_date - 5,
+    'test setup broken: the edited row''s occurred_on is not current_date - 5';
+
+  -- (a) The original slot is still held.
+  begin
+    insert into public.transactions (wallet_id, kind, amount_minor, currency_code, category_id,
+                                     occurred_on, recurring_id, recurring_occurrence_on)
+    values ('90909090-0000-0000-0000-000000000002', 'expense', -1200, 'USD',
+            '90909090-0000-0000-0000-000000000003', current_date,
+            '90909090-0000-0000-0000-0000000000e0', current_date);
+    raise exception 'SAFETY BROKEN: editing occurred_on released the (recurring_id, recurring_occurrence_on) slot -- the same occurrence could be recorded twice';
+  exception
+    when unique_violation then
+      get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+      assert v_sqlstate = '23505' and v_constraint = 'transactions_recurring_occurrence',
+        format('expected unique_violation (23505) from transactions_recurring_occurrence, got SQLSTATE %s (constraint %s): %s',
+               v_sqlstate, v_constraint, sqlerrm);
+  end;
+
+  -- (b) The slot matching the edited row's NEW occurred_on is free. This
+  -- is a DIFFERENT occurrence of the same rule, and recording it must
+  -- succeed -- it only collides if the index is keyed on the actual date.
+  insert into public.transactions (wallet_id, kind, amount_minor, currency_code, category_id,
+                                   occurred_on, recurring_id, recurring_occurrence_on)
+  values ('90909090-0000-0000-0000-000000000002', 'expense', -1200, 'USD',
+          '90909090-0000-0000-0000-000000000003', current_date - 5,
+          '90909090-0000-0000-0000-0000000000e0', current_date - 5)
+  returning id into v_new_id;
+  assert v_new_id is not null,
+    'SPLIT BROKEN: an occurrence scheduled for the edited row''s new occurred_on could not be recorded -- the unique index is keyed on the actual date, not the scheduled one';
+
+  -- And the edited row is untouched by either attempt: two live recordings
+  -- of this rule now exist, for two DIFFERENT scheduled dates, sharing
+  -- nothing but the rule.
+  select count(*) into n from public.transactions
+   where recurring_id = '90909090-0000-0000-0000-0000000000e0' and deleted_at is null;
+  assert n = 2,
+    format('expected exactly 2 live recorded occurrences for this rule, found %s', n);
+  assert (select occurred_on from public.transactions
+            where id = '90909090-0000-0000-0000-0000000000e1') = current_date - 5,
+    'the edited row''s occurred_on was disturbed by the slot checks above';
+end $$;

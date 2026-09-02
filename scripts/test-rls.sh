@@ -14,27 +14,13 @@ DB_URL="${DB_URL:-postgresql://postgres:postgres@127.0.0.1:54322/postgres}"
 # anything reachable over the network that isn't loopback, those statements
 # would be genuinely destructive. Refuse rather than guess.
 #
-# Parse the actual host libpq would connect to, rather than substring-
-# matching the raw URL: a glob like postgres://*@127.0.0.1:* is satisfied by
-# any string that merely CONTAINS "@127.0.0.1:" somewhere, which a crafted
-# userinfo/query component could contain while the real host (the part
-# after the LAST '@' in the authority, before the next ':' or '/') is
-# something else entirely.
-authority="${DB_URL#postgres://}"
-authority="${authority#postgresql://}"
-authority="${authority%%/*}"
-hostport="${authority##*@}"
-db_host="${hostport%%:*}"
-
-case "$db_host" in
-  127.0.0.1|localhost)
-    ;;
-  *)
-    echo "refusing to run: DB_URL must point at a loopback host (127.0.0.1/localhost)." >&2
-    echo "got host: $db_host (from DB_URL: $DB_URL)" >&2
-    exit 1
-    ;;
-esac
+# The check itself now lives in scripts/require-loopback.sh (Task 7), so the
+# three suites that need it share ONE implementation instead of three copies
+# that can drift; its comments explain why the host is parsed rather than
+# glob-matched.
+# shellcheck source=scripts/require-loopback.sh
+. "$(dirname "${BASH_SOURCE[0]}")/require-loopback.sh"
+require_loopback "$DB_URL" DB_URL
 
 npx supabase db reset --no-seed >/dev/null
 psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/rls.sql
