@@ -19,12 +19,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // `updateTransaction`'s real logic against a fake client rather than a
 // stand-in for the action itself.
 import { signedAmount, precisionError } from "@/lib/validation/transaction";
-import { updateTransaction } from "./transactions";
+import { updateTransaction, updateTransfer } from "./transactions";
 
 const TXN_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const OWNER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const WALLET_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const CATEGORY_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const TRANSFER_ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 
 /**
  * `vi.hoisted` because `vi.mock` factories are hoisted above this file's own
@@ -46,14 +47,34 @@ const CATEGORY_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
  * Without it, tagging `.is("deleted_at", null)` calls in production would be
  * unobservable to any test the same way an untagged `.eq` was before
  * `eqSpy` existed.
+ *
+ * `legsLookupResult` and `rpcSpy` back `updateTransfer` (Task 4).
+ * `legsLookupResult` is what the shared "transactions" builder resolves to
+ * for a `.select(...)` that never calls `.single()` — `updateTransfer`'s
+ * pre-flight `.eq("transfer_id", ...).is("deleted_at", null)` lookup, which
+ * expects an ARRAY of (up to) two legs back, unlike `updateTransaction`'s
+ * single-row `txnLookupResult`. The builder tells the two apart by whether
+ * `.single()` was called on this chain (`usedSingle`, inside the `from`
+ * factory below) — `updateTransaction` always calls it, `updateTransfer`'s
+ * pre-flight lookup never does, since a transfer is always exactly two
+ * rows and there is nothing to disambiguate with `.single()`.
+ * `rpcSpy` tags every `supabase.rpc(name, args)` call — `updateTransfer`
+ * writes through `update_transfer_pair` (0016_editable_transactions.sql),
+ * not through `.from("transactions").update(...)`, so `updateSpy` (which
+ * only fires on that method) never sees it; `rpcSpy` is the equivalent
+ * instrumentation for the RPC path, and `updateResult` (already declared
+ * for `updateTransaction`) doubles as the RPC's canned return value, since
+ * both are "the write operation's result rows."
  */
 const {
   getUser,
   txnLookupResult,
   walletLookupResult,
   categoryResult,
+  legsLookupResult,
   updateResult,
   updateSpy,
+  rpcSpy,
   fromSpy,
   eqSpy,
   isSpy,
@@ -67,8 +88,15 @@ const {
     data: null as { archived_at: string | null; currency_code: string } | null,
   },
   categoryResult: { data: null as { kind: string; archived_at: string | null } | null },
-  updateResult: { data: null as { id: string }[] | null, error: null as unknown },
+  // updateTransfer's pre-flight lookup — the transfer's own legs, keyed by
+  // transfer_id rather than id, so an array rather than txnLookupResult's
+  // single object.
+  legsLookupResult: { data: null as { currency_code: string }[] | null },
+  // Shared by updateTransaction's UPDATE and updateTransfer's RPC call —
+  // both represent "the rows the write actually touched."
+  updateResult: { data: null as { id: string; amount_minor?: number }[] | null, error: null as unknown },
   updateSpy: vi.fn(),
+  rpcSpy: vi.fn(),
   fromSpy: vi.fn(),
   eqSpy: vi.fn(),
   isSpy: vi.fn(),
@@ -109,11 +137,22 @@ vi.mock("@/lib/supabase/server", () => ({
       if (table !== "transactions") {
         throw new Error(`unexpected table ${table}`);
       }
-      // One builder covers both of updateTransaction's `transactions`
-      // calls — the initial SELECT lookup (mode stays "lookup") and the
-      // UPDATE (mode switches once `.update(...)` is called) — the same
-      // mode-switching shape recurring.test.ts's shared builder uses.
+      // One builder covers every `transactions`-table call from both
+      // updateTransaction and updateTransfer — the initial SELECT lookup
+      // (mode stays "lookup"), updateTransaction's own UPDATE (mode
+      // switches once `.update(...)` is called), and updateTransfer's
+      // pre-flight legs lookup (also "lookup", but resolved to
+      // legsLookupResult instead of txnLookupResult — see `usedSingle`
+      // below) — the same mode-switching shape recurring.test.ts's shared
+      // builder uses.
       let mode: "lookup" | "update" = "lookup";
+      // Whether `.single()` was called on THIS chain — updateTransaction's
+      // lookup always calls it (one row, by id); updateTransfer's pre-flight
+      // lookup never does (up to two rows, by transfer_id). This is what
+      // lets one shared builder resolve to the right canned result for
+      // either caller without the mock needing to parse which column an
+      // `.eq`/`.is` call named.
+      let usedSingle = false;
       const builder: Record<string, unknown> = {
         select: () => builder,
         update: (payload: unknown) => {
@@ -129,11 +168,27 @@ vi.mock("@/lib/supabase/server", () => ({
           isSpy(table, col, val);
           return builder;
         },
-        single: () => builder,
+        single: () => {
+          usedSingle = true;
+          return builder;
+        },
         then: (resolve: (v: unknown) => void) =>
-          resolve(mode === "update" ? updateResult : txnLookupResult),
+          resolve(mode === "update" ? updateResult : usedSingle ? txnLookupResult : legsLookupResult),
       };
       return builder;
+    },
+    // updateTransfer writes through the update_transfer_pair RPC
+    // (0016_editable_transactions.sql), not `.from("transactions").update(...)`
+    // — PostgREST/the supabase-js client has no way to express the CASE that
+    // preserves each leg's own sign in one client-side `.update()` call, and
+    // two separate `.update()` calls are two separate, non-atomic requests
+    // (see updateTransfer's own doc comment in transactions.ts for why that
+    // was rejected). `updateResult` doubles as the RPC's canned return —
+    // both represent "the rows the write actually touched" for whichever
+    // action is under test.
+    rpc: (fn: string, args: unknown) => {
+      rpcSpy(fn, args);
+      return Promise.resolve(updateResult);
     },
   }),
 }));
@@ -144,6 +199,7 @@ beforeEach(() => {
   txnLookupResult.data = { wallet_id: WALLET_ID, kind: "expense" };
   walletLookupResult.data = { archived_at: null, currency_code: "SGD" };
   categoryResult.data = { kind: "expense", archived_at: null };
+  legsLookupResult.data = [{ currency_code: "SGD" }, { currency_code: "SGD" }];
   updateResult.data = [{ id: TXN_ID }];
   updateResult.error = null;
 });
@@ -163,6 +219,25 @@ function edit(
     amount: "42.50",
     occurred_on: "2026-07-01",
     category_id: CATEGORY_ID,
+    note: null,
+    merchant: null,
+    ...overrides,
+  };
+}
+
+function transferEdit(
+  overrides: Partial<{
+    transfer_id: string;
+    amount: string;
+    occurred_on: string;
+    note: string | null;
+    merchant: string | null;
+  }> = {},
+) {
+  return {
+    transfer_id: TRANSFER_ID,
+    amount: "42.50",
+    occurred_on: "2026-07-01",
     note: null,
     merchant: null,
     ...overrides,
@@ -502,6 +577,198 @@ describe("updateTransaction", () => {
 
   it("revalidates the layout on success", async () => {
     await updateTransaction(edit());
+
+    expect(revalidatePath).toHaveBeenCalledWith("/", "layout");
+  });
+});
+
+describe("updateTransfer", () => {
+  beforeEach(() => {
+    // The RPC's canned return for a successful call — two legs, opposite
+    // signs, matching transferEdit()'s default "42.50" (4250 minor units).
+    // Individual tests override this where the scenario needs to.
+    updateResult.data = [
+      { id: "leg-out", amount_minor: -4250 },
+      { id: "leg-in", amount_minor: 4250 },
+    ];
+  });
+
+  /**
+   * THE assertion for this task (brief's wording), plus one line the brief's
+   * version didn't have. As literally written, the brief's test only reads
+   * back `updateResult.data` — this suite's OWN canned mock value — which
+   * would still read `[-2500, 2500]` even if `updateTransfer` sent the wrong
+   * `p_amount` to the RPC, or never called it at all: nothing about reading
+   * a variable this test itself just set proves `updateTransfer` computed or
+   * forwarded anything. (Compare `updateTransaction`'s "scopes both the
+   * initial lookup..." test above, which documents the identical class of
+   * problem in the brief that test was written from.) The `rpcSpy` assertion
+   * is what actually ties the sorted output to THIS call's input — that
+   * `updateTransfer` correctly parsed "25.00" into a single shared 2500-minor
+   * -unit magnitude and forwarded it, under this transfer's own id, to the
+   * one statement (`update_transfer_pair`) that applies it to both legs
+   * with each leg's existing sign preserved. See this task's report for how
+   * Step 5's discrimination proof was actually carried out, given that a
+   * fully-mocked unit test cannot observe a bug in the RPC's own SQL.
+   */
+  it("updates BOTH legs, keeping their signs opposite", async () => {
+    updateResult.data = [
+      { id: "leg-out", amount_minor: -2500 },
+      { id: "leg-in", amount_minor: 2500 },
+    ];
+
+    await updateTransfer(transferEdit({ amount: "25.00" }));
+
+    const rows = updateResult.data!;
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.amount_minor!).sort((a, b) => a - b)).toEqual([-2500, 2500]);
+    expect(rpcSpy).toHaveBeenCalledWith(
+      "update_transfer_pair",
+      expect.objectContaining({ p_transfer_id: TRANSFER_ID, p_amount: 2500 }),
+    );
+  });
+
+  /**
+   * Adapted from the brief's `expect(eqSpy).toHaveBeenCalledWith("transfer_id",
+   * TRANSFER_ID)` in two ways. First, the bare 2-arg shape: this file's
+   * `eqSpy` always tags calls `(table, col, val)` (module comment above),
+   * never 2 args — the same adaptation `updateTransaction`'s own
+   * id-scoping test already documents needing. Second, "the UPDATE": with
+   * the RPC mechanism this task chose, there IS no client-side `.eq()` call
+   * for the write itself — `update_transfer_pair`'s WHERE clause does that
+   * scoping inside Postgres, invisible to this mock. What eqSpy CAN observe
+   * is the pre-flight lookup (`.eq("transfer_id", ...)`, used to learn the
+   * legs' currency and fail fast on an incomplete pair before ever calling
+   * the RPC) — scoped by transfer_id, not by either leg's own id, which is
+   * the property this test is actually named for.
+   */
+  it("scopes the pre-flight lookup by transfer_id, not by either leg's own id", async () => {
+    await updateTransfer(transferEdit());
+
+    expect(eqSpy).toHaveBeenCalledWith("transactions", "transfer_id", TRANSFER_ID);
+    expect(rpcSpy).toHaveBeenCalledWith(
+      "update_transfer_pair",
+      expect.objectContaining({ p_transfer_id: TRANSFER_ID }),
+    );
+  });
+
+  it("reports not found when the pair is incomplete", async () => {
+    // The RPC itself only returned one row — e.g. a delete raced between
+    // the pre-flight lookup (which still saw both legs) and the RPC call.
+    updateResult.data = [{ id: "a" }];
+
+    const result = await updateTransfer(transferEdit());
+
+    if (!("error" in result)) throw new Error("expected an error result");
+    expect(result.error).toMatch(/not found|both/i);
+  });
+
+  /**
+   * The pre-flight lookup itself finding fewer than two legs — a genuinely
+   * missing/foreign transfer_id, or a caller who has lost membership on one
+   * of the two wallets since the transfer was created (transactions_member
+   * RLS scopes this SELECT per-row, same as updateTransfer's own doc
+   * comment explains). Distinct code path from the previous test (that one
+   * fails at the RPC's own row count; this one never reaches the RPC at
+   * all), so both are asserted.
+   */
+  it("reports not found when the pre-flight lookup itself finds an incomplete pair", async () => {
+    legsLookupResult.data = [{ currency_code: "SGD" }];
+
+    const result = await updateTransfer(transferEdit());
+
+    if (!("error" in result)) throw new Error("expected an error result");
+    expect(result.error).toMatch(/not found|both/i);
+    expect(rpcSpy).not.toHaveBeenCalled();
+  });
+
+  it("never writes a category onto a transfer", async () => {
+    await updateTransfer(transferEdit());
+
+    // rpcSpy, not updateSpy — updateTransfer never calls
+    // `.from("transactions").update(...)`, so updateSpy (which only fires
+    // on that method) would never be called at all here, making the
+    // brief's literal `updateSpy.mock.calls[0]![0]` throw on a `TypeError`
+    // (calls[0] is undefined). This is this task's second brief-literal
+    // adaptation — see this task's report.
+    const args = rpcSpy.mock.calls[0]![1] as Record<string, unknown>;
+    expect(args).not.toHaveProperty("category_id");
+  });
+
+  it("excludes a soft-deleted leg from the pre-flight lookup", async () => {
+    await updateTransfer(transferEdit());
+
+    expect(isSpy).toHaveBeenCalledWith("transactions", "deleted_at", null);
+  });
+
+  it("refuses to edit the amount of a cross-currency transfer", async () => {
+    legsLookupResult.data = [{ currency_code: "SGD" }, { currency_code: "USD" }];
+
+    const result = await updateTransfer(transferEdit());
+
+    if (!("error" in result)) throw new Error("expected an error result");
+    expect(result.error).toMatch(/cross-currency/i);
+    expect(rpcSpy).not.toHaveBeenCalled();
+  });
+
+  it("writes the shared amount, occurred_on, note and merchant to the RPC", async () => {
+    await updateTransfer(transferEdit({ note: "  Rent  ", merchant: "Landlord", amount: "10.00" }));
+
+    expect(rpcSpy).toHaveBeenCalledWith("update_transfer_pair", {
+      p_transfer_id: TRANSFER_ID,
+      p_amount: 1000,
+      p_occurred_on: "2026-07-01",
+      p_note: "Rent",
+      p_merchant: "Landlord",
+    });
+  });
+
+  it("rejects a zero amount", async () => {
+    const result = await updateTransfer(transferEdit({ amount: "0" }));
+
+    if (!("error" in result)) throw new Error("expected an error result");
+    expect(result.error).toMatch(/greater than zero/i);
+    expect(rpcSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects a fraction the currency cannot hold, rather than truncating it", async () => {
+    legsLookupResult.data = [{ currency_code: "JPY" }, { currency_code: "JPY" }];
+
+    const result = await updateTransfer(transferEdit({ amount: "12.999" }));
+
+    if (!("error" in result)) throw new Error("expected an error result");
+    expect(result.error).toMatch(/no decimal places/i);
+    expect(rpcSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns a validation error for malformed input, never touching the database", async () => {
+    const result = await updateTransfer(transferEdit({ amount: "" }));
+
+    if (!("error" in result)) throw new Error("expected an error result");
+    expect(result.error).toBeTruthy();
+    expect(fromSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns an error, never throws, when the RPC itself fails", async () => {
+    updateResult.data = null;
+    updateResult.error = { message: "boom", code: "XX000" };
+
+    const result = await updateTransfer(transferEdit());
+
+    expect(result).toEqual({ error: "Could not save transfer. Please try again." });
+  });
+
+  it("returns an error when there is no session", async () => {
+    getUser.mockResolvedValue({ data: { user: null } });
+
+    const result = await updateTransfer(transferEdit());
+
+    expect(result).toEqual({ error: "Not signed in" });
+    expect(rpcSpy).not.toHaveBeenCalled();
+  });
+
+  it("revalidates the layout on success", async () => {
+    await updateTransfer(transferEdit());
 
     expect(revalidatePath).toHaveBeenCalledWith("/", "layout");
   });

@@ -6,6 +6,7 @@ import {
   transactionInput,
   transferInput,
   transactionEditInput,
+  transferEditInput,
   precisionError,
   signedAmount,
 } from "@/lib/validation/transaction";
@@ -13,6 +14,7 @@ import type {
   TransactionInput,
   TransferInput,
   TransactionEditInput,
+  TransferEditInput,
 } from "@/lib/validation/transaction";
 import { parseAmountInput, minorUnitFor } from "@/lib/money";
 
@@ -432,6 +434,151 @@ export async function createTransfer(input: TransferInput): Promise<TransferResu
 
   revalidatePath("/", "layout");
   return { transferId: data };
+}
+
+/**
+ * Edits an existing transfer — both legs together, via the
+ * `update_transfer_pair` RPC (supabase/migrations/0016_editable_transactions.sql).
+ *
+ * **Why an RPC, not two `.update()` calls from here.** A transfer is a PAIR
+ * of rows sharing `transfer_id` with opposite-signed `amount_minor`
+ * (0003_transactions.sql's `transfer_shape`/`non_transfer_no_link` CHECKs).
+ * Editing the amount has to change BOTH rows' magnitude while preserving
+ * each row's own sign — PostgREST cannot express a `CASE` inside a single
+ * `.update()` call, so that alone rules out one statement from the client.
+ * Two separate client-side `.update()` calls were the other option this
+ * task's brief floated, and they were rejected: each is its own HTTP
+ * request and its own Postgres transaction, so they are not atomic — a
+ * request that failed (network blip, connection drop) between the first
+ * `.update()` and the second would leave one leg re-dated/re-amounted and
+ * the other leg untouched, silently making money appear or vanish. That is
+ * the exact corruption this task exists to prevent, so "handle a partial
+ * failure by rolling the first one back from application code" is not a
+ * real answer — there is no way to guarantee that rollback itself runs.
+ * Wrapping both writes in one PL/pgSQL statement (`update_transfer_pair`)
+ * makes them one Postgres transaction, the same way `create_transfer`
+ * (0005_transfer_fn.sql) already solved the identical problem for the
+ * INSERT side — this function is that precedent's UPDATE counterpart, and
+ * `security invoker` for the same reason: it must run under the caller's
+ * own `transactions_member` RLS and column-scoped UPDATE grant
+ * (0004_rls.sql, extended by 0016), not with elevated rights.
+ *
+ * **Why `amount` alone (no per-leg amount, unlike `create_transfer`'s
+ * `amount_out`/`amount_in`).** `transferEditInput` (Task 2) carries a
+ * single `amount` field — deliberately, per that schema's own doc comment,
+ * since a transfer's `category_id`/`wallet_id`/`kind` are all excluded from
+ * an edit. That is correct for a same-currency transfer (create_transfer's
+ * own "a same-currency transfer must balance" rule already requires both
+ * legs to carry the identical magnitude there). It is a real gap for a
+ * CROSS-currency transfer, where the two legs are independently valued
+ * (create_transfer's `amount_out`/`amount_in`) — there is no way for a
+ * single edited `amount` to represent two different currencies' worth of
+ * money without silently overwriting whatever exchange rate the transfer
+ * was originally recorded at. Rather than guess which leg the one `amount`
+ * field is meant to apply to (or silently reinterpret it in both
+ * currencies, which is worse), a cross-currency transfer's amount is
+ * refused outright below, with a readable message — see this task's report
+ * for the full reasoning. Editing the date/note/merchant of a
+ * cross-currency transfer is refused too, as a consequence of `amount`
+ * being a required field on `transferEditInput` with no way to say "leave
+ * this alone" — a real, load-bearing limitation of the current interface,
+ * not an edge case, and out of this task's scope to redesign (Task 2's
+ * schema is a fixed input to this task).
+ *
+ * A lookup precedes the RPC call (`.eq("transfer_id", ...).is("deleted_at",
+ * null)`, no `.select("id")`/`.single()` — a transfer is always exactly
+ * two rows) for two reasons: it is what makes `amount`'s precision/parsing
+ * currency-aware at all (the wallet's `currency_code` has to come from
+ * somewhere), and it fails fast with a readable error before ever calling
+ * the RPC. It is NOT a substitute for the RPC's own `deleted_at is null`
+ * filter and exactly-two-rows check below — a delete racing between the
+ * lookup and the RPC call must still land on "not found," not a stray
+ * write to a row the user believes is gone, exactly like
+ * `updateTransaction`'s identical two-checkpoint reasoning.
+ */
+export async function updateTransfer(input: TransferEditInput): Promise<MutationResult> {
+  const parsed = transferEditInput.safeParse(input);
+  if (!parsed.success) return { error: parsed.error.issues[0]!.message };
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in" };
+
+  const { transfer_id, amount, occurred_on, note, merchant } = parsed.data;
+
+  // `transactions_member` RLS means this only ever sees legs the caller is
+  // a member of — a caller who has lost membership on one of the two
+  // wallets since the transfer was created sees fewer than two rows here,
+  // the same "incomplete pair" outcome as a genuinely missing/foreign
+  // transfer_id, and is refused for the identical reason: this action must
+  // never touch one leg of a pair without the other.
+  const { data: legs } = await supabase
+    .from("transactions")
+    .select("currency_code")
+    .eq("transfer_id", transfer_id)
+    .is("deleted_at", null);
+  if (!legs || legs.length !== 2) return { error: "Transfer not found" };
+  if (legs[0]!.currency_code !== legs[1]!.currency_code) {
+    return {
+      error: "Editing the amount isn't supported for a cross-currency transfer yet",
+    };
+  }
+
+  const minorUnit = minorUnitFor(legs[0]!.currency_code);
+  const precisionIssue = precisionError(amount, minorUnit, legs[0]!.currency_code);
+  if (precisionIssue) return { error: precisionIssue };
+
+  let magnitude: number;
+  try {
+    magnitude = parseAmountInput(amount, minorUnit);
+  } catch {
+    return { error: "That amount isn't valid" };
+  }
+  if (magnitude === 0) return { error: "Enter an amount greater than zero" };
+
+  // Built field by field and named explicitly, matching updateTransaction's
+  // own discipline — there is no `category_id` (or `wallet_id`/`kind`) to
+  // spread in the first place, since transferEditInput never carries one
+  // (that schema's own doc comment: the transfer_shape CHECK forces a
+  // transfer's category_id to null), so this call can never put one on
+  // the wire no matter what `parsed.data` contains.
+  //
+  // `note ?? undefined` / `merchant ?? undefined`: the same codegen quirk
+  // createTransfer's own `note: note || undefined` comment already covers —
+  // `p_note`/`p_merchant` are `text default null` SQL parameters, but
+  // Supabase's generated Args type maps a defaulted parameter to an
+  // OPTIONAL TS property (`p_note?: string`), not a nullable one. An
+  // omitted key, once JSON-serialized, reaches Postgres exactly the way an
+  // absent argument would — the function's own `default null` takes over —
+  // so this is equivalent to sending `null` explicitly, just typed
+  // correctly. Unlike createTransfer's `note || undefined` (which also
+  // treats an empty string as "omit"), this is `?? undefined`: `note`/
+  // `merchant` here are already `string | null` (transferEditInput's
+  // `editableText` already turned a blank string into `null` during
+  // parsing), so there is no remaining falsy-but-meaningful case to fold in.
+  const { data: updated, error } = await supabase.rpc("update_transfer_pair", {
+    p_transfer_id: transfer_id,
+    p_amount: magnitude,
+    p_occurred_on: occurred_on,
+    p_note: note ?? undefined,
+    p_merchant: merchant ?? undefined,
+  });
+
+  if (error) return { error: "Could not save transfer. Please try again." };
+  // A zero- or one-row result is not a Postgres error — same
+  // reported-success-database-untouched concern archiveWallet,
+  // archiveCategory and updateTransaction's own check all guard against.
+  // Exactly two rows, never fewer, never more (transfer_id is never reused
+  // across pairs — 0005_transfer_fn.sql's create_transfer always mints a
+  // fresh one), or this pair is reported incomplete rather than "fixed."
+  if (!updated || updated.length !== 2) {
+    return { error: "Could not update both legs of this transfer. Please try again." };
+  }
+
+  revalidatePath("/", "layout");
+  return { ok: true };
 }
 
 /**
