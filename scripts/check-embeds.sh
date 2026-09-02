@@ -23,7 +23,26 @@
 # below.
 set -euo pipefail
 
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+# Resolved to an ABSOLUTE path BEFORE the `cd` below (task 8, item 5c). This
+# used to be `. "$(dirname "${BASH_SOURCE[0]}")/require-loopback.sh"` further
+# down, evaluated AFTER the cd had already changed what that relative path
+# meant: invoked from a parent directory as
+# `./FlapSpenditure-v2/scripts/check-embeds.sh`, the source died with
+# `require-loopback.sh: No such file or directory`. It failed CLOSED --
+# `set -euo pipefail` aborts rather than running unguarded -- so it was a
+# broken gate, not a security hole, but a gate that only works from one
+# directory is a gate people stop running.
+#
+# scripts/test-rls.sh and scripts/test-constraints.sh source the same guard
+# with the same relative expression and are unaffected: neither cds, so
+# `dirname "${BASH_SOURCE[0]}"` still names the script's own directory when
+# they evaluate it. (Both do pass cwd-relative `-f supabase/tests/*.sql`
+# paths to psql, so they still have to be run from the repo root -- but that
+# fails loudly at psql, after the loopback guard has already run, which is
+# the safe order.)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+cd "$SCRIPT_DIR/.."
 
 API_URL="${API_URL:-http://127.0.0.1:54321}"
 
@@ -33,7 +52,7 @@ API_URL="${API_URL:-http://127.0.0.1:54321}"
 # loopback is some other machine's database, and this script has no business
 # there.
 # shellcheck source=scripts/require-loopback.sh
-. "$(dirname "${BASH_SOURCE[0]}")/require-loopback.sh"
+. "$SCRIPT_DIR/require-loopback.sh"
 require_loopback "$API_URL" API_URL
 
 # The floor the controller's Task 7 addendum names: four embeds exist in
@@ -100,6 +119,15 @@ fi
 # The gap between `.from(` and `.select(` is matched lazily and may not
 # contain another `.from(`, so a `.from()` with no `.select()` cannot reach
 # forward and pair itself with the next query's select string.
+#
+# KNOWN LIMIT (task 8, item 5d): the select string must be a LITERAL at the
+# call site. Single quotes, double quotes, backtick template literals and
+# multi-line select strings all work -- a reviewer's probe adding four new
+# syntactic forms found all 7 embeds -- but a select hoisted into a constant
+# (`const COLS = "id, wallets(name)"; ... .select(COLS)`) is silently
+# skipped, and an embed hoisted that way would leave this gate with no
+# signal at all. No such pattern exists in src/ today; the grep after the
+# extractor warns if one appears.
 embeds_tsv="$(node -e '
 const fs = require("fs");
 const path = require("path");
@@ -136,6 +164,29 @@ for (const file of files.sort()) {
 if [ -z "$embeds_tsv" ]; then
   echo "FAIL: found no PostgREST embeds in src/ at all -- the extractor is broken." >&2
   exit 1
+fi
+
+# The secondary check for the KNOWN LIMIT above: a `.select(` whose argument
+# is an IDENTIFIER rather than a string literal. Such a call is invisible to
+# the extractor, so if its select string happens to contain an embed, that
+# embed silently leaves this gate.
+#
+# A WARNING, not a failure: a hoisted select with no `(` in it is perfectly
+# fine and there is no way to tell the two apart without evaluating the
+# constant. Warning keeps the signal without failing a build over a legal
+# pattern -- the point is that the day someone writes one, this says so.
+#
+# Deliberately conservative. `[[:space:]]` not `\s` (BSD grep's ERE does not
+# reliably support the latter), and no line-spanning: `.select(` followed by
+# a newline is the multi-line-literal form the extractor already handles, so
+# requiring the identifier on the SAME line is what keeps this from crying
+# wolf on every multi-line select in src/.
+hoisted_selects="$(grep -rnE '\.select\([[:space:]]*[A-Za-z_$][A-Za-z0-9_$]*' \
+  --include='*.ts' --include='*.tsx' src 2>/dev/null | grep -v '\.test\.' || true)"
+if [ -n "$hoisted_selects" ]; then
+  echo "WARNING: .select(<identifier>) found -- the extractor only reads LITERAL select strings," >&2
+  echo "         so any embed inside these is NOT checked by this script:" >&2
+  printf '%s\n' "$hoisted_selects" | sed 's/^/           /' >&2
 fi
 
 found=0
