@@ -45,10 +45,20 @@ strict, Tailwind, Zod, Vitest, Playwright.
 - **Say "wallet", never "account"**, when a wallet is meant.
 - **SQL test suites are loopback-only.** `npm run test:rls` and
   `npm run test:constraints` must never target a hosted database.
-- **After ANY schema change, run the e2e suite in the same task.** A foreign
-  key added during the recurring work made an existing PostgREST embed
-  ambiguous and broke `/transactions` for every user; it shipped undetected for
-  three tasks because no unit test can see it.
+- **Playwright is NOT run in this plan.** The suite is unreliable on this
+  machine, so every proof lives in unit or SQL tests instead. That is a real
+  reduction in coverage and the plan compensates for it deliberately — see the
+  next constraint and Task 7.
+- **After ANY schema change, verify every PostgREST embed still resolves.** A
+  foreign key added during the recurring work made an existing embed ambiguous
+  (`PGRST201`, HTTP 300) and broke `/transactions` for every user; it shipped
+  undetected for three tasks because no unit test can see it, and it was
+  eventually caught by issuing the query over HTTP — not by a browser. So:
+  grep every `.select(` string in `src/` that embeds a nested table, issue each
+  verbatim against the local PostgREST as an ordinary authenticated user, and
+  confirm each returns 200 rather than 300. This task's migration adds no
+  foreign key, so the risk is lower than it was — but "lower" is why it shipped
+  last time.
 
 ---
 
@@ -592,42 +602,87 @@ git commit -m "feat: edit a transaction from its row"
 
 ---
 
-### Task 7: End-to-end proof
+### Task 7: Integration proof, without a browser
+
+Playwright is not run in this plan (see Global Constraints). The two
+load-bearing properties Task 7 was going to prove in a browser move down a
+layer, where they are provable without one — plus the embed check that stands
+in for what only a real request can see.
 
 **Files:**
-- Modify: `e2e/ledger.spec.ts` (the `ledger` describe block)
+- Modify: `supabase/tests/constraints.sql`
+- Modify: `src/app/(app)/due-rows.test.ts`
+- Create: `scripts/check-embeds.sh` (or extend an existing script — read
+  `scripts/test-rls.sh` for the loopback-guard convention and follow it)
 
-- [ ] **Step 1: Write the spec**
+**Interfaces:**
+- Consumes: everything above.
 
-Self-contained per this repo's convention — `e2e/budgets.spec.ts` documents
-why. Three flows:
+- [ ] **Step 1: Prove the transfer pair at the SQL layer**
 
-1. **Edit an ordinary expense.** Record one, tap the row, change the amount and
-   add a merchant, save. Assert the row now leads with the merchant and the
-   wallet balance followed the new amount.
-2. **Edit a transfer.** Create one, edit its amount, and assert BOTH legs moved
-   — the negative and the positive. A test asserting only the edited leg would
-   pass while the ledger gained money from nowhere.
-3. **Edit a recorded occurrence's date.** Record a due occurrence from a
-   recurring rule, edit the transaction's date, and assert the dashboard does
-   NOT offer that occurrence again. This is the assertion the whole schema
-   split exists for.
+Task 4 proves both legs move in the action's unit tests, against a mocked
+client. Add the same assertion against the real database, where the mock cannot
+lie: insert a transfer pair, run the update the action runs, and assert both
+rows moved and their signs stayed opposite.
 
-- [ ] **Step 2: Prove flow 3 discriminates**
+Then assert the property that actually matters and that no unit test can see:
+**the pair's amounts remain equal in magnitude and opposite in sign**, so
+`sum(amount_minor)` over the pair is still zero. A transfer whose legs disagree
+is money created or destroyed.
 
-Temporarily revert the identity index to `(recurring_id, occurred_on)` and have
-`recordOccurrence` write only `occurred_on`. Re-run; flow 3 must FAIL with the
-occurrence offered again. Restore, re-run green, and paste the actual output.
+- [ ] **Step 2: Prove the occurrence identity survives a date edit**
 
-- [ ] **Step 3: Run everything**
+Two halves, because they fail differently:
 
-Run: `npm test && npx playwright test && npm run test:rls && npm run test:constraints && npm run typecheck && npm run lint && npm run build`
+**SQL** — record an occurrence, edit its `occurred_on` to a different date, and
+assert `recurring_occurrence_on` is UNCHANGED and the unique index still holds
+the original slot.
 
-- [ ] **Step 4: Commit**
+**Unit** — in `due-rows.test.ts`, build the handled set from a recorded
+occurrence whose `occurred_on` has been edited away from its
+`recurring_occurrence_on`, and assert the occurrence is still treated as
+handled. This is the assertion the entire schema split exists for: `buildDueRows`
+must key on the scheduled date, not the actual one.
+
+Prove it discriminates: make `buildDueRows` key on `occurred_on` instead,
+confirm the test fails, restore, confirm it passes. Paste both outputs.
+
+- [ ] **Step 3: The PostgREST embed check**
+
+Write a script that greps every `.select(` string in `src/` containing a nested
+table embed, issues each verbatim against the local PostgREST as an ordinary
+authenticated user, and fails loudly on any non-200 — `PGRST201`/HTTP 300 in
+particular.
+
+It must refuse to run against anything but loopback, matching
+`scripts/test-rls.sh`'s existing guard. Read that script and reuse its check
+rather than writing a second one.
+
+Run it. Report which embeds it found and what each returned. If it finds fewer
+than four, say so — the codebase has at least that many and a check that
+silently matches nothing is worse than no check.
+
+- [ ] **Step 4: Run everything available**
+
+Run: `npm test && npm run test:rls && npm run test:constraints && npm run typecheck && npm run lint && npm run build && ./scripts/check-embeds.sh`
+Expected: all pass.
+
+State plainly in your report what is NOT covered by any of this: no test in
+this plan exercises the edit form in a browser, so the wiring from the row's
+link, through the form, to the action is verified only at the unit level with a
+mocked client. That is a known gap, accepted deliberately, and worth one
+sentence rather than silence.
+
+- [ ] **Step 5: Commit**
 
 ```bash
-git add e2e/ledger.spec.ts
-git commit -m "test(e2e): prove edits reach the ledger and an edited occurrence stays recorded"
+git add supabase/tests/constraints.sql "src/app/(app)/due-rows.test.ts" scripts/check-embeds.sh
+git commit -m "test: prove transfer pairs and occurrence identity without a browser
+
+Playwright is unreliable on this machine, so both load-bearing properties move
+to SQL and unit layers. The embed check stands in for the one class of bug
+only a real request can see -- an ambiguous PostgREST embed once broke
+/transactions for three tasks with every unit test green."
 ```
 
 ---
@@ -642,7 +697,11 @@ search. §2 data model → Task 1 verbatim. §3 semantics → Tasks 2-4. §4 mer
 in the UI → Task 5. §5 surfaces → Task 6. §6 out of scope → nothing here
 implements autocomplete, category defaults, kind changes, or an audit trail.
 §7 testing → distributed, with both load-bearing assertions (the transfer pair,
-the occurrence identity) carrying explicit discrimination steps.
+the occurrence identity) carrying explicit discrimination steps. The spec's own
+§7 asks for e2e coverage of all three flows; Task 7 substitutes SQL and unit
+proofs plus an embed check, at the user's explicit instruction. The gap this
+leaves — no browser-level proof that the row link, form and action are wired
+together — is stated in Task 7's report step rather than left implicit.
 
 **Placeholders.** Tasks 5 and 6 specify assertions and the files to model on
 rather than full JSX, because the components must match existing ones the
