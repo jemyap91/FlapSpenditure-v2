@@ -126,6 +126,104 @@ describe("TransactionForm — post-save redirect (Task 4)", () => {
 });
 
 /**
+ * Task 8, item 1. The user asked for "a merchant column besides just the
+ * description", and what shipped could only be filled in by recording a
+ * transaction and then editing it — this control was gated on `edit`. It now
+ * renders on the create path too, for every kind EXCEPT a transfer being
+ * created (`transferInput` has no merchant field, because `create_transfer`
+ * has no such parameter), while a transfer being EDITED keeps the field it
+ * already shipped with.
+ */
+describe("TransactionForm — merchant on the create path (Task 8)", () => {
+  /** A same-currency transfer that already carries a merchant — the row the
+   *  edit-mode assertion below has to be able to correct. Declared here
+   *  rather than reusing the edit suite's own `editTransferSameCurrency`,
+   *  which is scoped to that describe and seeds `merchant: ""`. */
+  const transferWithMerchant: EditSeed = {
+    kind: "transfer",
+    transferId: TRANSFER_ID,
+    fromWalletId: WALLET_A,
+    toWalletId: WALLET_B,
+    amountOut: "50.00",
+    amountIn: "50.00",
+    occurredOn: "2026-08-02",
+    note: "",
+    merchant: "Ferry Co",
+  };
+
+  /**
+   * Fails three different ways, which is the point: the field not rendering
+   * in create mode (`getByLabelText` throws), `merchant` not being threaded
+   * into `createTransaction`'s payload, and the Merchant input being wired to
+   * `setNote` (or the Note input to `setMerchant`) — the two values are
+   * deliberately different and BOTH asserted, so a swap cannot pass.
+   */
+  it("sends a merchant typed while creating an expense, distinct from the note", async () => {
+    const user = userEvent.setup();
+    render(<TransactionForm wallets={wallets} categories={categories} defaultWalletId={WALLET_A} />);
+
+    await user.click(screen.getByRole("button", { name: "5" }));
+    await user.click(screen.getByRole("button", { name: "Groceries" }));
+    await user.type(screen.getByLabelText("Note"), "flat white");
+    await user.type(screen.getByLabelText("Merchant"), "Cold Storage");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(push).toHaveBeenCalled());
+    expect(createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ note: "flat white", merchant: "Cold Storage" }),
+    );
+  });
+
+  /**
+   * `createTransfer` has nowhere to put a merchant — `create_transfer`
+   * (0005_transfer_fn.sql) takes no such argument — so offering the control
+   * would be the "greyed-out control that can never succeed" this form
+   * refuses elsewhere, except worse: it looks like it works and silently
+   * discards what was typed.
+   *
+   * The Note assertion is not padding. `queryByLabelText(...).toBeNull()`
+   * alone passes just as happily if the kind switch failed, the form threw,
+   * or nothing rendered at all; asserting Note IS present pins that this is a
+   * real, rendered transfer create form that is missing exactly one field.
+   */
+  it("does not offer a Merchant field when CREATING a transfer", async () => {
+    const user = userEvent.setup();
+    render(
+      <TransactionForm wallets={editWallets} categories={categories} defaultWalletId={WALLET_A} />,
+    );
+
+    await user.click(screen.getByRole("radio", { name: "Transfer" }));
+
+    expect(screen.getByRole("radio", { name: "Transfer" })).toBeChecked();
+    expect(screen.getByLabelText("Note")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Merchant")).not.toBeInTheDocument();
+  });
+
+  /**
+   * The other half of the asymmetry, and the reason the render gate is
+   * `edit || kind !== "transfer"` rather than `kind !== "transfer"`.
+   * `transferEditInput.merchant` and `update_transfer_pair`'s `p_merchant`
+   * both shipped and are reviewed, and spec §3.1 lists merchant among a
+   * transfer's editable fields. Hiding the control here would strand any
+   * merchant such a row already carries with no way to correct or clear it.
+   *
+   * Fails if the gate is narrowed to `edit && kind !== "transfer"`.
+   */
+  it("still offers Merchant when EDITING a transfer, seeded from the row", () => {
+    render(
+      <TransactionForm
+        mode="edit"
+        wallets={editWallets}
+        categories={categories}
+        edit={transferWithMerchant}
+      />,
+    );
+
+    expect(screen.getByLabelText("Merchant")).toHaveValue("Ferry Co");
+  });
+});
+
+/**
  * Task 6 (editable-transactions plan): TransactionForm's edit mode
  * (`mode="edit"` + `edit`). Context that isn't in this task's brief, all
  * binding here:

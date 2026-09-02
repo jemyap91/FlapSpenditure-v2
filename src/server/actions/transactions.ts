@@ -89,7 +89,7 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
   } = await supabase.auth.getUser();
   if (!user) return { error: "Not signed in" };
 
-  const { wallet_id, kind, amount, category_id, occurred_on, note } = parsed.data;
+  const { wallet_id, kind, amount, category_id, occurred_on, note, merchant } = parsed.data;
 
   // `wallets_select` RLS (is_wallet_member) already means this SELECT comes
   // back empty for a wallet the caller doesn't belong to — no separate
@@ -183,6 +183,23 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
       category_id,
       occurred_on,
       note: note || null,
+      // Task 8, item 1. `merchant` is already `string | null` here —
+      // `transactionInput.merchant` uses the same `editableText(120, ...)`
+      // the edit schemas use, which trims and turns a blank string into
+      // null during parsing, so unlike `note` above there is no `|| null`
+      // left to do. It reaches the INSERT with no migration and no grant
+      // change: 0004_rls.sql:46-48 grants `insert` on `transactions`
+      // full-table (verified — only UPDATE is revoked and re-granted
+      // column-by-column at :83-84, which is why `merchant` needed
+      // 0016_editable_transactions.sql:56's `grant update (merchant)` but
+      // needs nothing at all to be INSERTable).
+      //
+      // `createTransfer` below has no equivalent: `create_transfer`
+      // (0005_transfer_fn.sql) takes no merchant argument, and a transfer
+      // between the user's own wallets has no merchant to record. See
+      // `transferInput`'s own comment (src/lib/validation/transaction.ts)
+      // for the full asymmetry.
+      merchant,
     })
     .select("id")
     .single();

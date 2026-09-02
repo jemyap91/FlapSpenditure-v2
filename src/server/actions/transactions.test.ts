@@ -19,7 +19,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // `updateTransaction`'s real logic against a fake client rather than a
 // stand-in for the action itself.
 import { signedAmount, precisionError } from "@/lib/validation/transaction";
-import { updateTransaction, updateTransfer } from "./transactions";
+import { createTransaction, updateTransaction, updateTransfer } from "./transactions";
 
 const TXN_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const OWNER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -79,6 +79,8 @@ const {
   walletLookupResult,
   categoryResult,
   legsLookupResult,
+  insertResult,
+  insertSpy,
   updateResult,
   updateSpy,
   rpcSpy,
@@ -106,6 +108,15 @@ const {
   // the incoming one (fix round 1: each leg is now parsed against its OWN
   // currency, since amount_out/amount_in replaced the single amount field).
   legsLookupResult: { data: null as { amount_minor: number; currency_code: string }[] | null },
+  // createTransaction's INSERT (task 8, item 1). Kept separate from
+  // `updateResult` rather than shared: `createTransaction` finishes with
+  // `.select("id").single()`, so it expects ONE object back, while
+  // `updateTransaction`'s UPDATE expects an array of touched rows — one
+  // canned value cannot be both, and `insertSpy` is what lets a test read
+  // the payload that actually went on the wire (the `merchant` column has
+  // no other observable at this layer).
+  insertResult: { data: null as { id: string } | null, error: null as unknown },
+  insertSpy: vi.fn(),
   // Shared by updateTransaction's UPDATE and updateTransfer's RPC call —
   // both represent "the rows the write actually touched."
   updateResult: { data: null as { id: string; amount_minor?: number }[] | null, error: null as unknown },
@@ -159,7 +170,7 @@ vi.mock("@/lib/supabase/server", () => ({
       // legsLookupResult instead of txnLookupResult — see `usedSingle`
       // below) — the same mode-switching shape recurring.test.ts's shared
       // builder uses.
-      let mode: "lookup" | "update" = "lookup";
+      let mode: "lookup" | "insert" | "update" = "lookup";
       // Whether `.single()` was called on THIS chain — updateTransaction's
       // lookup always calls it (one row, by id); updateTransfer's pre-flight
       // lookup never does (up to two rows, by transfer_id). This is what
@@ -169,6 +180,11 @@ vi.mock("@/lib/supabase/server", () => ({
       let usedSingle = false;
       const builder: Record<string, unknown> = {
         select: () => builder,
+        insert: (payload: unknown) => {
+          mode = "insert";
+          insertSpy(payload);
+          return builder;
+        },
         update: (payload: unknown) => {
           mode = "update";
           updateSpy(payload);
@@ -187,7 +203,15 @@ vi.mock("@/lib/supabase/server", () => ({
           return builder;
         },
         then: (resolve: (v: unknown) => void) =>
-          resolve(mode === "update" ? updateResult : usedSingle ? txnLookupResult : legsLookupResult),
+          resolve(
+            mode === "update"
+              ? updateResult
+              : mode === "insert"
+                ? insertResult
+                : usedSingle
+                  ? txnLookupResult
+                  : legsLookupResult,
+          ),
       };
       return builder;
     },
@@ -223,7 +247,42 @@ beforeEach(() => {
   ];
   updateResult.data = [{ id: TXN_ID }];
   updateResult.error = null;
+  insertResult.data = { id: TXN_ID };
+  insertResult.error = null;
 });
+
+/**
+ * Task 8, item 1: what `createTransaction` puts on the wire. Added now
+ * because `merchant` joined `transactionInput` — until this round the create
+ * schemas had no merchant field at all, so the column could only be filled
+ * in by recording a transaction and then editing it.
+ *
+ * `merchant` is deliberately distinct from `note` in this fixture: a wiring
+ * mistake that sent the note as the merchant (or vice versa) is exactly the
+ * kind of swap a fixture with two equal values cannot see.
+ */
+function create(
+  overrides: Partial<{
+    wallet_id: string;
+    kind: "expense" | "income";
+    amount: string;
+    category_id: string;
+    occurred_on: string;
+    note: string;
+    merchant: string | null;
+  }> = {},
+) {
+  return {
+    wallet_id: WALLET_ID,
+    kind: "expense" as const,
+    amount: "42.50",
+    category_id: CATEGORY_ID,
+    occurred_on: "2026-07-01",
+    note: "weekly shop",
+    merchant: "Cold Storage",
+    ...overrides,
+  };
+}
 
 function edit(
   overrides: Partial<{
@@ -339,6 +398,63 @@ describe("precisionError (src/lib/validation/transaction.ts)", () => {
 
   it("leaves a malformed amount for parseAmountInput's own rejection", () => {
     expect(precisionError("12.34.56", 2, "USD")).toBeUndefined();
+  });
+});
+
+describe("createTransaction — merchant on the create path (task 8, item 1)", () => {
+  /**
+   * Fails if `merchant` is dropped from `createTransaction`'s INSERT object,
+   * which is precisely the state this branch shipped in: the column existed,
+   * the list rendered it, the edit form wrote it, and nothing on the create
+   * path ever put a value there.
+   *
+   * `note` is asserted alongside it, with a DIFFERENT value, so an INSERT
+   * that wrote `merchant: note` (or swapped the two) fails here rather than
+   * passing on a fixture where both happen to match.
+   */
+  it("writes the merchant it was given to the INSERT, alongside the note", async () => {
+    const res = await createTransaction(create());
+
+    expect(res).toEqual({ id: TXN_ID });
+    expect(insertSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ merchant: "Cold Storage", note: "weekly shop" }),
+    );
+  });
+
+  /**
+   * `transactionInput.merchant` uses the same `editableText(120, ...)` the
+   * edit schemas use, so a blank arrives at the INSERT already coerced to
+   * null. Fails if that field is redeclared the way `note` is on the same
+   * schema (`.optional().or(z.literal(""))`), which leaves "" as "" —
+   * `TransactionList`'s `merchantOf` treats a blank string as absent, so a
+   * stored "" gives the row an empty primary line instead of falling back to
+   * the note or the category.
+   *
+   * `toBeNull` AND `not.toBe("")`: `expect.objectContaining({ merchant:
+   * null })` alone would also be satisfied by a missing key under some
+   * matchers, and "" is the specific wrong value at issue here.
+   */
+  it("stores a blank merchant as null, never as an empty string", async () => {
+    await createTransaction(create({ merchant: "" }));
+
+    const payload = insertSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload).toHaveProperty("merchant");
+    expect(payload.merchant).toBeNull();
+    expect(payload.merchant).not.toBe("");
+  });
+
+  /**
+   * The column-level guard, at the layer that actually writes: a merchant
+   * past the column's own `length(merchant) <= 120` CHECK
+   * (0016_editable_transactions.sql) must be refused with a readable message
+   * BEFORE any database call, not forwarded as a raw constraint violation.
+   */
+  it("refuses an over-long merchant without touching the database", async () => {
+    const res = await createTransaction(create({ merchant: "x".repeat(121) }));
+
+    expect(res).toEqual({ error: "Merchant is too long" });
+    expect(insertSpy).not.toHaveBeenCalled();
+    expect(fromSpy).not.toHaveBeenCalled();
   });
 });
 

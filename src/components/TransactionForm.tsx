@@ -272,10 +272,12 @@ export function TransactionForm(
    *  a transaction, typically a merchant. Optional on both the expense and
    *  the transfer path; the actions coerce "" to null on write. */
   const [note, setNote] = useState(() => (edit ? edit.note : ""));
-  /** The transactions table's own `merchant` column (Task 1 of this plan) —
-   *  editable, but not creatable: `transactionInput`/`transferInput` (the
-   *  CREATE schemas) have no `merchant` field at all, only their `...Edit`
-   *  counterparts do, so this control renders only in edit mode (below). */
+  /** The transactions table's own `merchant` column (Task 1 of this plan).
+   *  Settable on THREE of the four paths — create/edit x expense/income, and
+   *  a transfer EDIT — but not on a transfer create: `transferInput`
+   *  (src/lib/validation/transaction.ts) has no `merchant` field, because
+   *  `create_transfer` (0005_transfer_fn.sql) has no such parameter. See the
+   *  control's own comment below, and `transferInput`'s, for the asymmetry. */
   const [merchant, setMerchant] = useState(() => (edit ? edit.merchant : ""));
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
@@ -569,6 +571,15 @@ export function TransactionForm(
               category_id: category!.id,
               occurred_on: date,
               note,
+              // Task 8, item 1. Sent on the CREATE path now, not only on
+              // the edit path — a merchant is known at the till, and the
+              // field being edit-only made the column reachable solely by
+              // recording a transaction and then editing it. Not sent to
+              // `createTransfer` above: `transferInput` has no such field
+              // (see its comment in src/lib/validation/transaction.ts), and
+              // the control that feeds this does not render for a transfer
+              // in create mode either, so this state is always "" there.
+              merchant,
             });
 
       if ("error" in res) {
@@ -857,15 +868,32 @@ export function TransactionForm(
         />
       </label>
 
-      {/* Edit-only (component doc comment above): `transactionInput`/
-          `transferInput` (the CREATE schemas) have no `merchant` field at
-          all — only their `...Edit` counterparts do — so there is nothing
-          for this control to submit in create mode, and it does not render
-          there. `maxLength` matches `editableText(120, ...)`
+      {/* Task 8, item 1: rendered on the CREATE path too, not edit-only.
+          The user's request was a merchant column beside the description,
+          and while this control was gated on `edit` the only way to set one
+          was to record a transaction and then edit it — useless in the one
+          flow where the merchant is actually known.
+
+          The ONE case it still does not render is a transfer being CREATED:
+          `transferInput` (src/lib/validation/transaction.ts) has no
+          `merchant` field, because `create_transfer`
+          (0005_transfer_fn.sql) has no such parameter, so there would be
+          nothing for this control to submit — and a greyed-out or
+          silently-discarded field is exactly the "control that can never
+          succeed" this form refuses elsewhere (see the category chip's own
+          comment above).
+
+          It DOES render for a transfer being EDITED. `transferEditInput`
+          and `update_transfer_pair` both carry `merchant`; that shipped, is
+          reviewed, and spec §3.1 lists merchant among a transfer's editable
+          fields. Hiding it here would silently strand any merchant such a
+          row already carries, with no way to correct or clear it.
+
+          `maxLength` matches `editableText(120, ...)`
           (src/lib/validation/transaction.ts) and the column's own
           `length(merchant) <= 120` CHECK, the same three-layer-match
           discipline the Note field's own comment states for its 280. */}
-      {edit && (
+      {(edit || kind !== "transfer") && (
         <label className="flex flex-col gap-1">
           <span className="text-sm" style={{ color: "var(--ink-2)" }}>
             Merchant

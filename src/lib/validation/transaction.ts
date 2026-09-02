@@ -148,6 +148,33 @@ const amountField = z.string().trim().min(1, "Enter an amount");
  */
 const dateField = z.iso.date("Enter a valid date");
 
+/**
+ * Same trimmed-string-capped-at-N, `""` → null treatment as an edit's
+ * `note`, factored out because `transactionInput.merchant` (below),
+ * `transactionEditInput.note`/`.merchant` and `transferEditInput.note`/
+ * `.merchant` all need it. Unlike `transactionInput`'s `note` field
+ * (`.optional().or(z.literal(""))`, which leaves `""` as `""`), these must
+ * come out as `string | null` — `TransactionList.tsx`'s `noteOf`/`merchantOf`
+ * already treat a blank string as absent when *reading* a row, but the
+ * create/edit actions write their parsed payload straight into an
+ * INSERT/UPDATE, so the coercion has to happen here or a blank string would
+ * be written to the row instead of NULL, giving that row an empty heading.
+ *
+ * Declared above `transactionInput` rather than beside the edit schemas
+ * (task 8, item 1): `transactionInput.merchant` is the first CREATE-schema
+ * field to use it, and a `function` declaration would hoist but a `const`
+ * arrow would not — keeping the definition physically before its first use
+ * removes the question entirely.
+ */
+function editableText(max: number, tooLongMessage: string) {
+  return z
+    .string()
+    .trim()
+    .max(max, tooLongMessage)
+    .nullable()
+    .transform((v) => (v ? v : null));
+}
+
 export const transactionInput = z.object({
   wallet_id: z.uuid(),
   kind: nonTransferKind,
@@ -155,6 +182,35 @@ export const transactionInput = z.object({
   category_id: z.uuid("Choose a category"),
   occurred_on: dateField,
   note: z.string().trim().max(280, "Note is too long").optional().or(z.literal("")),
+  /**
+   * Task 8, item 1 — the create path's merchant. Shipped originally as an
+   * EDIT-only field, which made the column useless in the one flow where a
+   * merchant is actually known: standing at the till. `merchant` is now
+   * settable when the transaction is first recorded.
+   *
+   * The SAME `editableText(120, ...)` the two edit schemas below use — same
+   * 120-char cap as the column's own `length(merchant) <= 120` CHECK
+   * (0016_editable_transactions.sql), and the same blank-to-null coercion,
+   * for the same reason: `TransactionList`'s `merchantOf` treats `""` as
+   * absent, so storing one would give the row an empty primary line.
+   *
+   * Required (nullable), not `.optional()`, unlike `note` above: `note`'s
+   * optionality predates this plan, while `merchant` is modelled on
+   * `transactionEditInput.merchant`/`transferEditInput.merchant`, which are
+   * both required-and-nullable. Requiring it means a future caller of
+   * `createTransaction` gets a TYPE error rather than silently dropping the
+   * field — the whole defect this item exists to fix, reintroduced one call
+   * site at a time.
+   *
+   * No migration and no grant change: 0004_rls.sql:46-48 grants
+   * `insert` on `transactions` FULL-TABLE (only UPDATE is revoked and
+   * re-granted column-by-column at :83-84, and 0016 only ADDS `merchant` to
+   * that UPDATE list), so `authenticated` could already INSERT this column.
+   *
+   * There is deliberately NO counterpart on `transferInput` below — see its
+   * own comment for the asymmetry and why it is intended.
+   */
+  merchant: editableText(120, "Merchant is too long"),
 });
 
 export const transferInput = z
@@ -168,6 +224,23 @@ export const transferInput = z
     amount_in: z.string().trim().optional(),
     occurred_on: dateField,
     note: z.string().trim().max(280, "Note is too long").optional().or(z.literal("")),
+    // NO `merchant` here, deliberately, and this asymmetry with
+    // `transferEditInput` below (which HAS one) is intended — task 8, item 1.
+    //
+    // A transfer is created by the `create_transfer` RPC
+    // (supabase/migrations/0005_transfer_fn.sql), whose signature has no
+    // merchant parameter. Adding one means dropping and recreating a
+    // reviewed function, and risks a PostgREST RPC overload — real cost, for
+    // a field a transfer does not have: a transfer moves money between the
+    // user's OWN wallets, so there is no third party to name.
+    //
+    // `transferEditInput.merchant`/`update_transfer_pair`'s `p_merchant`
+    // stay exactly as they shipped. They are reviewed, spec §3.1 lists
+    // merchant among a transfer's editable fields, and removing them to
+    // "restore symmetry" would delete working, specified behaviour. The
+    // asymmetry is create-vs-edit, not a bug: a transfer that acquired a
+    // merchant some other way (a direct POST, an import) must still be able
+    // to have it corrected or cleared.
   })
   .refine((v) => v.from_wallet_id !== v.to_wallet_id, {
     message: "Choose two different wallets",
@@ -176,26 +249,6 @@ export const transferInput = z
 
 export type TransactionInput = z.infer<typeof transactionInput>;
 export type TransferInput = z.infer<typeof transferInput>;
-
-/**
- * Same trimmed-string-capped-at-N, `""` → null treatment as `note` below,
- * factored out because both `transactionEditInput.note`/`.merchant` and
- * `transferEditInput.note`/`.merchant` need it. Unlike `transactionInput`'s
- * `note` field (`.optional().or(z.literal(""))`, which leaves `""` as
- * `""`), an edit's `note`/`merchant` must come out as `string | null` —
- * `TransactionList.tsx`'s `noteOf`/a future `merchantOf` already treat a
- * blank string as absent when *reading* a row, but an edit action writes
- * its parsed payload straight into an UPDATE, so the coercion has to happen
- * here or a blank string would be written back to the row instead of NULL.
- */
-function editableText(max: number, tooLongMessage: string) {
-  return z
-    .string()
-    .trim()
-    .max(max, tooLongMessage)
-    .nullable()
-    .transform((v) => (v ? v : null));
-}
 
 /**
  * Editing an existing (non-transfer) transaction. Modeled on
