@@ -37,12 +37,19 @@ const baseRow: Row = {
   currency_code: "USD",
   occurred_on: "2026-08-18",
   wallet_name: "USD Checking",
+  merchant: null,
   note: null,
   category_name: "Groceries",
   category_icon: "shopping-basket",
   color_slot: 1,
   created_by_name: null,
 };
+
+// Overrides layered onto `baseRow` — the merchant tests below use this
+// factory verbatim, matching this task's brief.
+function row(overrides: Partial<Row> = {}): Row {
+  return { ...baseRow, ...overrides };
+}
 
 // Matches whichever row's Delete button is rendered — the accessible name
 // includes the row's own label ("Groceries"/"Transfer"/"Uncategorised")
@@ -194,6 +201,47 @@ describe("TransactionList — note", () => {
     // row that reaches the client as "" must not render an empty heading.
     render(<TransactionList rows={[{ ...baseRow, note: "", category_name: "Coffee" }]} />);
     expect(screen.getByText("Coffee")).toBeInTheDocument();
+  });
+});
+
+/**
+ * `merchant` (the transactions table's own `text` column, <=120 chars, Task
+ * 1 of this plan) outranks `note` as the row's primary line — it is the
+ * most specific name available for a transaction, structured rather than
+ * freeform. When both are present the note does not disappear; it demotes
+ * to the secondary line beside the category, the same way the category
+ * itself already demotes when a note alone took the primary line.
+ */
+describe("TransactionList — merchant", () => {
+  it("uses the merchant as the row's primary line when present", () => {
+    render(<TransactionList rows={[row({ merchant: "Tesco", note: "weekly shop" })]} />);
+    expect(screen.getByText("Tesco")).toBeInTheDocument();
+  });
+
+  it("demotes the note beside the category when a merchant is present", () => {
+    render(
+      <TransactionList rows={[row({ merchant: "Tesco", note: "weekly shop", category_name: "Groceries" })]} />,
+    );
+    expect(screen.getByText(/weekly shop/)).toBeInTheDocument();
+    expect(screen.getByText(/Groceries/)).toBeInTheDocument();
+  });
+
+  it("falls back to the note exactly as before when there is no merchant", () => {
+    // Additive: a row with no merchant must render precisely as it does today.
+    render(<TransactionList rows={[row({ merchant: null, note: "weekly shop" })]} />);
+    expect(screen.getByText("weekly shop")).toBeInTheDocument();
+  });
+
+  it("treats a blank merchant as absent", () => {
+    render(<TransactionList rows={[row({ merchant: "   ", note: "weekly shop" })]} />);
+    expect(screen.getByText("weekly shop")).toBeInTheDocument();
+  });
+
+  it("names the Delete button after the merchant when there is one", () => {
+    // rowLabel drives the Delete aria-label and the toast; a row that announces
+    // one name and a delete button that announces another is the defect here.
+    render(<TransactionList rows={[row({ merchant: "Tesco", amount_minor: -1800 })]} />);
+    expect(screen.getByRole("button", { name: /Delete Tesco/ })).toBeInTheDocument();
   });
 });
 

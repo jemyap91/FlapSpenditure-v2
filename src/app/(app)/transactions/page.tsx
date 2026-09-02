@@ -66,13 +66,15 @@ import { resolveCreatedByNames, anyRowShared } from "./attribution";
  * `wallets!transactions_wallet_id_fkey` pins the embed to the plain FK,
  * mirroring `categories`' own hint exactly.
  *
- * `note` IS selected, and is rendered — `TransactionList` shows it as each
- * row's primary line, demoting the category to the secondary line beside
- * the wallet. It was excluded for a while on review, having been fetched
- * and carried into `Row` without anything displaying it (a dead payload on
- * every request); that comment said to add it back once something rendered
- * it, and that is now the case. Keep the two in step: if the note ever
- * stops being displayed, drop it from this select again.
+ * `note` and `merchant` are both selected, and both rendered —
+ * `TransactionList` shows the merchant as each row's primary line when
+ * present, falling back to the note, falling back to the category; whatever
+ * loses demotes to the secondary line beside the wallet. `note` was
+ * excluded for a while on review, having been fetched and carried into
+ * `Row` without anything displaying it (a dead payload on every request);
+ * that comment said to add it back once something rendered it, and that is
+ * now the case for both columns. Keep them in step: if either ever stops
+ * being displayed, drop it from this select again.
  *
  * `.order("occurred_on", ...)` alone lets rows sharing a day reshuffle
  * between renders (Postgres makes no ordering promise among ties), which
@@ -147,7 +149,7 @@ export default async function TransactionsPage() {
     supabase
       .from("transactions")
       .select(
-        "id, kind, amount_minor, currency_code, occurred_on, note, created_by, wallet_id, wallets!transactions_wallet_id_fkey(name), categories!transactions_category_id_fkey(name, color_slot, icon)",
+        "id, kind, amount_minor, currency_code, occurred_on, note, merchant, created_by, wallet_id, wallets!transactions_wallet_id_fkey(name), categories!transactions_category_id_fkey(name, color_slot, icon)",
       )
       .is("deleted_at", null)
       .order("occurred_on", { ascending: false })
@@ -180,6 +182,7 @@ export default async function TransactionsPage() {
     currency_code: string;
     occurred_on: string;
     note: string | null;
+    merchant: string | null;
     created_by: string | null;
     wallet_id: string;
     wallets: { name: string } | null;
@@ -201,6 +204,7 @@ export default async function TransactionsPage() {
     currency_code: r.currency_code,
     occurred_on: r.occurred_on,
     note: r.note,
+    merchant: r.merchant,
     wallet_name: r.wallets?.name ?? "",
     category_name: r.categories?.name ?? null,
     category_icon: r.categories?.icon ?? null,

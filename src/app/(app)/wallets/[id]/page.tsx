@@ -165,7 +165,7 @@ export default async function WalletDetailPage({
     supabase
       .from("transactions")
       .select(
-        "id, kind, amount_minor, currency_code, occurred_on, note, created_by, wallet_id, categories!transactions_category_id_fkey(name, color_slot, icon)",
+        "id, kind, amount_minor, currency_code, occurred_on, note, merchant, created_by, wallet_id, categories!transactions_category_id_fkey(name, color_slot, icon)",
       )
       .eq("wallet_id", id)
       .is("deleted_at", null)
@@ -199,6 +199,7 @@ export default async function WalletDetailPage({
     currency_code: string;
     occurred_on: string;
     note: string | null;
+    merchant: string | null;
     created_by: string | null;
     wallet_id: string;
     categories: { name: string; color_slot: number; icon: string } | null;
@@ -215,6 +216,7 @@ export default async function WalletDetailPage({
     currency_code: r.currency_code,
     occurred_on: r.occurred_on,
     note: r.note,
+    merchant: r.merchant,
     // Every row here is already scoped to THIS wallet, and the page's own
     // `<h1>` already says its name — `TransactionList`'s secondary line
     // joins non-empty parts with `.filter(Boolean)`, so an empty string
