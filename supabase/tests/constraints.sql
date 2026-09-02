@@ -1337,14 +1337,36 @@ begin
   -- (b) The slot matching the edited row's NEW occurred_on is free. This
   -- is a DIFFERENT occurrence of the same rule, and recording it must
   -- succeed -- it only collides if the index is keyed on the actual date.
-  insert into public.transactions (wallet_id, kind, amount_minor, currency_code, category_id,
-                                   occurred_on, recurring_id, recurring_occurrence_on)
-  values ('90909090-0000-0000-0000-000000000002', 'expense', -1200, 'USD',
-          '90909090-0000-0000-0000-000000000003', current_date - 5,
-          '90909090-0000-0000-0000-0000000000e0', current_date - 5)
-  returning id into v_new_id;
+  --
+  -- Wrapped in its own exception block rather than left to the `assert
+  -- v_new_id is not null` that used to carry this message alone (task 8,
+  -- item 5b): that assert could never fire on the case it described. A
+  -- colliding INSERT raises 23505 and aborts this DO block before the assert
+  -- is reached, so the check worked while its explanation never printed --
+  -- the reviewer who mutated the index back onto occurred_on saw only a bare
+  -- 'duplicate key value violates unique constraint'. Catching
+  -- unique_violation here and re-raising is what makes the diagnostic
+  -- reachable at the moment it is needed.
+  begin
+    insert into public.transactions (wallet_id, kind, amount_minor, currency_code, category_id,
+                                     occurred_on, recurring_id, recurring_occurrence_on)
+    values ('90909090-0000-0000-0000-000000000002', 'expense', -1200, 'USD',
+            '90909090-0000-0000-0000-000000000003', current_date - 5,
+            '90909090-0000-0000-0000-0000000000e0', current_date - 5)
+    returning id into v_new_id;
+  exception
+    when unique_violation then
+      get stacked diagnostics v_constraint = constraint_name;
+      raise exception
+        'SPLIT BROKEN: an occurrence scheduled for the edited row''s new occurred_on could not be recorded -- the unique index is keyed on the actual date, not the scheduled one (collided on %: %)',
+        coalesce(v_constraint, '<unknown constraint>'), sqlerrm;
+  end;
+  -- A genuinely different failure from the collision above, and the only one
+  -- this assert can still catch: an INSERT that reported success but wrote
+  -- no row (a BEFORE trigger returning NULL, say), which leaves `v_new_id`
+  -- null with no exception raised.
   assert v_new_id is not null,
-    'SPLIT BROKEN: an occurrence scheduled for the edited row''s new occurred_on could not be recorded -- the unique index is keyed on the actual date, not the scheduled one';
+    'SPLIT BROKEN: the INSERT for the edited row''s new occurred_on returned no row at all';
 
   -- And the edited row is untouched by either attempt: two live recordings
   -- of this rule now exist, for two DIFFERENT scheduled dates, sharing
