@@ -160,3 +160,84 @@ export const transferInput = z
 
 export type TransactionInput = z.infer<typeof transactionInput>;
 export type TransferInput = z.infer<typeof transferInput>;
+
+/**
+ * Same trimmed-string-capped-at-N, `""` → null treatment as `note` below,
+ * factored out because both `transactionEditInput.note`/`.merchant` and
+ * `transferEditInput.note`/`.merchant` need it. Unlike `transactionInput`'s
+ * `note` field (`.optional().or(z.literal(""))`, which leaves `""` as
+ * `""`), an edit's `note`/`merchant` must come out as `string | null` —
+ * `TransactionList.tsx`'s `noteOf`/a future `merchantOf` already treat a
+ * blank string as absent when *reading* a row, but an edit action writes
+ * its parsed payload straight into an UPDATE, so the coercion has to happen
+ * here or a blank string would be written back to the row instead of NULL.
+ */
+function editableText(max: number, tooLongMessage: string) {
+  return z
+    .string()
+    .trim()
+    .max(max, tooLongMessage)
+    .nullable()
+    .transform((v) => (v ? v : null));
+}
+
+/**
+ * Editing an existing (non-transfer) transaction. Modeled on
+ * `transactionInput` above: `amount` and `occurred_on` are the exact same
+ * fields, and `note`/`merchant` reuse `note`'s own trim+cap shape via
+ * `editableText`. Two things are deliberately different from
+ * `transactionInput`:
+ *
+ * - No `wallet_id` and no `kind`. Neither is editable — 0016_editable_
+ *   transactions.sql's `grant update (...)` list on `transactions` excludes
+ *   `wallet_id` on purpose (closing a proven privilege-escalation path: a
+ *   member reassigning a row to a wallet they don't belong to), and `kind`
+ *   is absent from that grant too. A field that isn't in this schema can't
+ *   appear in `parsed.data`, and `parsed.data` is what the edit action will
+ *   send as the UPDATE's column set — so leaving them out here is what
+ *   keeps them out of that statement, not a check the action has to
+ *   remember to add later.
+ * - `category_id` is nullable, unlike `transactionInput`'s required
+ *   `z.uuid("Choose a category")`. That requirement is `TransactionForm`'s
+ *   own creation-flow UX choice, not a database one — the `transactions`
+ *   table has never forced a non-transfer row to carry a category (see
+ *   `TransactionList.tsx`'s `Row` doc comment: "an expense/income row can
+ *   ALSO have a null category"), and `merchant` joining the editable-column
+ *   list alongside the pre-existing `category_id` (0004_rls.sql:83,
+ *   confirmed still present in 0016's grant per Task 1's report) means an
+ *   edit can legitimately clear it back to null.
+ *
+ * `id` identifies which row to update; it is never itself written.
+ */
+export const transactionEditInput = z.object({
+  id: z.uuid(),
+  amount: z.string().trim().min(1, "Enter an amount"),
+  occurred_on: z.iso.date("Enter a valid date"),
+  category_id: z.uuid("Choose a category").nullable(),
+  note: editableText(280, "Note is too long"),
+  merchant: editableText(120, "Merchant is too long"),
+});
+
+/**
+ * Editing an existing transfer leg. Modeled on `transferInput` above the
+ * same way `transactionEditInput` is modeled on `transactionInput`: `amount`
+ * and `occurred_on` are reused as-is, `note`/`merchant` reuse `editableText`.
+ *
+ * No `from_wallet_id`/`to_wallet_id` (wallets aren't editable — same reason
+ * as `transactionEditInput`'s missing `wallet_id`) and, unlike
+ * `transactionEditInput`, no `category_id` at all: `0003_transactions.sql`'s
+ * `transfer_shape` CHECK forces a transfer's `category_id` to be null, so a
+ * schema that accepted one here would let a caller's payload reach Postgres
+ * as a constraint violation instead of a message this action can return.
+ * `transfer_id` identifies which pair of linked rows to update.
+ */
+export const transferEditInput = z.object({
+  transfer_id: z.uuid(),
+  amount: z.string().trim().min(1, "Enter an amount"),
+  occurred_on: z.iso.date("Enter a valid date"),
+  note: editableText(280, "Note is too long"),
+  merchant: editableText(120, "Merchant is too long"),
+});
+
+export type TransactionEditInput = z.infer<typeof transactionEditInput>;
+export type TransferEditInput = z.infer<typeof transferEditInput>;
