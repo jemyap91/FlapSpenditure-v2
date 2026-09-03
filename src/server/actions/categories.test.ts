@@ -11,6 +11,13 @@
 // physically absent from the repo.
 import { describe, it, expect } from "vitest";
 import { categoryInput, nextColorSlot } from "@/lib/validation/category";
+import { SLOT_COUNT } from "@/lib/palette";
+
+/** One past the last real slot — the smallest genuinely invalid `color_slot`.
+ *  Written as an expression, not the literal 17: these tests previously used
+ *  9, which stopped being out of range the moment the palette widened to 16,
+ *  and two of them went on passing while asserting something untrue. */
+const OUT_OF_RANGE = SLOT_COUNT + 1;
 
 describe("nextColorSlot", () => {
   it("picks the first unused slot", () => {
@@ -19,11 +26,17 @@ describe("nextColorSlot", () => {
 
   it("spreads across the palette instead of stacking on slot 1", () => {
     // every slot used once except 6 -> pick 6
-    expect(nextColorSlot([1, 2, 3, 4, 5, 7, 8])).toBe(6);
+    const allButSix = Array.from({ length: SLOT_COUNT }, (_, i) => i + 1).filter((s) => s !== 6);
+    expect(nextColorSlot(allButSix)).toBe(6);
   });
 
-  it("picks the least-used slot once all 8 are taken", () => {
-    expect(nextColorSlot([1, 1, 2, 2, 3, 4, 5, 6, 7, 8])).toBe(3);
+  it("picks the least-used slot once every slot is taken", () => {
+    // Built from SLOT_COUNT rather than a hand-written 1..8 list, which
+    // silently stopped exercising "every slot is taken" when the palette
+    // widened -- slots 9-16 were simply unused, so the assertion measured
+    // the first-unused branch again instead of the least-used one.
+    const all = Array.from({ length: SLOT_COUNT }, (_, i) => i + 1);
+    expect(nextColorSlot([...all, 1, 2])).toBe(3);
   });
 
   it("returns 1 for an empty set", () => {
@@ -31,15 +44,16 @@ describe("nextColorSlot", () => {
   });
 
   it("ignores out-of-range and non-integer values rather than crashing", () => {
-    // 0, 9, -1 and 1.5 are all invalid `color_slot` values (the column's own
-    // CHECK constraint is `between 1 and 8`) and are silently excluded from
+    // 0, OUT_OF_RANGE, -1 and 1.5 are all invalid `color_slot` values (the
+    // column's own CHECK constraint is `between 1 and 16`, widened from 8 by
+    // supabase/migrations/0017_palette_16.sql) and are silently excluded from
     // the count; only the two valid `1`s are counted, so slot 2 (count 0)
     // wins over slot 1 (count 2).
-    expect(nextColorSlot([0, 9, -1, 1.5, 1, 1])).toBe(2);
+    expect(nextColorSlot([0, OUT_OF_RANGE, -1, 1.5, 1, 1])).toBe(2);
   });
 
   it("still returns a value in range when `used` is entirely out-of-range", () => {
-    expect(nextColorSlot([0, 9, 100, -5])).toBe(1);
+    expect(nextColorSlot([0, OUT_OF_RANGE, 100, -5])).toBe(1);
   });
 });
 

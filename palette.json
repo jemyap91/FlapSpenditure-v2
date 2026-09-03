@@ -7,7 +7,16 @@
     { "name": "wine",  "light": "#c7436d", "dark": "#d55078" },
     { "name": "ochre", "light": "#a48610", "dark": "#7e660a" },
     { "name": "plum",  "light": "#b84999", "dark": "#c656a6" },
-    { "name": "sage",  "light": "#1a8210", "dark": "#2b8f22" }
+    { "name": "sage",  "light": "#1a8210", "dark": "#2b8f22" },
+
+    { "name": "orchid", "light": "#7e2b95", "dark": "#ba67d3" },
+    { "name": "jade",   "light": "#129a72", "dark": "#0a7556" },
+    { "name": "violet", "light": "#6936a9", "dark": "#a171e8" },
+    { "name": "teal",   "light": "#108e7d", "dark": "#15a692" },
+    { "name": "iris",   "light": "#5140b4", "dark": "#6456cb" },
+    { "name": "lagoon", "light": "#129599", "dark": "#14a3a7" },
+    { "name": "indigo", "light": "#3549b8", "dark": "#465fcf" },
+    { "name": "azure",  "light": "#1193a9", "dark": "#14a0b8" }
   ],
   "surfaces": { "light": "#fcfcfb", "dark": "#1a1a19" },
   "chrome": {

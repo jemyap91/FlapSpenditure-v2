@@ -4,8 +4,8 @@ import { useId, useState, useTransition } from "react";
 import { Check, Plus } from "lucide-react";
 import { createCategory, archiveCategory } from "@/server/actions/categories";
 import { slotVar, SLOT_COUNT } from "@/lib/palette";
-import { CATEGORY_ICON_COMPONENTS } from "@/lib/category-icons";
-import { CATEGORY_ICONS, nextColorSlot, type CategoryIcon } from "@/lib/validation/category";
+import { CATEGORY_ICON_COMPONENTS, CATEGORY_ICON_GROUPS } from "@/lib/category-icons";
+import { nextColorSlot, type CategoryIcon } from "@/lib/validation/category";
 import type { Category } from "@/components/CategoryPicker";
 
 const FOCUS_RING =
@@ -68,7 +68,19 @@ export function CategorySection({
 
   function create() {
     const trimmed = name.trim();
-    if (!trimmed) return;
+    if (!trimmed) {
+      // Says why, rather than returning in silence. The Add button used to
+      // carry `disabled={... || !name.trim()}`, whose only cue was
+      // `disabled:opacity-60` — in the dark theme that reads as an ordinary
+      // button that does nothing when tapped, with no message anywhere,
+      // which is what "the add button doesn't work" turned out to mean.
+      // This file's own `role="alert"` was already mounted below and simply
+      // never received anything, because the early return above set no
+      // error. Matches the convention TransactionForm.tsx states directly:
+      // "a greyed-out control invites a click that can never succeed".
+      setError("Name is required");
+      return;
+    }
     setError(null);
     startCreate(async () => {
       const res = await createCategory({ name: trimmed, kind, color_slot: colorSlot, icon, wallet_id: walletId });
@@ -233,49 +245,77 @@ export function CategorySection({
           <legend className="text-xs" style={{ color: "var(--ink-2)" }}>
             Icon
           </legend>
-          <div className="mt-1 flex flex-wrap gap-2">
-            {CATEGORY_ICONS.map((iconName) => {
-              const Icon = CATEGORY_ICON_COMPONENTS[iconName];
-              const selected = icon === iconName;
-              return (
-                <label key={iconName} className="cursor-pointer">
-                  <input
-                    type="radio"
-                    name={`${kind}-icon`}
-                    value={iconName}
-                    checked={selected}
-                    onChange={() => setIcon(iconName)}
-                    className="peer sr-only"
-                    aria-label={iconName.replace(/-/g, " ")}
-                  />
-                  {/* Same mitigation shape as src/components/shell/
-                      Sidebar.tsx's active-nav-item indicator (border-left
-                      colour change plus a second cue — there font-weight,
-                      here the icon's own stroke colour), not the
-                      background-alone approach that failed elsewhere on
-                      this branch. var(--cat-1) measures 5.60:1 (light) /
-                      5.20:1 (dark) against var(--surface); var(--ink-2)
-                      (unselected) measures 7.73:1 / 9.72:1. */}
-                  <span
-                    aria-hidden
-                    className={`flex h-7 w-7 items-center justify-center rounded-md ${SWATCH_FOCUS_RING}`}
-                    style={{
-                      borderLeft: `3px solid ${selected ? "var(--cat-1)" : "transparent"}`,
-                      background: selected ? "var(--grid)" : "transparent",
-                      color: selected ? "var(--cat-1)" : "var(--ink-2)",
-                    }}
-                  >
-                    <Icon size={16} aria-hidden />
-                  </span>
-                </label>
-              );
-            })}
+          {/* Grouped and scroll-bounded rather than one flat wrap row. At 17
+              icons a single row was fine; at 132 it is a wall of glyphs
+              several screens tall on a phone, which pushes the Add button
+              out of reach — the control the user came here to press. The
+              groups are a partition of CATEGORY_ICONS, proven at import
+              time in src/lib/category-icons.ts, so nothing the schema
+              accepts can be missing from this list.
+
+              One radio group across all sections (every input shares
+              `${kind}-icon`), so arrow keys still traverse the whole set
+              and only one icon can be chosen — the headings are visual
+              grouping, not separate controls. */}
+          <div
+            className="mt-1 max-h-56 overflow-y-auto rounded-md border p-2"
+            style={{ borderColor: "var(--grid)" }}
+          >
+            {CATEGORY_ICON_GROUPS.map((group) => (
+              <div key={group.label} className="mb-3 last:mb-0">
+                <p
+                  className="mb-1 text-[11px] font-medium uppercase tracking-wide"
+                  style={{ color: "var(--muted)" }}
+                >
+                  {group.label}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {group.icons.map((iconName) => {
+                    const Icon = CATEGORY_ICON_COMPONENTS[iconName];
+                    const selected = icon === iconName;
+                    return (
+                      <label key={iconName} className="cursor-pointer">
+                        <input
+                          type="radio"
+                          name={`${kind}-icon`}
+                          value={iconName}
+                          checked={selected}
+                          onChange={() => setIcon(iconName)}
+                          className="peer sr-only"
+                          aria-label={iconName.replace(/-/g, " ")}
+                        />
+                        {/* Same mitigation shape as src/components/shell/
+                            Sidebar.tsx's active-nav-item indicator
+                            (border-left colour change plus a second cue —
+                            there font-weight, here the icon's own stroke
+                            colour), not the background-alone approach that
+                            failed elsewhere on this branch. var(--cat-1)
+                            measures 5.60:1 (light) / 5.20:1 (dark) against
+                            var(--surface); var(--ink-2) (unselected)
+                            measures 7.73:1 / 9.72:1. */}
+                        <span
+                          aria-hidden
+                          className={`flex h-7 w-7 items-center justify-center rounded-md ${SWATCH_FOCUS_RING}`}
+                          style={{
+                            borderLeft: `3px solid ${selected ? "var(--cat-1)" : "transparent"}`,
+                            background: selected ? "var(--grid)" : "transparent",
+                            color: selected ? "var(--cat-1)" : "var(--ink-2)",
+                          }}
+                        >
+                          <Icon size={16} aria-hidden />
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
         </fieldset>
 
         <button
           type="submit"
-          disabled={creating || !name.trim()}
+          disabled={creating}
           className={`flex w-fit items-center gap-1 rounded-md px-3 py-2 text-sm font-medium disabled:opacity-60 ${FOCUS_RING}`}
           style={{ background: "var(--cat-1)", color: "var(--surface)" }}
         >
