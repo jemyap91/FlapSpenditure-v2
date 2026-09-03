@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
-import { Landmark, CreditCard, Settings, User, ChevronUp, ChevronDown } from "lucide-react";
+import { Landmark, CreditCard, Settings, User, GripVertical } from "lucide-react";
 import type { WalletSort } from "@/lib/validation/wallet-group";
 import {
   createWalletGroup,
@@ -150,6 +150,18 @@ export function WalletList({
    *  phone. The list re-renders from the server's answer when it arrives. */
   const [orderOverride, setOrderOverride] = useState<Record<string, string[]>>({});
 
+  /** The row elements, so a drag can ask where each one currently sits.
+   *  A ref rather than state: measuring during a pointermove must not
+   *  schedule a render of its own. */
+  const rowEls = useRef(new Map<string, HTMLLIElement>());
+  /** The drag in flight: which section, and which position the dragged
+   *  wallet currently occupies (it moves as you cross other rows, so this
+   *  is not the index the drag started at). */
+  const drag = useRef<{ key: string; index: number; pointerId: number } | null>(null);
+  /** Mirrors `drag` for rendering only. A ref cannot re-render, and the
+   *  dragged row needs to look picked up. */
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+
   // Flattened once for the guards that reason about the whole list — the
   // last-wallet check, whether a search box is worth showing, and the empty
   // state. Those questions are about the set of wallets, not its
@@ -247,13 +259,11 @@ export function WalletList({
    * wallet across the user's whole list, so renumbering only a pair would
    * leave it inconsistent with every wallet the move stepped over.
    */
-  function move(sec: WalletSection, index: number, delta: -1 | 1) {
-    const current = orderedWallets(sec);
-    const target = index + delta;
-    if (target < 0 || target >= current.length) return;
-    const next = [...current];
-    [next[index], next[target]] = [next[target]!, next[index]!];
-
+  /** Applies a new within-section order optimistically and persists it.
+   *  Shared by the keyboard path and the drag path so the two cannot drift:
+   *  a drag that saved differently from an arrow press would be a bug nobody
+   *  would find until their order silently reverted. */
+  function commitOrder(sec: WalletSection, next: WalletWithBalance[]) {
     const key = sectionKey(sec);
     setOrderOverride((prev) => ({ ...prev, [key]: next.map((w) => w.id) }));
 
@@ -272,6 +282,95 @@ export function WalletList({
         });
       }
     });
+  }
+
+  /** One step up or down — the keyboard half of the handle. */
+  function move(sec: WalletSection, index: number, delta: -1 | 1) {
+    const current = orderedWallets(sec);
+    const target = index + delta;
+    if (target < 0 || target >= current.length) return;
+    const next = [...current];
+    [next[index], next[target]] = [next[target]!, next[index]!];
+    commitOrder(sec, next);
+  }
+
+  /**
+   * Pointer-drag reordering, from the handle only.
+   *
+   * Pointer Events rather than HTML5 drag-and-drop: `draggable` + `dragover`
+   * does not fire on touch at all, so it would have shipped a reorder that
+   * works on a desktop and silently does nothing on the phone this app is
+   * mostly used on. One pointer code path covers mouse, touch and stylus.
+   *
+   * Bound to a HANDLE, never the whole row, because the row already carries
+   * swipe-left-to-archive on touch. A full-row drag would race that gesture,
+   * and the failure mode is "I tried to reorder and archived my wallet".
+   * `touch-action: none` on the handle stops the browser claiming the
+   * gesture as a scroll before the first pointermove arrives.
+   *
+   * Rows swap live as the pointer crosses their midpoints, so the list you
+   * see while dragging is the list you get. Nothing is persisted until
+   * pointerup: a drag across five rows is one write, not five.
+   */
+  function onHandlePointerDown(sec: WalletSection, index: number, walletId: string) {
+    return (e: React.PointerEvent<HTMLButtonElement>) => {
+      // Primary button / single touch only. A right-click drag or a second
+      // finger mid-drag would otherwise start a second, competing move.
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+      drag.current = { key: sectionKey(sec), index, pointerId: e.pointerId };
+      setDraggingId(walletId);
+    };
+  }
+
+  function onHandlePointerMove(sec: WalletSection) {
+    return (e: React.PointerEvent<HTMLButtonElement>) => {
+      const d = drag.current;
+      if (!d || d.pointerId !== e.pointerId || d.key !== sectionKey(sec)) return;
+
+      const current = orderedWallets(sec);
+      const y = e.clientY;
+
+      // Which row is the pointer over now? Measured every move rather than
+      // cached: the rows physically move as they swap, so a cached geometry
+      // would be describing a layout that no longer exists after the first
+      // swap.
+      let target = d.index;
+      for (let i = 0; i < current.length; i++) {
+        const el = rowEls.current.get(current[i]!.id);
+        if (!el) continue;
+        const r = el.getBoundingClientRect();
+        // jsdom reports every rect as zero, so this loop finds nothing and
+        // the drag is inert there — which is why the keyboard path below is
+        // what the tests actually exercise.
+        if (r.height === 0) continue;
+        if (y >= r.top && y <= r.bottom) {
+          target = i;
+          break;
+        }
+      }
+      if (target === d.index) return;
+
+      const next = [...current];
+      const [moved] = next.splice(d.index, 1);
+      next.splice(target, 0, moved!);
+      d.index = target;
+      // Local only. Persisting here would issue a write per row crossed.
+      setOrderOverride((prev) => ({ ...prev, [d.key]: next.map((w) => w.id) }));
+    };
+  }
+
+  function onHandlePointerUp(sec: WalletSection) {
+    return (e: React.PointerEvent<HTMLButtonElement>) => {
+      const d = drag.current;
+      drag.current = null;
+      setDraggingId(null);
+      if (!d || d.pointerId !== e.pointerId) return;
+      // `orderedWallets` already reflects every swap the drag made, so this
+      // persists exactly what the user is looking at.
+      commitOrder(sec, orderedWallets(sec));
+    };
   }
 
   /** Which group a wallet is currently filed under, read back out of the
@@ -453,6 +552,12 @@ export function WalletList({
           return (
             <li
               key={w.id}
+              ref={(el) => {
+                // Kept in a Map rather than an array so a row's geometry is
+                // still findable after a swap has reordered the list.
+                if (el) rowEls.current.set(w.id, el);
+                else rowEls.current.delete(w.id);
+              }}
               aria-label={w.name}
               /* Swipe-left to archive, touch only. A mouse drag is
                  deliberately not wired: it fights text selection and
@@ -479,7 +584,15 @@ export function WalletList({
                 requestArchive(w);
               }}
               className="mb-2 flex items-center gap-2 rounded-lg border px-3 py-2 transition-opacity"
-              style={{ borderColor: "var(--grid)", opacity: archiving ? 0.5 : 1 }}
+              style={{
+                borderColor: "var(--grid)",
+                opacity: archiving ? 0.5 : 1,
+                // The row being dragged is lifted off the list. Without a
+                // visible "picked up" state the rows shuffling underneath
+                // read as the list glitching rather than as a drag.
+                boxShadow: draggingId === w.id ? "0 2px 8px rgb(0 0 0 / 0.25)" : undefined,
+                background: draggingId === w.id ? "var(--grid)" : undefined,
+              }}
               aria-busy={archiving || undefined}
             >
               {/* Colour is never the only cue (spec §6.1/§6.3): the slot
@@ -543,30 +656,44 @@ export function WalletList({
                   ignored or silently switch the whole list back to manual —
                   both worse than not offering the control. Hidden rather
                   than disabled, following this codebase's rule about
-                  controls that cannot succeed. */}
+                  controls that cannot succeed.
+
+                  ONE control, working two ways. Dragging alone would fail
+                  WCAG 2.2 §2.5.7 (Dragging Movements), which requires a
+                  single-pointer alternative to every drag — and would leave
+                  keyboard and screen-reader users with no way to reorder at
+                  all. A keyboard-operable handle satisfies that without the
+                  pair of arrow buttons this replaced, which is what made the
+                  row cluttered.
+
+                  `aria-label` carries the position because a screen reader
+                  otherwise announces an identical "Reorder" on every row
+                  with nothing to say where it is or whether it moved. */}
               {sort === "manual" && !q && rows.length > 1 && (
-                <>
-                  <button
-                    type="button"
-                    aria-label={`Move ${w.name} up`}
-                    disabled={arranging || rowIndex === 0}
-                    onClick={() => move(section, rowIndex, -1)}
-                    className={`grid h-11 w-8 shrink-0 place-items-center rounded-md disabled:opacity-30 ${FOCUS_RING}`}
-                    style={{ color: "var(--ink-2)" }}
-                  >
-                    <ChevronUp size={16} aria-hidden />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Move ${w.name} down`}
-                    disabled={arranging || rowIndex === rows.length - 1}
-                    onClick={() => move(section, rowIndex, 1)}
-                    className={`grid h-11 w-8 shrink-0 place-items-center rounded-md disabled:opacity-30 ${FOCUS_RING}`}
-                    style={{ color: "var(--ink-2)" }}
-                  >
-                    <ChevronDown size={16} aria-hidden />
-                  </button>
-                </>
+                <button
+                  type="button"
+                  aria-label={`Reorder ${w.name}, ${rowIndex + 1} of ${rows.length}. Use arrow keys to move, or drag.`}
+                  disabled={arranging}
+                  onPointerDown={onHandlePointerDown(section, rowIndex, w.id)}
+                  onPointerMove={onHandlePointerMove(section)}
+                  onPointerUp={onHandlePointerUp(section)}
+                  onPointerCancel={onHandlePointerUp(section)}
+                  onKeyDown={(e) => {
+                    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+                    // Or the page scrolls under the row being moved.
+                    e.preventDefault();
+                    move(section, rowIndex, e.key === "ArrowUp" ? -1 : 1);
+                  }}
+                  className={`grid h-11 w-8 shrink-0 cursor-grab place-items-center rounded-md disabled:opacity-30 ${FOCUS_RING}`}
+                  style={{
+                    color: "var(--ink-2)",
+                    // Stops the browser treating the first finger movement
+                    // as a scroll, which would swallow the drag entirely.
+                    touchAction: "none",
+                  }}
+                >
+                  <GripVertical size={16} aria-hidden />
+                </button>
               )}
 
               {editActions?.[w.id] && (

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { WalletList } from "./WalletList";
@@ -619,11 +619,27 @@ describe("WalletList — grouping and ordering", () => {
     expect(screen.queryByRole("heading", { level: 3 })).toBeNull();
   });
 
-  it("sends the whole list, reordered, when a wallet moves down", async () => {
+  const handle = (name: string) =>
+    screen.getByRole("button", { name: new RegExp(`^Reorder ${name},`) });
+
+  it("says where the row sits, so a screen reader knows what moved", () => {
+    render(<WalletList currentUserId={ME} {...grouped} />);
+    // Without the position every handle announces an identical "Reorder"
+    // and a move is inaudible — the list changes and nothing says so.
+    expect(handle("Savings")).toHaveAccessibleName(
+      "Reorder Savings, 1 of 2. Use arrow keys to move, or drag.",
+    );
+    expect(handle("Holiday")).toHaveAccessibleName(
+      "Reorder Holiday, 2 of 2. Use arrow keys to move, or drag.",
+    );
+  });
+
+  it("sends the whole list, reordered, when a wallet moves down by keyboard", async () => {
     const user = userEvent.setup();
     render(<WalletList currentUserId={ME} {...grouped} />);
 
-    await user.click(screen.getByRole("button", { name: "Move Savings down" }));
+    handle("Savings").focus();
+    await user.keyboard("{ArrowDown}");
 
     // Every wallet, in display order across all sections — not just the two
     // that swapped. sort_order is one integer per wallet across the whole
@@ -636,35 +652,154 @@ describe("WalletList — grouping and ordering", () => {
     const user = userEvent.setup();
     render(<WalletList currentUserId={ME} {...grouped} />);
 
-    await user.click(screen.getByRole("button", { name: "Move Holiday up" }));
+    handle("Holiday").focus();
+    await user.keyboard("{ArrowUp}");
 
     expect(setWalletOrder).toHaveBeenCalledWith({ wallet_ids: ["c", "b", "a"] });
   });
 
-  it("cannot move the first row up or the last row down", () => {
+  it("does nothing at either end of a section", async () => {
+    const user = userEvent.setup();
     render(<WalletList currentUserId={ME} {...grouped} />);
-    expect(screen.getByRole("button", { name: "Move Savings up" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Move Holiday down" })).toBeDisabled();
+
+    handle("Savings").focus();
+    await user.keyboard("{ArrowUp}");
+    handle("Holiday").focus();
+    await user.keyboard("{ArrowDown}");
+
+    expect(setWalletOrder).not.toHaveBeenCalled();
+  });
+
+  it("shows the new order immediately, before the server answers", async () => {
+    const user = userEvent.setup();
+    // Never resolves: proves the row moved optimistically rather than only
+    // after a round trip, which on a phone would read as a dead control.
+    vi.mocked(setWalletOrder).mockReturnValue(new Promise(() => {}));
+    render(<WalletList currentUserId={ME} {...grouped} />);
+
+    handle("Savings").focus();
+    await user.keyboard("{ArrowDown}");
+
+    const names = screen.getAllByRole("listitem").map((li) => li.getAttribute("aria-label"));
+    expect(names).toEqual(["Holiday", "Savings", "Everyday"]);
+  });
+
+  /**
+   * The pointer half of the same handle.
+   *
+   * jsdom performs no layout, so every getBoundingClientRect is a zero rect
+   * and the drag would find no row under the pointer. Stubbing the rects
+   * from live DOM order is what makes this testable at all — and it has to
+   * be read fresh on every call, because the rows physically swap mid-drag.
+   */
+  describe("dragging the handle", () => {
+    const ROW_H = 50;
+
+    beforeEach(() => {
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+        this: HTMLElement,
+      ) {
+        if (this.tagName !== "LI") return new DOMRect();
+        const i = Array.from(this.parentElement?.children ?? []).indexOf(this);
+        return {
+          top: i * ROW_H,
+          bottom: (i + 1) * ROW_H,
+          height: ROW_H,
+          left: 0,
+          right: 100,
+          width: 100,
+          x: 0,
+          y: i * ROW_H,
+          toJSON: () => ({}),
+        } as DOMRect;
+      });
+    });
+
+    afterEach(() => {
+      vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockRestore?.();
+    });
+
+    it("reorders when a row is dragged past another", () => {
+      render(<WalletList currentUserId={ME} {...grouped} />);
+      const grip = handle("Savings");
+
+      fireEvent.pointerDown(grip, { pointerId: 1, button: 0, clientY: 25 });
+      fireEvent.pointerMove(grip, { pointerId: 1, clientY: 75 });
+      fireEvent.pointerUp(grip, { pointerId: 1, clientY: 75 });
+
+      expect(setWalletOrder).toHaveBeenCalledWith({ wallet_ids: ["c", "b", "a"] });
+    });
+
+    it("writes once for a whole drag, not once per row crossed", () => {
+      render(<WalletList currentUserId={ME} {...grouped} />);
+      const grip = handle("Savings");
+
+      fireEvent.pointerDown(grip, { pointerId: 1, button: 0, clientY: 25 });
+      // Three moves, two of which cross a boundary.
+      fireEvent.pointerMove(grip, { pointerId: 1, clientY: 60 });
+      fireEvent.pointerMove(grip, { pointerId: 1, clientY: 75 });
+      fireEvent.pointerMove(grip, { pointerId: 1, clientY: 90 });
+      expect(setWalletOrder).not.toHaveBeenCalled();
+
+      fireEvent.pointerUp(grip, { pointerId: 1, clientY: 90 });
+      expect(setWalletOrder).toHaveBeenCalledTimes(1);
+    });
+
+    it("shows the rows swapping while the pointer is still down", () => {
+      render(<WalletList currentUserId={ME} {...grouped} />);
+      const grip = handle("Savings");
+
+      fireEvent.pointerDown(grip, { pointerId: 1, button: 0, clientY: 25 });
+      fireEvent.pointerMove(grip, { pointerId: 1, clientY: 75 });
+
+      // The list you see mid-drag is the list you get on release.
+      expect(screen.getAllByRole("listitem").map((li) => li.getAttribute("aria-label"))).toEqual([
+        "Holiday",
+        "Savings",
+        "Everyday",
+      ]);
+    });
+
+    it("ignores a non-primary button, so a right-click drag starts nothing", () => {
+      render(<WalletList currentUserId={ME} {...grouped} />);
+      const grip = handle("Savings");
+
+      fireEvent.pointerDown(grip, { pointerId: 1, button: 2, clientY: 25 });
+      fireEvent.pointerMove(grip, { pointerId: 1, clientY: 75 });
+      fireEvent.pointerUp(grip, { pointerId: 1, clientY: 75 });
+
+      expect(setWalletOrder).not.toHaveBeenCalled();
+    });
+
+    it("does not reorder across sections", () => {
+      // Everyday is in the ungrouped section; a pointer dragged over it from
+      // the grouped one must not pull it in. sort_order is per user, but a
+      // wallet's SECTION is its group, and a drag cannot change that — the
+      // Group control in the edit dialog does.
+      render(<WalletList currentUserId={ME} {...grouped} />);
+      const grip = handle("Savings");
+
+      fireEvent.pointerDown(grip, { pointerId: 1, button: 0, clientY: 25 });
+      fireEvent.pointerMove(grip, { pointerId: 1, clientY: 500 });
+      fireEvent.pointerUp(grip, { pointerId: 1, clientY: 500 });
+
+      const ids = vi.mocked(setWalletOrder).mock.calls[0]?.[0] as
+        | { wallet_ids: string[] }
+        | undefined;
+      // Either no move at all, or a move that kept Everyday last.
+      expect(ids?.wallet_ids.at(-1) ?? "a").toBe("a");
+    });
   });
 
   it("offers no reordering when the list is sorted by name", () => {
     // The position is derived under name/date ordering, so a move would
     // either be ignored or silently switch the list back to manual.
     render(<WalletList currentUserId={ME} {...grouped} sort="name" />);
-    expect(screen.queryByRole("button", { name: /^Move / })).toBeNull();
-  });
-
-  it("shows the new order immediately, before the server answers", async () => {
-    const user = userEvent.setup();
-    // Never resolves: proves the row moved optimistically rather than only
-    // after a round trip, which on a phone would read as a dead button.
-    vi.mocked(setWalletOrder).mockReturnValue(new Promise(() => {}));
-    render(<WalletList currentUserId={ME} {...grouped} />);
-
-    await user.click(screen.getByRole("button", { name: "Move Savings down" }));
-
-    const names = screen.getAllByRole("listitem").map((li) => li.getAttribute("aria-label"));
-    expect(names).toEqual(["Holiday", "Savings", "Everyday"]);
+    // Queried by the label the handle actually has. The earlier version of
+    // this test looked for /^Move /, which stopped matching anything the
+    // moment the two arrow buttons became one drag handle — it would have
+    // passed against a screen full of handles.
+    expect(screen.queryByRole("button", { name: /^Reorder / })).toBeNull();
   });
 
   it("records the chosen ordering", async () => {
