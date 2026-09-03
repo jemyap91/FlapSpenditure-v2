@@ -865,3 +865,67 @@ describe("WalletList — grouping and ordering", () => {
     expect(deleteWalletGroup).toHaveBeenCalledWith("g1");
   });
 });
+
+describe("WalletList — the trailing control column", () => {
+  const a = wallet("a", { name: "Everyday" });
+  const b = wallet("b", { name: "Savings" });
+
+  /** The container the row's trailing controls share. */
+  const cluster = (name: string) =>
+    screen.getByRole("button", { name: `Edit ${name}` }).parentElement!;
+
+  it("keeps every trailing control in one column, not spread along the row", () => {
+    render(
+      <WalletList
+        currentUserId={ME}
+        {...listProps([a])}
+        editActions={{ a: noopAction }}
+        memberSections={{ a: <div key="a" /> }}
+      />,
+    );
+    // One parent for all of them. Loose in the row they each took a gap-2
+    // (8px) separator from the name, which is what squeezed it on a phone.
+    expect(screen.getByRole("button", { name: "Members of Everyday" }).parentElement).toBe(
+      cluster("Everyday"),
+    );
+  });
+
+  it("reserves the slot when one wallet lacks a control its neighbours have", () => {
+    // Savings has no members section. Without a reserved slot its name would
+    // start 36px further right than Everyday's, and a column of truncated
+    // names that all break at different points is much harder to scan than
+    // one that breaks in the same place.
+    render(
+      <WalletList
+        currentUserId={ME}
+        {...listProps([a, b])}
+        editActions={{ a: noopAction, b: noopAction }}
+        memberSections={{ a: <div key="a" /> }}
+      />,
+    );
+    expect(cluster("Savings").children).toHaveLength(cluster("Everyday").children.length);
+  });
+
+  it("reserves nothing when the page offers no members at all", () => {
+    // A reserved slot on every row of a list that has no members control
+    // would waste the width this change exists to reclaim.
+    render(<WalletList currentUserId={ME} {...listProps([a])} editActions={{ a: noopAction }} />);
+    expect(cluster("Everyday").children).toHaveLength(1);
+  });
+
+  it("keeps the name truncating rather than pushing the controls off-screen", () => {
+    render(
+      <WalletList
+        currentUserId={ME}
+        {...listProps([wallet("a", { name: "A very long wallet name indeed" })])}
+        editActions={{ a: noopAction }}
+      />,
+    );
+    // `truncate` on the link and `min-w-0` on its column are what make the
+    // name yield; a flex child defaults to min-width:auto and would instead
+    // shove the controls out of the row.
+    const link = screen.getByRole("link", { name: "A very long wallet name indeed" });
+    expect(link.className).toContain("truncate");
+    expect(link.closest("span")?.className).toContain("min-w-0");
+  });
+});

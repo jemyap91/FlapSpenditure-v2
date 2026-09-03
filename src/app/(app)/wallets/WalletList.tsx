@@ -27,6 +27,31 @@ import type {
  *  than a tap that wandered. */
 const SWIPE_MIN_PX = 60;
 
+/**
+ * The row's trailing controls sit in one fixed-width column so the wallet
+ * NAME gets every remaining pixel, and gets the same number of them on every
+ * row.
+ *
+ * Two separate problems, and the second is the one that made names hard to
+ * read on a phone. The cluster was wide — three targets 8px apart — and it
+ * was VARIABLE: the drag handle renders only under "My order", so a name
+ * could start at one x on one screen and another elsewhere, and each row
+ * truncated at a different point.
+ *
+ * 44px tall is kept; only the width narrows. A 36×44 target satisfies WCAG
+ * 2.2 §2.5.8 (Target Size Minimum) with room to spare — that criterion asks
+ * for 24×24, not 44×44. 44 is §2.5.5 (AAA) and the Apple/Material figure,
+ * which the height still meets in the axis a thumb travelling down a list
+ * actually needs. The row itself is the large target for tapping the wallet;
+ * these are the precise ones beside it.
+ *
+ * (An earlier comment here claimed 44px was "the size WCAG 2.5.8 asks for".
+ * That was wrong about which criterion — 2.5.8 is 24×24 — and is corrected
+ * rather than repeated.)
+ */
+const ROW_CONTROL = "h-11 w-9";
+const ROW_GRIP = "h-11 w-7";
+
 const FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
 
@@ -651,6 +676,7 @@ export function WalletList({
                   h-11 w-11 is a 44px target — the size WCAG 2.5.8 and both
                   platform guidelines ask for, and a real improvement on the
                   ~16px text links these replace. */}
+              <div className="flex shrink-0 items-center gap-0.5">
               {/* Reordering is offered only under "My order". Under name or
                   date the position is derived, so a move would either be
                   ignored or silently switch the whole list back to manual —
@@ -684,7 +710,7 @@ export function WalletList({
                     e.preventDefault();
                     move(section, rowIndex, e.key === "ArrowUp" ? -1 : 1);
                   }}
-                  className={`grid h-11 w-8 shrink-0 cursor-grab place-items-center rounded-md disabled:opacity-30 ${FOCUS_RING}`}
+                  className={`grid ${ROW_GRIP} shrink-0 cursor-grab place-items-center rounded-md disabled:opacity-30 ${FOCUS_RING}`}
                   style={{
                     color: "var(--ink-2)",
                     // Stops the browser treating the first finger movement
@@ -696,30 +722,42 @@ export function WalletList({
                 </button>
               )}
 
+              {/* A reserved slot when this row has no edit action but others
+                  do. Without it one wallet missing a control shifts its
+                  neighbours' names sideways, and a list of truncated names
+                  that all break at different points is markedly harder to
+                  scan than one that breaks at the same place. Nothing is
+                  reserved when the page passes no editActions at all. */}
+              {editActions && !editActions[w.id] && (
+                <span aria-hidden className={`block ${ROW_CONTROL}`} />
+              )}
               {editActions?.[w.id] && (
                 <button
                   type="button"
                   aria-label={`Edit ${w.name}`}
                   onClick={() => setDialog({ walletId: w.id, view: "edit" })}
-                  className={`grid h-11 w-11 shrink-0 place-items-center rounded-md ${FOCUS_RING}`}
+                  className={`grid ${ROW_CONTROL} shrink-0 place-items-center rounded-md ${FOCUS_RING}`}
                   style={{ color: "var(--ink-2)" }}
                 >
                   <Settings size={18} aria-hidden />
                 </button>
               )}
 
+              {memberSections && !memberSections[w.id] && (
+                <span aria-hidden className={`block ${ROW_CONTROL}`} />
+              )}
               {memberSections?.[w.id] && (
                 <button
                   type="button"
                   aria-label={`Members of ${w.name}`}
                   onClick={() => setDialog({ walletId: w.id, view: "members" })}
-                  className={`grid h-11 w-11 shrink-0 place-items-center rounded-md ${FOCUS_RING}`}
+                  className={`grid ${ROW_CONTROL} shrink-0 place-items-center rounded-md ${FOCUS_RING}`}
                   style={{ color: "var(--ink-2)" }}
                 >
                   <User size={18} aria-hidden />
                 </button>
               )}
-
+              </div>
             </li>
           );
         })}
