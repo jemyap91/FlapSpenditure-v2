@@ -392,6 +392,25 @@ export function TransactionForm(
     setError(null);
   }
 
+  /**
+   * Re-filing an existing transaction into another wallet.
+   *
+   * Separate from `handleWalletChange` (the create path) because the two
+   * clear different things: creating switches currency and resets the
+   * amount, while an edit's candidate wallets are all the SAME currency by
+   * construction, so the amount is still meaningful and must survive.
+   *
+   * The category cannot. Categories belong to a wallet (0008), and
+   * `transactions_category_same_wallet` refuses a category from anywhere
+   * else — so carrying the old one across would produce a foreign-key
+   * violation at Save, reported as an unhelpful "Could not save". Clearing
+   * it makes the form state honest about what the user now has to re-pick.
+   */
+  function handleEditWalletChange(nextWalletId: string) {
+    setWalletId(nextWalletId);
+    setCategory(null);
+  }
+
   function handleWalletChange(next: string) {
     const nextWallet = wallets.find((w) => w.id === next);
     setWalletId(next);
@@ -505,6 +524,12 @@ export function TransactionForm(
               })
             : await updateTransaction({
                 id: edit.id,
+                // Sent only when it actually changed. The schema treats an
+                // absent `wallet_id` as "leave it where it is", so a note
+                // edit does not name a wallet it is not touching — and the
+                // action keeps the column out of the UPDATE statement
+                // entirely in that case.
+                ...(walletId !== edit.walletId ? { wallet_id: walletId } : {}),
                 amount,
                 // `category` seeds from `edit.categoryId`, and CategoryPicker
                 // can CHANGE it — it cannot clear it (`onChange` is
@@ -735,21 +760,49 @@ export function TransactionForm(
           </span>
         )}
         {edit ? (
-          // Wallet(s) are fixed for the life of a row — stated as text, not
-          // a `<select>` a click could never actually change (component doc
-          // comment above). No `<label>`: there is no control to label.
-          <p className="text-sm" style={{ color: "var(--ink-2)" }}>
-            {edit.kind === "transfer" ? (
-              <>
-                From <span style={{ color: "var(--ink)" }}>{wallet.name}</span> to{" "}
-                <span style={{ color: "var(--ink)" }}>{toWallet?.name}</span>
-              </>
-            ) : (
-              <>
-                Wallet: <span style={{ color: "var(--ink)" }}>{wallet.name}</span>
-              </>
-            )}
-          </p>
+          // A TRANSFER's wallets are still fixed, and still stated as text
+          // rather than a `<select>` a click could never change: the two
+          // legs ARE the transfer, and moving one would leave a pair
+          // claiming money left a wallet it never touched. No constraint
+          // expresses that, so this and `updateTransaction`'s outright
+          // refusal of a transfer are the whole of the enforcement.
+          //
+          // A non-transfer CAN be re-filed since 0020_transaction_wallet_move
+          // .sql — but only among the wallets the page offers, which it
+          // narrows to the same currency, unarchived, and (for a recorded
+          // recurring occurrence) to the current wallet alone. When that
+          // leaves one option there is nothing to choose, so it stays text.
+          edit.kind === "transfer" || wallets.length < 2 ? (
+            <p className="text-sm" style={{ color: "var(--ink-2)" }}>
+              {edit.kind === "transfer" ? (
+                <>
+                  From <span style={{ color: "var(--ink)" }}>{wallet.name}</span> to{" "}
+                  <span style={{ color: "var(--ink)" }}>{toWallet?.name}</span>
+                </>
+              ) : (
+                <>
+                  Wallet: <span style={{ color: "var(--ink)" }}>{wallet.name}</span>
+                </>
+              )}
+            </p>
+          ) : (
+            <label className="flex items-center gap-1 text-sm" style={{ color: "var(--ink-2)" }}>
+              <span style={{ color: "var(--ink-2)" }}>Wallet</span>
+              <select
+                value={walletId}
+                onChange={(e) => handleEditWalletChange(e.target.value)}
+                aria-describedby={errorId}
+                className={CHIP_BORDER}
+                style={{ borderColor: "var(--ink-2)", color: "var(--ink)" }}
+              >
+                {wallets.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )
         ) : (
           <>
             <label className="flex items-center gap-1 text-sm" style={{ color: "var(--ink-2)" }}>

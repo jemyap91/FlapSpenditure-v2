@@ -157,10 +157,29 @@ describe("transactionEditInput", () => {
     );
   });
 
-  it("carries no wallet_id or kind — neither is editable", () => {
-    const parsed = transactionEditInput.parse({ ...baseEdit, wallet_id: "x", kind: "income" } as never);
-    expect(parsed).not.toHaveProperty("wallet_id");
+  it("carries no kind — a transaction's kind is never editable", () => {
+    // Unchanged in intent from the original version of this test, which also
+    // asserted wallet_id was stripped. It no longer is: 0020 makes a
+    // transaction re-fileable into another wallet (see that migration for
+    // why the escalation §1.4 cited does not apply to this table). `kind`
+    // stays out, and stays revoked at the database by 0017.
+    const parsed = transactionEditInput.parse({ ...baseEdit, kind: "income" } as never);
     expect(parsed).not.toHaveProperty("kind");
+  });
+
+  it("accepts a wallet_id, and treats its absence as leaving the wallet alone", () => {
+    const moved = transactionEditInput.parse({
+      ...baseEdit,
+      wallet_id: "33333333-3333-4333-8333-333333333333",
+    });
+    expect(moved.wallet_id).toBe("33333333-3333-4333-8333-333333333333");
+    // Absent, not null: `undefined` is what updateTransaction reads as "keep
+    // the current wallet", and a null would be a uuid parse failure instead.
+    expect(transactionEditInput.parse(baseEdit).wallet_id).toBeUndefined();
+  });
+
+  it("refuses a malformed wallet_id rather than ignoring it", () => {
+    expect(transactionEditInput.safeParse({ ...baseEdit, wallet_id: "nope" }).success).toBe(false);
   });
 });
 

@@ -3982,3 +3982,134 @@ begin;
     assert n = 1, 'another user''s writes disturbed this user''s arrangement';
   end $$;
 rollback;
+
+-- =====================================================================
+-- 0020: move_transaction re-files a transaction, and refuses a move that
+--       would hide it from anyone who can currently see it.
+--
+-- The plain `update transactions set wallet_id = ...` attack is still
+-- covered by the earlier block above, which is UNCHANGED: `wallet_id` was
+-- never granted and still is not, so Bob's original attack still fails on
+-- the column privilege. This block covers the function that replaced it.
+-- =====================================================================
+begin;
+  insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+  values ('7e570000-0000-4000-8000-00000000a001', 'aaaaaaaa-0000-0000-0000-000000000001',
+          'Alice everyday', 'bank', 'USD', 1, 'wallet'),
+         ('7e570000-0000-4000-8000-00000000a002', 'aaaaaaaa-0000-0000-0000-000000000001',
+          'Alice savings',  'bank', 'USD', 2, 'wallet'),
+         ('7e570000-0000-4000-8000-00000000c003', 'aaaaaaaa-0000-0000-0000-000000000001',
+          'Alice+Bob shared', 'bank', 'USD', 3, 'wallet');
+  insert into wallet_members (wallet_id, user_id, role)
+  values ('7e570000-0000-4000-8000-00000000c003', 'bbbbbbbb-0000-0000-0000-000000000002', 'member')
+  on conflict do nothing;
+
+  -- The row under test lives in the SHARED wallet, so both members can see
+  -- it -- which is what makes a move out of it a loss for somebody.
+  insert into transactions (id, wallet_id, kind, amount_minor, currency_code, occurred_on)
+  values ('7e570000-0000-4000-8000-0000000e0001', '7e570000-0000-4000-8000-00000000c003',
+          'expense', -2500, 'USD', date '2026-05-01');
+
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
+
+  -- Refused: Alice's own private wallet has no Bob in it, so Bob would lose
+  -- sight of a transaction he can see today. This is the case the first
+  -- draft of 0020 got wrong -- it reasoned that a move is no worse than the
+  -- soft delete any member can already do, when in fact a delete is
+  -- recoverable by the other member and a move is not.
+  do $$
+  declare ok boolean := false; w uuid;
+  begin
+    begin
+      perform public.move_transaction(
+        '7e570000-0000-4000-8000-0000000e0001',
+        '7e570000-0000-4000-8000-00000000a001',
+        -2500, date '2026-05-01', null, null, null);
+    exception when others then ok := true;
+    end;
+    assert ok, 'ESCALATION: a shared transaction moved into a wallet the other member cannot see';
+
+    select wallet_id into w from transactions
+      where id = '7e570000-0000-4000-8000-0000000e0001';
+    assert w = '7e570000-0000-4000-8000-00000000c003',
+      format('the refused move still changed the wallet to %s', w);
+  end $$;
+
+  -- Allowed: a transaction in Alice's OWN wallet, moving to another of her
+  -- own. Nobody loses it, because nobody else could see it. This is the case
+  -- the feature exists for -- "I filed it in the wrong wallet".
+  insert into transactions (id, wallet_id, kind, amount_minor, currency_code, occurred_on)
+  values ('7e570000-0000-4000-8000-0000000e0002', '7e570000-0000-4000-8000-00000000a001',
+          'expense', -900, 'USD', date '2026-05-02');
+  do $$
+  declare w uuid;
+  begin
+    perform public.move_transaction(
+      '7e570000-0000-4000-8000-0000000e0002',
+      '7e570000-0000-4000-8000-00000000a002',
+      -900, date '2026-05-02', null, 'moved', null);
+    select wallet_id into w from transactions
+      where id = '7e570000-0000-4000-8000-0000000e0002';
+    assert w = '7e570000-0000-4000-8000-00000000a002',
+      'a user could not re-file their own transaction between their own wallets';
+    assert (select note from transactions where id = '7e570000-0000-4000-8000-0000000e0002')
+             = 'moved',
+      'the edit accompanying the move was not applied';
+  end $$;
+
+  -- Allowed in the other direction: private -> shared adds a viewer rather
+  -- than removing one, so the superset rule permits it.
+  do $$
+  declare w uuid;
+  begin
+    perform public.move_transaction(
+      '7e570000-0000-4000-8000-0000000e0002',
+      '7e570000-0000-4000-8000-00000000c003',
+      -900, date '2026-05-02', null, 'shared now', null);
+    select wallet_id into w from transactions
+      where id = '7e570000-0000-4000-8000-0000000e0002';
+    assert w = '7e570000-0000-4000-8000-00000000c003',
+      'a user could not move their own transaction INTO a wallet they share';
+  end $$;
+
+  -- Bob cannot move a transaction into a wallet he is not a member of, even
+  -- through the function -- `security definer` skips RLS, so this check is
+  -- made by hand inside it.
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002"}';
+  do $$
+  declare ok boolean := false;
+  begin
+    begin
+      perform public.move_transaction(
+        '7e570000-0000-4000-8000-0000000e0001',
+        '7e570000-0000-4000-8000-00000000a002',
+        -2500, date '2026-05-01', null, null, null);
+    exception when others then ok := true;
+    end;
+    assert ok, 'ESCALATION: a member moved a transaction into a wallet they do not belong to';
+  end $$;
+
+  -- The currency foreign key still fires through the function: it is not
+  -- re-implemented there, it is simply allowed to refuse.
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
+  insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+  values ('7e570000-0000-4000-8000-00000000a004', 'aaaaaaaa-0000-0000-0000-000000000001',
+          'Alice yen', 'bank', 'JPY', 4, 'wallet');
+  insert into transactions (id, wallet_id, kind, amount_minor, currency_code, occurred_on)
+  values ('7e570000-0000-4000-8000-0000000e0003', '7e570000-0000-4000-8000-00000000a001',
+          'expense', -700, 'USD', date '2026-05-03');
+  do $$
+  declare ok boolean := false;
+  begin
+    begin
+      perform public.move_transaction(
+        '7e570000-0000-4000-8000-0000000e0003',
+        '7e570000-0000-4000-8000-00000000a004',
+        -700, date '2026-05-03', null, null, null);
+    exception when foreign_key_violation then ok := true;
+    end;
+    assert ok,
+      'a USD transaction moved into a JPY wallet -- its amount would be reinterpreted 100x';
+  end $$;
+rollback;

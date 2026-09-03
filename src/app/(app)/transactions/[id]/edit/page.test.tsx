@@ -118,14 +118,28 @@ vi.mock("@/lib/supabase/server", () => ({
       if (table === "wallets") {
         let ids: string[] = [];
         let single = false;
+        // The move-candidates query (0020) filters by currency and excludes
+        // archived wallets instead of naming ids. Recorded rather than
+        // ignored: a mock that accepted `.eq("currency_code", ...)` and then
+        // returned every wallet regardless would let the page offer a JPY
+        // wallet as a destination for a USD transaction and still pass —
+        // which is the same "mock discards the arguments the test claims to
+        // check" failure this suite has already been caught by once.
+        let currency: string | undefined;
+        let activeOnly = false;
         const builder = {
           select: () => builder,
           eq: (col: string, v: string) => {
             if (col === "id") ids = [v];
+            if (col === "currency_code") currency = v;
             return builder;
           },
           in: (col: string, v: string[]) => {
             if (col === "id") ids = v;
+            return builder;
+          },
+          is: (col: string) => {
+            if (col === "archived_at") activeOnly = true;
             return builder;
           },
           maybeSingle: () => {
@@ -133,21 +147,36 @@ vi.mock("@/lib/supabase/server", () => ({
             return builder;
           },
           then: (resolve: (v: { data: unknown; error: null }) => void) => {
-            const rows = ids.map((id) => walletsById.get(id)).filter(Boolean);
+            const all = [...walletsById.values()];
+            const rows = currency
+              ? all.filter(
+                  (w) =>
+                    w.currency_code === currency && (!activeOnly || w.archived_at === null),
+                )
+              : ids.map((id) => walletsById.get(id)).filter(Boolean);
             resolve({ data: single ? (rows[0] ?? null) : rows, error: null });
           },
         };
         return builder;
       }
       if (table === "categories") {
-        let walletId: string | undefined;
+        // `walletIds`, plural, since 0020: the page now loads categories for
+        // every wallet the transaction could be re-filed into, not just the
+        // one it is in, so the picker can offer the destination's. A single
+        // `.eq("wallet_id", ...)` is still honoured for the archived-category
+        // lookup, which names one row.
+        let walletIds: string[] | undefined;
         let categoryId: string | undefined;
         let activeOnly = false;
         let single = false;
         const builder = {
           select: () => builder,
+          in: (col: string, v: string[]) => {
+            if (col === "wallet_id") walletIds = v;
+            return builder;
+          },
           eq: (col: string, v: string) => {
-            if (col === "wallet_id") walletId = v;
+            if (col === "wallet_id") walletIds = [v];
             if (col === "id") categoryId = v;
             return builder;
           },
@@ -164,9 +193,9 @@ vi.mock("@/lib/supabase/server", () => ({
               resolve({ data: (categoryId && categoryById.get(categoryId)) ?? null, error: null });
               return;
             }
-            const rows: Record<string, unknown>[] = walletId
-              ? (categoriesByWalletId.get(walletId) ?? [])
-              : [];
+            const rows: Record<string, unknown>[] = (walletIds ?? []).flatMap(
+              (w) => categoriesByWalletId.get(w) ?? [],
+            );
             resolve({
               data: activeOnly ? rows.filter((r) => !r.archived_at) : rows,
               error: null,

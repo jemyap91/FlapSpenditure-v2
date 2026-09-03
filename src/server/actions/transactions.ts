@@ -250,7 +250,7 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
   } = await supabase.auth.getUser();
   if (!user) return { error: "Not signed in" };
 
-  const { id, amount, occurred_on, category_id, note, merchant } = parsed.data;
+  const { id, wallet_id: requestedWalletId, amount, occurred_on, category_id, note, merchant } = parsed.data;
 
   // Load the row first to learn its wallet_id, kind and CURRENT category —
   // a posted wallet_id/kind is never trusted, and there is no such field on
@@ -270,12 +270,25 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
   // instead of a stray write to a row the user believes is gone.
   const { data: existing } = await supabase
     .from("transactions")
-    .select("wallet_id, kind, category_id")
+    .select("wallet_id, kind, category_id, currency_code, recurring_id")
     .eq("id", id)
     .is("deleted_at", null)
     .single();
   if (!existing) return { error: "Transaction not found" };
-  const { wallet_id, kind, category_id: currentCategoryId } = existing;
+  const {
+    wallet_id: currentWalletId,
+    kind,
+    category_id: currentCategoryId,
+    currency_code: txnCurrency,
+    recurring_id,
+  } = existing;
+
+  // Absent means "leave it where it is" — the common edit changes a note or
+  // an amount and says nothing about the wallet. Everything below validates
+  // against the DESTINATION, so an unchanged edit and a move take exactly
+  // the same path and cannot drift apart.
+  const wallet_id = requestedWalletId ?? currentWalletId;
+  const movingWallets = wallet_id !== currentWalletId;
 
   // A transfer leg reaching here would otherwise sail past every check below
   // (a transfer's category_id is always null, per 0003's transfer_shape
@@ -304,6 +317,39 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
   // createTransaction's identically-worded check on a wallet freshly typed
   // into a picker.
   if (wallet.archived_at) return { error: "This wallet has been archived." };
+
+  if (movingWallets) {
+    // Each of these three is ALSO enforced by a composite foreign key
+    // (0020_transaction_wallet_move.sql lists them), so none of this is the
+    // security boundary — the database is. They exist to turn three
+    // different constraint violations, which reach the user as one
+    // indistinguishable "Could not save transaction", into three sentences
+    // that each name the thing they can actually do about it.
+
+    // transactions_recurring_same_wallet: a recorded occurrence's rule lives
+    // in the old wallet, and rules do not move.
+    if (recurring_id) {
+      return {
+        error: "A recorded recurring payment stays in its rule's wallet. Delete it and record it again to move it.",
+      };
+    }
+
+    // transactions_currency_matches_wallet. Without this the amount would be
+    // reinterpreted in the destination's currency — a ¥1,000 row landing in
+    // a USD wallet moves that balance by $10.00, silently and by 100x.
+    if (wallet.currency_code !== txnCurrency) {
+      return {
+        error: `This is a ${txnCurrency} transaction, so it can only move to another ${txnCurrency} wallet.`,
+      };
+    }
+
+    // transactions_category_same_wallet. Categories belong to a wallet
+    // (0008), so a move always leaves the old category behind; the form
+    // clears it and asks for one from the destination.
+    if (category_id === currentCategoryId && category_id !== null) {
+      return { error: "Choose a category from the wallet you're moving this to" };
+    }
+  }
 
   // Unlike createTransaction, category_id may be null here — clearing a
   // transaction's category is a legitimate edit (transactionEditInput's own
@@ -372,6 +418,53 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
   // (0004_rls.sql, never revoked by 0016) — the schema's omission plus this
   // explicit, named payload are the only two things keeping it out of the
   // statement.
+  // A move goes through `move_transaction` (0020_transaction_wallet_move.sql)
+  // rather than this action's own UPDATE, because `wallet_id` is deliberately
+  // NOT in the column grant and stays that way — a raw PATCH cannot re-file a
+  // transaction, and rls.sql's original "Bob migrates Alice's transaction"
+  // attack still fails on the missing privilege exactly as it always has.
+  //
+  // The function also enforces the one rule nothing else can: a move must not
+  // hide the row from anyone who can currently see it. That is a set
+  // comparison over `wallet_members`, which no CHECK, foreign key or RLS
+  // policy can express — a policy sees one row, not the membership of two
+  // wallets.
+  //
+  // Every editable field travels with it, so the re-file and the edit that
+  // accompanies it land in one statement rather than two that can half-apply.
+  if (movingWallets) {
+    const { error: moveError } = await supabase.rpc("move_transaction", {
+      p_id: id,
+      p_wallet_id: wallet_id,
+      p_amount_minor: signedAmount(kind, magnitude),
+      p_occurred_on: occurred_on,
+      p_category_id: category_id ?? undefined,
+      // Same codegen quirk `updateTransfer` documents: these are `text
+      // default null` SQL parameters, typed as required by the generated
+      // types, so an explicit `undefined` is what omits them.
+      p_note: note ?? undefined,
+      p_merchant: merchant ?? undefined,
+    });
+    if (moveError) {
+      // The function raises plain messages; PostgREST hands them back in
+      // `message`. Matched on a stable fragment rather than the whole string
+      // so the count it interpolates does not have to be reproduced here.
+      if (moveError.message.includes("hide it from")) {
+        return {
+          error:
+            "That wallet isn't shared with everyone who can see this transaction, so moving it would hide it from them.",
+        };
+      }
+      if (moveError.message.includes("not a member")) {
+        return { error: "You're not a member of that wallet" };
+      }
+      if (moveError.message.includes("not found")) return { error: "Transaction not found" };
+      return { error: "Could not move that transaction. Please try again." };
+    }
+    revalidatePath("/", "layout");
+    return { ok: true };
+  }
+
   const { data: updated, error } = await supabase
     .from("transactions")
     .update({

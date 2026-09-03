@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState, useTransition } from "react";
+import { memo, useCallback, useId, useState, useTransition } from "react";
 import { Check, Plus } from "lucide-react";
 import { createCategory, updateCategory, archiveCategory } from "@/server/actions/categories";
 import { Modal } from "@/components/Modal";
@@ -77,6 +77,16 @@ export function CategorySection({
   } | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
   const [saving, startSave] = useTransition();
+  // Functional updates, so these keep one identity for the life of the
+  // component — which is what lets IconPicker's memo actually hold.
+  const setEditIcon = useCallback(
+    (next: CategoryIcon) => setEditing((prev) => (prev ? { ...prev, icon: next } : prev)),
+    [],
+  );
+  const setEditColour = useCallback(
+    (slot: number) => setEditing((prev) => (prev ? { ...prev, colorSlot: slot } : prev)),
+    [],
+  );
   const editErrorId = useId();
   const inputId = useId();
   const errorId = useId();
@@ -332,12 +342,12 @@ export function CategorySection({
             <ColourPicker
               groupName={`${kind}-edit-color-slot`}
               value={editing.colorSlot}
-              onChange={(slot) => setEditing({ ...editing, colorSlot: slot })}
+              onChange={setEditColour}
             />
             <IconPicker
               groupName={`${kind}-edit-icon`}
               value={editing.icon}
-              onChange={(next) => setEditing({ ...editing, icon: next })}
+              onChange={setEditIcon}
             />
 
             {/* Kind and wallet are absent rather than shown disabled — this
@@ -442,7 +452,15 @@ function ColourPicker({
   );
 }
 
-function IconPicker({
+/**
+ * Memoised, and not as a micro-optimisation. Without this every keystroke in
+ * the name field above re-renders all 132 icon buttons, which made typing
+ * measurably slow in tests and would be worse on a phone. `onChange` must
+ * therefore be referentially stable at both call sites, or the memo does
+ * nothing — the add form passes `setIcon` (stable by definition) and the
+ * edit dialog passes a `useCallback` with a functional state update.
+ */
+const IconPicker = memo(function IconPicker({
   groupName,
   value,
   onChange,
@@ -524,4 +542,4 @@ function IconPicker({
         </div>
       </fieldset>
   );
-}
+});

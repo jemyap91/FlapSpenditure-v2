@@ -161,12 +161,17 @@ export default async function EditTransactionPage({
     note: string | null;
     merchant: string | null;
     transfer_id: string | null;
+    /** Non-null for a recorded recurring occurrence. Read only to decide
+     *  whether this transaction may be re-filed into another wallet: its
+     *  rule lives in the current wallet and rules do not move, which
+     *  `transactions_recurring_same_wallet` enforces regardless. */
+    recurring_id: string | null;
   };
 
   const { data, error: rowError } = await supabase
     .from("transactions")
     .select(
-      "id, kind, wallet_id, amount_minor, currency_code, category_id, occurred_on, note, merchant, transfer_id",
+      "id, kind, wallet_id, amount_minor, currency_code, category_id, occurred_on, note, merchant, transfer_id, recurring_id",
     )
     .eq("id", id)
     .is("deleted_at", null)
@@ -298,10 +303,47 @@ export default async function EditTransactionPage({
     return <ArchivedWalletTransaction walletNames={[wallet.name]} row={row} />;
   }
 
+  // Where this transaction could be re-filed to (0020_transaction_wallet_move
+  // .sql). Scoped to the SAME currency because
+  // `transactions_currency_matches_wallet` makes any other move impossible —
+  // offering a JPY wallet here would render a choice the database refuses,
+  // which is precisely the "control that can never succeed" this codebase
+  // keeps removing. `wallets_select` RLS narrows this to wallets the caller
+  // is a member of, and `.is("archived_at", null)` drops the ones
+  // `updateTransaction` would refuse for being archived.
+  //
+  // A recorded recurring occurrence stays put: its rule lives in this
+  // wallet, and `transactions_recurring_same_wallet` refuses to let the two
+  // separate. Rather than offer a move that will be refused, the picker is
+  // reduced to the wallet it is already in.
+  const { data: sameCurrencyWallets, error: candidatesError } = row.recurring_id
+    ? { data: [wallet], error: null }
+    : await supabase
+        .from("wallets")
+        .select("id, name, currency_code, archived_at")
+        .eq("currency_code", row.currency_code)
+        .is("archived_at", null);
+  if (candidatesError) throw new Error("Failed to load wallets");
+
+  // The current wallet must be offered even if the query above somehow
+  // missed it, or the form would open on a wallet that is not in its own
+  // list and the select would render blank.
+  const candidates = (sameCurrencyWallets ?? []).some((c) => c.id === wallet.id)
+    ? (sameCurrencyWallets ?? [])
+    : [wallet, ...(sameCurrencyWallets ?? [])];
+
   const { data: activeCategories, error: categoriesError } = await supabase
     .from("categories")
     .select("id, name, kind, color_slot, icon, wallet_id")
-    .eq("wallet_id", row.wallet_id)
+    // Every candidate wallet's categories, not just the current one's:
+    // changing the wallet re-files the transaction, and categories belong to
+    // a wallet (0008), so the picker has to be able to offer the
+    // destination's. TransactionForm filters this list by the selected
+    // wallet on every render.
+    .in(
+      "wallet_id",
+      candidates.map((c) => c.id),
+    )
     .is("archived_at", null);
   if (categoriesError) throw new Error("Failed to load categories");
 
@@ -342,7 +384,7 @@ export default async function EditTransactionPage({
       <h1 className="sr-only">Edit transaction</h1>
       <TransactionForm
         mode="edit"
-        wallets={[wallet]}
+        wallets={candidates}
         categories={categories}
         edit={edit}
         from={from}

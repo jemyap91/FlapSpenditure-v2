@@ -17,7 +17,7 @@
 // `@/server/actions/categories` (its own "use server" module) to inline-
 // create a category — that has to be mocked here too, for the same reason.
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { TransactionForm, type EditSeed } from "./TransactionForm";
 import { createTransaction, updateTransaction, updateTransfer } from "@/server/actions/transactions";
@@ -588,5 +588,139 @@ describe("TransactionForm — edit mode (Task 6)", () => {
 
     expect(await screen.findByText("This wallet has been archived.")).toBeInTheDocument();
     expect(push).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Re-filing a transaction into another wallet
+ * (supabase/migrations/0020_transaction_wallet_move.sql, which reverses this
+ * feature's own spec §1.4 — see that migration for why the escalation §1.4
+ * cited does not apply to this table).
+ */
+describe("TransactionForm — moving a transaction between wallets", () => {
+  const seed: EditSeed = {
+    kind: "expense",
+    id: TXN_ID,
+    walletId: WALLET_A,
+    amount: "12.50",
+    categoryId: "cat-1",
+    occurredOn: "2026-08-01",
+    note: "",
+    merchant: "",
+  };
+  const bothWallets = [
+    { id: WALLET_A, name: "Everyday", currency_code: "USD" },
+    { id: WALLET_B, name: "Savings", currency_code: "USD" },
+  ];
+  const cats: Category[] = [
+    { id: "cat-1", name: "Groceries", kind: "expense", color_slot: 1, icon: "circle", wallet_id: WALLET_A },
+    { id: "cat-2", name: "Rainy day", kind: "expense", color_slot: 2, icon: "circle", wallet_id: WALLET_B },
+  ];
+
+  const renderEdit = (walletList = bothWallets) =>
+    render(<TransactionForm mode="edit" wallets={walletList} categories={cats} edit={seed} />);
+
+  it("offers the other same-currency wallet as a destination", () => {
+    renderEdit();
+    const select = screen.getByLabelText("Wallet");
+    expect(select).toHaveValue(WALLET_A);
+    expect(within(select).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Everyday",
+      "Savings",
+    ]);
+  });
+
+  it("states the wallet as text when there is nowhere to move it", () => {
+    // One candidate is not a choice. The page reduces the list to one for a
+    // recorded recurring occurrence and for a currency with no second
+    // wallet; rendering a one-option select would be a control that cannot
+    // do anything.
+    renderEdit([bothWallets[0]!]);
+    expect(screen.queryByLabelText("Wallet")).toBeNull();
+    expect(screen.getByText(/Wallet:/)).toHaveTextContent("Everyday");
+  });
+
+  it("never offers a wallet control when editing a transfer", async () => {
+    // The two legs ARE the transfer. Moving one would leave a pair claiming
+    // money left a wallet it never touched, and no constraint expresses
+    // that — this and updateTransaction's refusal are the enforcement.
+    render(
+      <TransactionForm
+        mode="edit"
+        wallets={bothWallets}
+        categories={cats}
+        edit={{
+          kind: "transfer",
+          transferId: "aaaaaaaa-0000-4000-8000-00000000f001",
+          fromWalletId: WALLET_A,
+          toWalletId: WALLET_B,
+          amountOut: "50.00",
+          amountIn: "50.00",
+          occurredOn: "2026-08-01",
+          note: "",
+          merchant: "",
+        }}
+      />,
+    );
+    expect(screen.queryByLabelText("Wallet")).toBeNull();
+    expect(screen.getByText(/From/)).toHaveTextContent("From Everyday to Savings");
+  });
+
+  it("clears the category when the wallet changes", async () => {
+    const user = userEvent.setup();
+    renderEdit();
+    // Asserted on the summary chip, not on the text "Groceries" — that
+    // string is also the picker button's own label, so a bare getByText
+    // matches two elements and the test fails for a reason unrelated to
+    // what it is checking.
+    expect(screen.queryByText("Choose category")).toBeNull();
+    expect(screen.getByRole("button", { name: /Groceries/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    await user.selectOptions(screen.getByLabelText("Wallet"), WALLET_B);
+
+    // Categories belong to a wallet (0008) and
+    // transactions_category_same_wallet refuses one from anywhere else, so
+    // carrying "Groceries" across would be a foreign-key violation at Save
+    // reported as an unhelpful "Could not save".
+    expect(screen.getByText("Choose category")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Groceries/ })).toBeNull();
+  });
+
+  it("offers the destination wallet's categories after the move", async () => {
+    const user = userEvent.setup();
+    renderEdit();
+    await user.selectOptions(screen.getByLabelText("Wallet"), WALLET_B);
+    expect(screen.getByRole("button", { name: /Rainy day/ })).toBeInTheDocument();
+  });
+
+  it("sends the new wallet, and a category from it", async () => {
+    const user = userEvent.setup();
+    vi.mocked(updateTransaction).mockResolvedValue({ ok: true });
+    renderEdit();
+
+    await user.selectOptions(screen.getByLabelText("Wallet"), WALLET_B);
+    await user.click(screen.getByRole("button", { name: /Rainy day/ }));
+    await user.click(screen.getByRole("button", { name: /save/i }));
+
+    expect(updateTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ id: TXN_ID, wallet_id: WALLET_B, category_id: "cat-2" }),
+    );
+  });
+
+  it("omits wallet_id entirely when the wallet was not touched", async () => {
+    const user = userEvent.setup();
+    vi.mocked(updateTransaction).mockResolvedValue({ ok: true });
+    renderEdit();
+
+    await user.click(screen.getByRole("button", { name: /save/i }));
+
+    // Absent, not "the same value": the schema reads an absent wallet_id as
+    // "leave it where it is", which keeps the column out of the UPDATE
+    // statement for the note-and-amount edits that are the common case.
+    const payload = vi.mocked(updateTransaction).mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("wallet_id");
   });
 });

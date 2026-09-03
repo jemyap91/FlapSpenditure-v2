@@ -674,6 +674,18 @@ export type Database = {
         }[]
       }
       is_wallet_member: { Args: { w: string }; Returns: boolean }
+      move_transaction: {
+        Args: {
+          p_amount_minor: number
+          p_category_id?: string
+          p_id: string
+          p_merchant?: string
+          p_note?: string
+          p_occurred_on: string
+          p_wallet_id: string
+        }
+        Returns: undefined
+      }
       set_budget: {
         Args: {
           p_amount_minor: number

@@ -293,6 +293,26 @@ export type TransferInput = z.infer<typeof transferInput>;
  */
 export const transactionEditInput = z.object({
   id: z.uuid(),
+  /**
+   * The wallet this transaction is filed under. Editable since
+   * 0020_transaction_wallet_move.sql, which reverses this feature's own spec
+   * §1.4 — see that migration for the argument, in short: the escalation
+   * §1.4 cited was real for `recurring_rules` and `categories`, whose rows
+   * carry data belonging to OTHER members, and does not transfer to a
+   * transaction, which is the whole object and which any member can already
+   * soft-delete out of a shared wallet.
+   *
+   * Optional, and absent means "leave it where it is". A payload that omits
+   * it is the overwhelmingly common edit — a note or an amount — and
+   * requiring the field would make every such caller restate the wallet
+   * they are not changing, which is one more thing to get wrong.
+   *
+   * Three composite FKs police the destination underneath this
+   * (currency must match, the category must live there, a recorded
+   * occurrence cannot leave its rule's wallet), and `transactions_member`'s
+   * `with check` still requires membership of it.
+   */
+  wallet_id: z.uuid().optional(),
   amount: amountField,
   occurred_on: dateField,
   category_id: z.uuid("Choose a category").nullable(),

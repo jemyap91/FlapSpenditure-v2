@@ -104,7 +104,18 @@ const {
   // 1, IMPORTANT 1), which is what the archived-category exemption is keyed
   // on; it is never what the edit posts.
   txnLookupResult: {
-    data: null as { wallet_id: string; kind: string; category_id: string | null } | null,
+    data: null as {
+      wallet_id: string;
+      kind: string;
+      category_id: string | null;
+      // Both added by 0020_transaction_wallet_move.sql's edit path: the
+      // transaction's own currency (so a move to a different-currency wallet
+      // can be refused with a sentence instead of an FK violation) and
+      // whether it is a recorded recurring occurrence (whose rule lives in
+      // the current wallet and does not move).
+      currency_code?: string;
+      recurring_id?: string | null;
+    } | null,
   },
   walletLookupResult: {
     data: null as { archived_at: string | null; currency_code: string } | null,
@@ -329,6 +340,7 @@ function create(
 function edit(
   overrides: Partial<{
     id: string;
+    wallet_id: string;
     amount: string;
     occurred_on: string;
     category_id: string | null;
@@ -1214,5 +1226,172 @@ describe("updateTransfer", () => {
     await updateTransfer(transferEdit());
 
     expect(revalidatePath).toHaveBeenCalledWith("/", "layout");
+  });
+});
+
+/**
+ * Re-filing a transaction into another wallet
+ * (supabase/migrations/0020_transaction_wallet_move.sql).
+ *
+ * Every refusal below is ALSO enforced by a composite foreign key, so none
+ * of these tests is guarding the security boundary — the database is. They
+ * guard the messages: without them all three failures arrive as one
+ * indistinguishable "Could not save transaction. Please try again.", which
+ * tells a user nothing about the one thing they can act on.
+ */
+describe("updateTransaction — moving between wallets", () => {
+  const OTHER_WALLET = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const OTHER_CATEGORY = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+
+  beforeEach(() => {
+    getUser.mockResolvedValue({ data: { user: { id: OWNER_ID } } });
+    txnLookupResult.data = {
+      wallet_id: WALLET_ID,
+      kind: "expense",
+      category_id: CATEGORY_ID,
+      currency_code: "USD",
+      recurring_id: null,
+    };
+    walletLookupResult.data = { archived_at: null, currency_code: "USD" };
+    categoryResult.data = { kind: "expense", archived_at: null };
+    updateResult.data = [{ id: TXN_ID }];
+    updateResult.error = null;
+  });
+
+  it("accepts a move to another wallet of the same currency", async () => {
+    const result = await updateTransaction(
+      edit({ wallet_id: OTHER_WALLET, category_id: OTHER_CATEGORY }),
+    );
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("looks the destination wallet up, not the one the row is currently in", async () => {
+    await updateTransaction(edit({ wallet_id: OTHER_WALLET, category_id: OTHER_CATEGORY }));
+    // Every check below the lookup — archived, currency, category — is only
+    // meaningful if it ran against the DESTINATION. Reading the current
+    // wallet here would validate the move against the wallet being left.
+    expect(eqSpy).toHaveBeenCalledWith("wallets", "id", OTHER_WALLET);
+  });
+
+  it("refuses a move to a wallet in a different currency", async () => {
+    walletLookupResult.data = { archived_at: null, currency_code: "JPY" };
+    const result = await updateTransaction(
+      edit({ wallet_id: OTHER_WALLET, category_id: OTHER_CATEGORY }),
+    );
+    // Left to the FK, this is a constraint violation. Reaching the user, it
+    // has to say which currencies are involved: a ¥1,000 row landing in a
+    // USD wallet would otherwise move that balance by $10.00 — 100x, and
+    // silently, if the constraint were ever dropped.
+    expect(result).toEqual({
+      error: "This is a USD transaction, so it can only move to another USD wallet.",
+    });
+  });
+
+  it("refuses to move a recorded recurring occurrence", async () => {
+    txnLookupResult.data = {
+      wallet_id: WALLET_ID,
+      kind: "expense",
+      category_id: CATEGORY_ID,
+      currency_code: "USD",
+      recurring_id: "aaaaaaaa-0000-4000-8000-00000000r001",
+    };
+    const result = await updateTransaction(
+      edit({ wallet_id: OTHER_WALLET, category_id: OTHER_CATEGORY }),
+    );
+    expect(result).toEqual({
+      error:
+        "A recorded recurring payment stays in its rule's wallet. Delete it and record it again to move it.",
+    });
+  });
+
+  it("refuses a move that keeps the old wallet's category", async () => {
+    const result = await updateTransaction(
+      edit({ wallet_id: OTHER_WALLET, category_id: CATEGORY_ID }),
+    );
+    expect(result).toEqual({ error: "Choose a category from the wallet you're moving this to" });
+  });
+
+  it("allows a move that clears the category entirely", async () => {
+    // Null is a legitimate value for a non-transfer, and the honest outcome
+    // when a user re-files a transaction and has not picked a new category.
+    const result = await updateTransaction(edit({ wallet_id: OTHER_WALLET, category_id: null }));
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("applies none of the move checks when the wallet is unchanged", async () => {
+    // The same-currency, recurring and category checks are gated on the
+    // wallet actually changing. A recorded occurrence must stay editable in
+    // every other respect — its note, its amount — which it would not be if
+    // the recurring refusal fired on an ordinary edit.
+    txnLookupResult.data = {
+      wallet_id: WALLET_ID,
+      kind: "expense",
+      category_id: CATEGORY_ID,
+      currency_code: "USD",
+      recurring_id: "aaaaaaaa-0000-4000-8000-00000000r001",
+    };
+    const result = await updateTransaction(edit({ category_id: CATEGORY_ID, note: "fixed typo" }));
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("goes through move_transaction, never a plain UPDATE naming wallet_id", async () => {
+    // `wallet_id` is deliberately NOT in the column grant
+    // (0020_transaction_wallet_move.sql keeps it out), so a plain UPDATE
+    // naming it would be refused at the database with a 42501 the user
+    // cannot act on. The RPC is the only path that can re-file a row — and
+    // it is where the "would this hide the transaction from someone?" rule
+    // lives, which no constraint or policy can express.
+    await updateTransaction(edit({ wallet_id: OTHER_WALLET, category_id: OTHER_CATEGORY }));
+
+    expect(rpcSpy).toHaveBeenCalledWith(
+      "move_transaction",
+      expect.objectContaining({ p_id: TXN_ID, p_wallet_id: OTHER_WALLET }),
+    );
+    expect(updateSpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({ wallet_id: expect.anything() }),
+    );
+  });
+
+  it("uses the ordinary UPDATE, and no RPC, when the wallet is unchanged", async () => {
+    await updateTransaction(edit({ category_id: CATEGORY_ID }));
+    expect(rpcSpy).not.toHaveBeenCalled();
+    expect(updateSpy).toHaveBeenCalledWith(
+      expect.not.objectContaining({ wallet_id: expect.anything() }),
+    );
+  });
+
+  it("carries the accompanying edit into the move, so the two land together", async () => {
+    // A second statement after the move could half-apply: the row would be
+    // in its new wallet with its old amount. update_transfer_pair (0016) set
+    // the same precedent for the transfer pair.
+    await updateTransaction(
+      edit({
+        wallet_id: OTHER_WALLET,
+        category_id: OTHER_CATEGORY,
+        amount: "9.99",
+        note: "moved and corrected",
+      }),
+    );
+    expect(rpcSpy).toHaveBeenCalledWith(
+      "move_transaction",
+      expect.objectContaining({
+        p_amount_minor: -999,
+        p_note: "moved and corrected",
+        p_category_id: OTHER_CATEGORY,
+      }),
+    );
+  });
+
+  it("explains a refused move rather than reporting a generic failure", async () => {
+    updateResult.error = {
+      message: "moving this would hide it from 1 other member(s) of the wallet it is in",
+    } as unknown as typeof updateResult.error;
+    const result = await updateTransaction(
+      edit({ wallet_id: OTHER_WALLET, category_id: OTHER_CATEGORY }),
+    );
+    expect(result).toEqual({
+      error:
+        "That wallet isn't shared with everyone who can see this transaction, so moving it would hide it from them.",
+    });
   });
 });
