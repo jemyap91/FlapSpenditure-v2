@@ -695,6 +695,11 @@ export type Database = {
         }
         Returns: string
       }
+      set_wallet_group: {
+        Args: { p_group_id?: string; p_wallet_id: string }
+        Returns: undefined
+      }
+      set_wallet_order: { Args: { p_wallet_ids: string[] }; Returns: undefined }
       update_transfer_pair: {
         Args: {
           p_amount_in: number

@@ -4113,3 +4113,131 @@ begin;
       'a USD transaction moved into a JPY wallet -- its amount would be reinterpreted 100x';
   end $$;
 rollback;
+
+-- =====================================================================
+-- 0021: arranging the same wallet TWICE.
+--
+-- The bug this exists for: 0019's own tests insert into wallet_prefs
+-- directly and never take the `on conflict` path, so they passed while the
+-- app failed on every arrangement after the first. PostgREST's .upsert()
+-- compiles its update half to a SET list naming every supplied column,
+-- including user_id and wallet_id, which 0019 deliberately does not grant.
+--
+-- Every call below is made twice for exactly that reason. A test that
+-- arranges each wallet once cannot see this class of defect at all.
+-- =====================================================================
+begin;
+  insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+  values ('c0f10000-0000-4000-8000-00000000a001', 'aaaaaaaa-0000-0000-0000-000000000001',
+          'First',  'bank', 'USD', 1, 'wallet'),
+         ('c0f10000-0000-4000-8000-00000000a002', 'aaaaaaaa-0000-0000-0000-000000000001',
+          'Second', 'bank', 'USD', 2, 'wallet');
+
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
+
+  do $$
+  declare a int; b int;
+  begin
+    -- First arrangement: no existing rows, so this is a plain insert. This
+    -- half always worked, which is why the bug looked intermittent.
+    perform public.set_wallet_order(array[
+      'c0f10000-0000-4000-8000-00000000a001',
+      'c0f10000-0000-4000-8000-00000000a002']::uuid[]);
+
+    -- Second: every row now conflicts. THIS is what was refused with
+    -- "permission denied for table wallet_prefs".
+    perform public.set_wallet_order(array[
+      'c0f10000-0000-4000-8000-00000000a002',
+      'c0f10000-0000-4000-8000-00000000a001']::uuid[]);
+
+    select sort_order into a from public.wallet_prefs
+      where wallet_id = 'c0f10000-0000-4000-8000-00000000a001';
+    select sort_order into b from public.wallet_prefs
+      where wallet_id = 'c0f10000-0000-4000-8000-00000000a002';
+    assert b = 0 and a = 1,
+      format('re-ordering did not take effect the second time (first=%s second=%s)', a, b);
+  end $$;
+
+  -- The same for grouping, and the same reasoning: the second call is the
+  -- one that conflicts.
+  do $$
+  declare g uuid; g1 uuid; g2 uuid;
+  begin
+    insert into public.wallet_groups (user_id, name, sort_order)
+    values (auth.uid(), 'Group one', 0) returning id into g1;
+    insert into public.wallet_groups (user_id, name, sort_order)
+    values (auth.uid(), 'Group two', 1) returning id into g2;
+
+    perform public.set_wallet_group('c0f10000-0000-4000-8000-00000000a001', g1);
+    perform public.set_wallet_group('c0f10000-0000-4000-8000-00000000a001', g2);
+
+    select group_id into g from public.wallet_prefs
+      where wallet_id = 'c0f10000-0000-4000-8000-00000000a001';
+    assert g = g2, 'regrouping a wallet a second time did not take effect';
+
+    -- ...and back out of every group. Null is a value here, not "unset".
+    perform public.set_wallet_group('c0f10000-0000-4000-8000-00000000a001', null);
+    select group_id into g from public.wallet_prefs
+      where wallet_id = 'c0f10000-0000-4000-8000-00000000a001';
+    assert g is null, 'a wallet could not be removed from its group';
+  end $$;
+
+  -- Ordering must not clobber a group the same row already carries, and
+  -- grouping must not reset its position: each function names ONE column in
+  -- its DO UPDATE SET, and a SET list that named both would silently undo
+  -- whichever change the user made first.
+  do $$
+  declare g uuid; s int;
+  begin
+    perform public.set_wallet_group('c0f10000-0000-4000-8000-00000000a002',
+      (select id from public.wallet_groups where name = 'Group one'));
+    perform public.set_wallet_order(array[
+      'c0f10000-0000-4000-8000-00000000a002',
+      'c0f10000-0000-4000-8000-00000000a001']::uuid[]);
+
+    select group_id, sort_order into g, s from public.wallet_prefs
+      where wallet_id = 'c0f10000-0000-4000-8000-00000000a002';
+    assert g is not null, 'reordering wiped the wallet''s group';
+    assert s = 0, format('reordering did not set the position (%s)', s);
+  end $$;
+
+  -- A repeated id would make Postgres raise "ON CONFLICT DO UPDATE command
+  -- cannot affect row a second time" -- an error about nothing the user did.
+  do $$
+  declare ok boolean := false;
+  begin
+    begin
+      perform public.set_wallet_order(array[
+        'c0f10000-0000-4000-8000-00000000a001',
+        'c0f10000-0000-4000-8000-00000000a001']::uuid[]);
+    exception when others then ok := true;
+    end;
+    assert ok, 'a duplicated wallet id in an ordering was accepted';
+  end $$;
+
+  -- Still cannot arrange a wallet you are not a member of: the functions are
+  -- security invoker, so wallet_prefs_own's `with check` applies unchanged.
+  --
+  -- The wallet is created here, owned by Bob, rather than reusing an id from
+  -- an earlier block. The first version of this test reached for
+  -- 'a4a40000-...a001' and failed -- that wallet is one ALICE belongs to, so
+  -- the insert rightly succeeded and the assertion was measuring nothing.
+  reset role;
+  insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+  values ('c0f10000-0000-4000-8000-00000000b009', 'bbbbbbbb-0000-0000-0000-000000000002',
+          'Bob only', 'bank', 'USD', 5, 'wallet');
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
+
+  do $$
+  declare ok boolean := false;
+  begin
+    begin
+      perform public.set_wallet_order(
+        array['c0f10000-0000-4000-8000-00000000b009']::uuid[]);
+    exception when others then ok := true;
+    end;
+    assert ok, 'a user arranged a wallet they are not a member of';
+  end $$;
+rollback;

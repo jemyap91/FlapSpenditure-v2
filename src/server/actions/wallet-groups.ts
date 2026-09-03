@@ -147,12 +147,16 @@ export async function deleteWalletGroup(id: string): Promise<MutationResult> {
  * Files one wallet into a group, or (with `group_id: null`) out of every
  * group.
  *
- * An upsert rather than update-or-insert: a user has no `wallet_prefs` row
- * for a wallet until they first arrange it, so the first grouping of any
- * wallet is an insert and every later one an update. `onConflict` names the
- * composite primary key explicitly — without it PostgREST infers a conflict
- * target, and inferring the wrong one turns an update into a duplicate-key
- * error the user cannot act on.
+ * Through `set_wallet_group` (0021_wallet_prefs_upsert.sql) rather than
+ * PostgREST's own `.upsert()`. A user has no `wallet_prefs` row for a wallet
+ * until they first arrange it, so this has to be insert-or-update — but
+ * `.upsert()` compiles the update half to a SET list naming EVERY column
+ * supplied, `user_id` and `wallet_id` included, and 0019 grants UPDATE on
+ * `(group_id, sort_order)` only. The result was a first grouping that
+ * worked and every later one failing with a permission error. The function
+ * issues the same statement with a SET list naming only `group_id`, and is
+ * `security invoker`, so `wallet_prefs_own` and the column grants apply to
+ * it exactly as they would here.
  *
  * Two things the caller cannot do here even by direct POST: file a wallet
  * into someone ELSE's group (wallet_prefs_group_same_user, the composite FK
@@ -169,14 +173,10 @@ export async function setWalletGroup(raw: unknown): Promise<MutationResult> {
   } = await supabase.auth.getUser();
   if (!user) return { error: "Not signed in" };
 
-  const { error } = await supabase.from("wallet_prefs").upsert(
-    {
-      user_id: user.id,
-      wallet_id: parsed.data.wallet_id,
-      group_id: parsed.data.group_id,
-    },
-    { onConflict: "user_id,wallet_id" },
-  );
+  const { error } = await supabase.rpc("set_wallet_group", {
+    p_wallet_id: parsed.data.wallet_id,
+    p_group_id: parsed.data.group_id ?? undefined,
+  });
 
   if (error) {
     // 23503 is the composite FK refusing a group that isn't this user's;
@@ -193,9 +193,13 @@ export async function setWalletGroup(raw: unknown): Promise<MutationResult> {
 /**
  * Records a manual ordering as the complete list of wallet ids.
  *
- * One upsert of every row rather than a statement per wallet: PostgREST
- * sends the array as a single request, so the ordering lands atomically and
- * a list cannot be left half-renumbered by a dropped connection midway.
+ * One statement for the whole list rather than one per wallet, so the
+ * ordering lands atomically and cannot be left half-renumbered by a dropped
+ * connection midway. Through `set_wallet_order`
+ * (0021_wallet_prefs_upsert.sql) rather than PostgREST's `.upsert()`, for
+ * the reason `setWalletGroup` above documents: `.upsert()`'s update half
+ * names every supplied column, including the two that make up the primary
+ * key and are deliberately not grantable.
  */
 export async function setWalletOrder(raw: unknown): Promise<MutationResult> {
   const parsed = walletOrderInput.safeParse(raw);
@@ -214,10 +218,7 @@ export async function setWalletOrder(raw: unknown): Promise<MutationResult> {
   // second time") — an error message about nothing the user did.
   if (new Set(ids).size !== ids.length) return { error: "That ordering repeats a wallet" };
 
-  const { error } = await supabase.from("wallet_prefs").upsert(
-    ids.map((wallet_id, i) => ({ user_id: user.id, wallet_id, sort_order: i })),
-    { onConflict: "user_id,wallet_id" },
-  );
+  const { error } = await supabase.rpc("set_wallet_order", { p_wallet_ids: ids });
 
   if (error) return { error: "Could not save that order. Please try again." };
   refresh();
