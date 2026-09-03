@@ -9,13 +9,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CategorySection } from "./CategorySection";
-import { createCategory } from "@/server/actions/categories";
+import { createCategory, updateCategory } from "@/server/actions/categories";
 import { CATEGORY_ICONS } from "@/lib/validation/category";
 import { CATEGORY_ICON_GROUPS } from "@/lib/category-icons";
 import { SLOT_COUNT } from "@/lib/palette";
 
 vi.mock("@/server/actions/categories", () => ({
   createCategory: vi.fn(),
+  updateCategory: vi.fn(),
   archiveCategory: vi.fn(),
 }));
 
@@ -29,7 +30,28 @@ beforeEach(() => {
   vi.mocked(createCategory).mockResolvedValue({
     category: { id: "new", name: "Vet", kind: "expense", color_slot: 1, icon: "circle", wallet_id: WALLET },
   } as Awaited<ReturnType<typeof createCategory>>);
+  vi.mocked(updateCategory).mockReset();
+  vi.mocked(updateCategory).mockResolvedValue({ ok: true });
 });
+
+const GROCERIES = {
+  id: "c1",
+  name: "Groceries",
+  kind: "expense" as const,
+  color_slot: 3,
+  icon: "shopping-basket",
+  wallet_id: WALLET,
+};
+
+const renderWithRow = () =>
+  render(
+    <CategorySection kind="expense" label="Expense" initial={[GROCERIES]} walletId={WALLET} />,
+  );
+
+const openEditor = async (user: ReturnType<typeof userEvent.setup>) => {
+  await user.click(screen.getByRole("button", { name: "Edit Groceries" }));
+  return screen.getByRole("dialog");
+};
 
 describe("CategorySection — adding a category", () => {
   /**
@@ -104,8 +126,19 @@ describe("CategorySection — pickers", () => {
     expect(swatches).toHaveLength(SLOT_COUNT);
   });
 
+  // Queried by attribute rather than by role+accessible-name. `getByRole`
+  // computes an accessible name per element, and doing that 132 times (plus
+  // once more per colour swatch) took over five seconds under full-suite
+  // parallelism and tripped the default timeout — a flaky test that says
+  // nothing about the product. The DOM query is O(n) and asserts the same
+  // facts.
+  const iconRadios = (c: HTMLElement) =>
+    Array.from(c.querySelectorAll<HTMLInputElement>('input[type="radio"]')).filter(
+      (r) => !r.name.includes("color-slot"),
+    );
+
   it("offers every icon the schema accepts, under a group heading", () => {
-    renderSection();
+    const { container } = renderSection();
     // One radio per icon, no more and no fewer: an icon in CATEGORY_ICONS
     // that no group lists would be accepted by `createCategory` and yet be
     // unreachable in the UI, and a group listing something outside the enum
@@ -113,26 +146,16 @@ describe("CategorySection — pickers", () => {
     for (const group of CATEGORY_ICON_GROUPS) {
       expect(screen.getByText(group.label)).toBeInTheDocument();
     }
-    for (const iconName of CATEGORY_ICONS) {
-      expect(
-        screen.getByRole("radio", { name: iconName.replace(/-/g, " ") }),
-      ).toBeInTheDocument();
-    }
-    expect(screen.getAllByRole("radio", { name: /^(?!Colour \d+$).*/ })).toHaveLength(
-      CATEGORY_ICONS.length,
-    );
+    const offered = iconRadios(container).map((r) => r.value);
+    expect([...offered].sort()).toEqual([...CATEGORY_ICONS].sort());
   });
 
   it("keeps every icon in ONE radio group, so only one can be chosen", () => {
-    renderSection();
-    const icons = CATEGORY_ICONS.map((i) =>
-      screen.getByRole("radio", { name: i.replace(/-/g, " ") }),
-    ) as HTMLInputElement[];
-    const names = new Set(icons.map((i) => i.name));
+    const { container } = renderSection();
     // Grouping is visual only. If each section got its own `name`, a user
     // could select one icon per group and the form would submit whichever
     // React happened to hold — eight simultaneous "selected" icons on screen.
-    expect(names.size).toBe(1);
+    expect(new Set(iconRadios(container).map((r) => r.name)).size).toBe(1);
   });
 
   it("sends the chosen icon, not the default", async () => {
@@ -196,5 +219,137 @@ describe("CategorySection — existing rows", () => {
     // slotVar throws a RangeError above SLOT_COUNT, so a row on slot 16 would
     // crash the whole section if the palette had not actually widened.
     expect(within(screen.getByRole("list")).getByText("Travel")).toBeInTheDocument();
+  });
+});
+
+describe("CategorySection — editing a category", () => {
+  it("opens an editor named after the category, seeded from it", async () => {
+    const user = userEvent.setup();
+    renderWithRow();
+    const dialog = await openEditor(user);
+
+    expect(within(dialog).getByRole("heading", { name: "Edit Groceries" })).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Name")).toHaveValue("Groceries");
+    // Seeded, not defaulted: an editor that opened on slot 1 and "circle"
+    // would silently reset both the moment the user changed only the name.
+    expect(within(dialog).getByRole("radio", { name: "Colour 3" })).toBeChecked();
+    expect(within(dialog).getByRole("radio", { name: "shopping basket" })).toBeChecked();
+  });
+
+  it("sends the edited name, colour and icon", async () => {
+    const user = userEvent.setup();
+    renderWithRow();
+    const dialog = await openEditor(user);
+
+    await user.clear(within(dialog).getByLabelText("Name"));
+    await user.type(within(dialog).getByLabelText("Name"), "Food");
+    await user.click(within(dialog).getByRole("radio", { name: "Colour 14" }));
+    await user.click(within(dialog).getByRole("radio", { name: "carrot" }));
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    expect(updateCategory).toHaveBeenCalledWith({
+      id: "c1",
+      name: "Food",
+      color_slot: 14,
+      icon: "carrot",
+    });
+  });
+
+  it("never sends kind or wallet_id, and offers no control for either", async () => {
+    const user = userEvent.setup();
+    renderWithRow();
+    const dialog = await openEditor(user);
+
+    // Absent, not disabled — 0018 revokes the column privilege for both, so
+    // a control for either could never succeed.
+    //
+    // Asserted structurally rather than with queryByLabelText(/wallet/i),
+    // which matches the "wallet" ICON's own radio: "wallet" and "piggy bank"
+    // are both in CATEGORY_ICONS, so a label-substring query for a wallet
+    // control can never be null here and would pass whatever the dialog
+    // contained. Kind and wallet would both be <select>s (that is how the
+    // add form renders a fixed choice elsewhere in this app), and the dialog
+    // has none.
+    expect(dialog.querySelectorAll("select")).toHaveLength(0);
+    expect(within(dialog).queryByRole("combobox")).toBeNull();
+
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    const payload = vi.mocked(updateCategory).mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("kind");
+    expect(payload).not.toHaveProperty("wallet_id");
+  });
+
+  it("shows the row's new name once saved, without a reload", async () => {
+    const user = userEvent.setup();
+    renderWithRow();
+    const dialog = await openEditor(user);
+
+    await user.clear(within(dialog).getByLabelText("Name"));
+    await user.type(within(dialog).getByLabelText("Name"), "Food");
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("button", { name: "Edit Food" })).toBeInTheDocument();
+  });
+
+  it("surfaces a duplicate-name refusal and keeps the editor open", async () => {
+    const user = userEvent.setup();
+    vi.mocked(updateCategory).mockResolvedValue({ error: '"Food" already exists' });
+    renderWithRow();
+    const dialog = await openEditor(user);
+
+    await user.clear(within(dialog).getByLabelText("Name"));
+    await user.type(within(dialog).getByLabelText("Name"), "Food");
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    // Open, so the name is still there to correct. Closing on failure would
+    // discard the colour and icon changes too.
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(within(screen.getByRole("dialog")).getByRole("alert")).toHaveTextContent(
+      '"Food" already exists',
+    );
+  });
+
+  it("refuses an empty name before reaching the server", async () => {
+    const user = userEvent.setup();
+    renderWithRow();
+    const dialog = await openEditor(user);
+
+    await user.clear(within(dialog).getByLabelText("Name"));
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("Name is required");
+    expect(updateCategory).not.toHaveBeenCalled();
+  });
+
+  it("discards the draft on Cancel", async () => {
+    const user = userEvent.setup();
+    renderWithRow();
+    const dialog = await openEditor(user);
+
+    await user.clear(within(dialog).getByLabelText("Name"));
+    await user.type(within(dialog).getByLabelText("Name"), "Discarded");
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    expect(updateCategory).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Edit Groceries" })).toBeInTheDocument();
+  });
+
+  it("keeps the editor's radios out of the add form's groups", async () => {
+    const user = userEvent.setup();
+    const { container } = renderWithRow();
+    await user.click(screen.getByRole("button", { name: "Edit Groceries" }));
+
+    // The add form stays mounted behind the dialog. If both used the same
+    // radio `name`, choosing a colour in the editor would clear the add
+    // form's selection beneath it -- and submitting the add form afterwards
+    // would post whichever value React still held. Two groups for colour,
+    // two for icon, four distinct names in total.
+    const names = new Set(
+      Array.from(container.querySelectorAll<HTMLInputElement>('input[type="radio"]')).map(
+        (r) => r.name,
+      ),
+    );
+    expect(names.size).toBe(4);
   });
 });

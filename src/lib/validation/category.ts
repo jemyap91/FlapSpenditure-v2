@@ -186,6 +186,42 @@ export const categoryInput = z.object({
 
 export type CategoryInput = z.infer<typeof categoryInput>;
 
+/**
+ * Editing an existing category: name, colour and icon, and nothing else.
+ *
+ * The three fields absent from this schema are absent for reasons the
+ * database now enforces independently (supabase/migrations/
+ * 0018_category_update_grant.sql revokes the table-wide UPDATE grant and
+ * re-grants only the editable columns), so a direct POST carrying them is
+ * refused twice — here by the schema stripping them, and at the database by
+ * a missing column privilege:
+ *
+ *   `wallet_id` — `categories_member` checks `is_wallet_member` with both
+ *     `using` and `with check`, so a member of two wallets satisfies both
+ *     while moving a row OUT of a shared wallet into a private one. Proven
+ *     live before it was closed; regression-tested in supabase/tests/rls.sql.
+ *   `kind` — flipping an expense category to income leaves every transaction
+ *     already filed under it holding a category whose kind disagrees, and
+ *     `updateTransaction` refuses that pairing — so one member's edit would
+ *     make another member's transactions permanently uneditable. Creating a
+ *     new category and re-filing is the honest path, and archive already
+ *     exists for the old one.
+ *   `is_default` — seeding state from 0007/0008, not user data.
+ *
+ * `color_slot` is required rather than optional (unlike `categoryInput`,
+ * where omitting it means "auto-assign the least-used slot"): an edit form
+ * always renders the current slot as the selected radio, so a payload
+ * without one is a malformed request, not a request to re-roll the colour.
+ */
+export const categoryEditInput = z.object({
+  id: z.uuid(),
+  name: z.string().trim().min(1, "Name is required").max(40, "Name is too long"),
+  color_slot: z.coerce.number().int().min(1).max(SLOT_COUNT),
+  icon: z.enum(CATEGORY_ICONS),
+});
+
+export type CategoryEditInput = z.infer<typeof categoryEditInput>;
+
 /** Which input a failed parse's first issue is about — used to set
  * `aria-invalid` on the offending field, mirroring src/lib/validation/
  * wallet.ts's `WalletField`. */

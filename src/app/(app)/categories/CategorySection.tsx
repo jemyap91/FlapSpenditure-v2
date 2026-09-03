@@ -2,7 +2,8 @@
 
 import { useId, useState, useTransition } from "react";
 import { Check, Plus } from "lucide-react";
-import { createCategory, archiveCategory } from "@/server/actions/categories";
+import { createCategory, updateCategory, archiveCategory } from "@/server/actions/categories";
+import { Modal } from "@/components/Modal";
 import { slotVar, SLOT_COUNT } from "@/lib/palette";
 import { CATEGORY_ICON_COMPONENTS, CATEGORY_ICON_GROUPS } from "@/lib/category-icons";
 import { nextColorSlot, type CategoryIcon } from "@/lib/validation/category";
@@ -63,6 +64,20 @@ export function CategorySection({
   // independent.
   const [archivingIds, setArchivingIds] = useState<ReadonlySet<string>>(new Set());
   const [creating, startCreate] = useTransition();
+  /** Which category's edit dialog is open, plus the draft being edited.
+   *  `originalName` is kept separately so the dialog's title stays put while
+   *  the user types — a heading that renames itself keystroke by keystroke
+   *  is what a screen reader would re-announce on every character. */
+  const [editing, setEditing] = useState<{
+    id: string;
+    originalName: string;
+    name: string;
+    colorSlot: number;
+    icon: CategoryIcon;
+  } | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [saving, startSave] = useTransition();
+  const editErrorId = useId();
   const inputId = useId();
   const errorId = useId();
 
@@ -99,6 +114,40 @@ export function CategorySection({
       // tracking "the current least-used slot" rather than freezing at
       // whatever it was when the section first mounted.
       setColorSlot(nextColorSlot(nextItems.map((c) => c.color_slot)));
+    });
+  }
+
+  function saveEdit() {
+    if (!editing) return;
+    const trimmed = editing.name.trim();
+    if (!trimmed) {
+      setEditError("Name is required");
+      return;
+    }
+    setEditError(null);
+    startSave(async () => {
+      const res = await updateCategory({
+        id: editing.id,
+        name: trimmed,
+        color_slot: editing.colorSlot,
+        icon: editing.icon,
+      });
+      if ("error" in res) {
+        setEditError(res.error);
+        return;
+      }
+      // Patched into local state rather than left to the revalidate: the
+      // server action does revalidatePath("/", "layout"), but this list is
+      // client state seeded once from `initial`, so without this the row
+      // would keep its old name until a navigation.
+      setItems((prev) =>
+        prev.map((c) =>
+          c.id === editing.id
+            ? { ...c, name: trimmed, color_slot: editing.colorSlot, icon: editing.icon }
+            : c,
+        ),
+      );
+      setEditing(null);
     });
   }
 
@@ -144,9 +193,31 @@ export function CategorySection({
               style={{ borderColor: "var(--grid)" }}
             >
               <Icon aria-hidden size={16} style={{ color: slotVar(c.color_slot) }} className="shrink-0" />
-              <span className="flex-1" style={{ color: "var(--ink)" }}>
+              {/* The row's own name is the edit affordance, matching how a
+                  transaction row opens its edit screen. Accessible name is
+                  "Edit <name>", which CONTAINS the visible text (WCAG 2.5.3
+                  Label in Name) while still saying what pressing it does —
+                  a button announced as bare "Groceries" says neither. */}
+              <button
+                type="button"
+                onClick={() => {
+                  setEditError(null);
+                  setEditing({
+                    id: c.id,
+                    originalName: c.name,
+                    name: c.name,
+                    colorSlot: c.color_slot,
+                    icon: (c.icon as CategoryIcon) in CATEGORY_ICON_COMPONENTS
+                      ? (c.icon as CategoryIcon)
+                      : "circle",
+                  });
+                }}
+                aria-label={`Edit ${c.name}`}
+                className={`flex-1 truncate rounded-sm text-left ${FOCUS_RING}`}
+                style={{ color: "var(--ink)" }}
+              >
                 {c.name}
-              </span>
+              </button>
               <button
                 type="button"
                 onClick={() => archive(c.id)}
@@ -196,122 +267,13 @@ export function CategorySection({
           />
         </label>
 
-        <fieldset>
-          <legend className="text-xs" style={{ color: "var(--ink-2)" }}>
-            Colour
-          </legend>
-          <div className="mt-1 flex flex-wrap gap-2">
-            {SLOTS.map((slot) => {
-              const selected = colorSlot === slot;
-              return (
-                <label key={slot} className="cursor-pointer">
-                  <input
-                    type="radio"
-                    name={`${kind}-color-slot`}
-                    value={slot}
-                    checked={selected}
-                    onChange={() => setColorSlot(slot)}
-                    className="peer sr-only"
-                    aria-label={`Colour ${slot}`}
-                  />
-                  {/* Selection is shown with more than the swatch's own
-                      hue: a visible outline ring plus a Check glyph
-                      overlay, not just "this circle is a different colour
-                      from the others" (it can't be — the colour IS the
-                      slot being chosen). The Check glyph is rendered in
-                      var(--surface), which measures >= 3.09:1 against
-                      every one of the 8 slot colours in both themes (this
-                      task's report's existing glyph-vs-surface table,
-                      recomputed here for the inverse pairing — same 8
-                      background colours, so the same figures apply). */}
-                  <span
-                    aria-hidden
-                    className={`flex h-7 w-7 items-center justify-center rounded-full ${SWATCH_FOCUS_RING}`}
-                    style={{
-                      background: slotVar(slot),
-                      outline: selected ? "2px solid var(--ink)" : "2px solid transparent",
-                      outlineOffset: 2,
-                    }}
-                  >
-                    {selected && <Check size={14} aria-hidden style={{ color: "var(--surface)" }} />}
-                  </span>
-                </label>
-              );
-            })}
-          </div>
-        </fieldset>
+        <ColourPicker
+          groupName={`${kind}-color-slot`}
+          value={colorSlot}
+          onChange={setColorSlot}
+        />
 
-        <fieldset>
-          <legend className="text-xs" style={{ color: "var(--ink-2)" }}>
-            Icon
-          </legend>
-          {/* Grouped and scroll-bounded rather than one flat wrap row. At 17
-              icons a single row was fine; at 132 it is a wall of glyphs
-              several screens tall on a phone, which pushes the Add button
-              out of reach — the control the user came here to press. The
-              groups are a partition of CATEGORY_ICONS, proven at import
-              time in src/lib/category-icons.ts, so nothing the schema
-              accepts can be missing from this list.
-
-              One radio group across all sections (every input shares
-              `${kind}-icon`), so arrow keys still traverse the whole set
-              and only one icon can be chosen — the headings are visual
-              grouping, not separate controls. */}
-          <div
-            className="mt-1 max-h-56 overflow-y-auto rounded-md border p-2"
-            style={{ borderColor: "var(--grid)" }}
-          >
-            {CATEGORY_ICON_GROUPS.map((group) => (
-              <div key={group.label} className="mb-3 last:mb-0">
-                <p
-                  className="mb-1 text-[11px] font-medium uppercase tracking-wide"
-                  style={{ color: "var(--muted)" }}
-                >
-                  {group.label}
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {group.icons.map((iconName) => {
-                    const Icon = CATEGORY_ICON_COMPONENTS[iconName];
-                    const selected = icon === iconName;
-                    return (
-                      <label key={iconName} className="cursor-pointer">
-                        <input
-                          type="radio"
-                          name={`${kind}-icon`}
-                          value={iconName}
-                          checked={selected}
-                          onChange={() => setIcon(iconName)}
-                          className="peer sr-only"
-                          aria-label={iconName.replace(/-/g, " ")}
-                        />
-                        {/* Same mitigation shape as src/components/shell/
-                            Sidebar.tsx's active-nav-item indicator
-                            (border-left colour change plus a second cue —
-                            there font-weight, here the icon's own stroke
-                            colour), not the background-alone approach that
-                            failed elsewhere on this branch. var(--cat-1)
-                            measures 5.60:1 (light) / 5.20:1 (dark) against
-                            var(--surface); var(--ink-2) (unselected)
-                            measures 7.73:1 / 9.72:1. */}
-                        <span
-                          aria-hidden
-                          className={`flex h-7 w-7 items-center justify-center rounded-md ${SWATCH_FOCUS_RING}`}
-                          style={{
-                            borderLeft: `3px solid ${selected ? "var(--cat-1)" : "transparent"}`,
-                            background: selected ? "var(--grid)" : "transparent",
-                            color: selected ? "var(--cat-1)" : "var(--ink-2)",
-                          }}
-                        >
-                          <Icon size={16} aria-hidden />
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
-          </div>
-        </fieldset>
+        <IconPicker groupName={`${kind}-icon`} value={icon} onChange={setIcon} />
 
         <button
           type="submit"
@@ -329,6 +291,237 @@ export function CategorySection({
           {error}
         </p>
       </form>
+
+      {/* ONE dialog for the list, not one per row — the same reasoning
+          WalletList.tsx documents: a Modal inside every <li> would mount a
+          focus trap and a keydown handler per category when only one can be
+          open. Titled with the name captured at open time, so a screen
+          reader is told which category is being changed even though the row
+          behind it is now covered. */}
+      {editing && (
+        <Modal open title={`Edit ${editing.originalName}`} onClose={() => setEditing(null)}>
+          <form
+            className="flex flex-col gap-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              saveEdit();
+            }}
+          >
+            <label className="flex flex-col gap-1">
+              <span className="text-xs" style={{ color: "var(--ink-2)" }}>
+                Name
+              </span>
+              <input
+                value={editing.name}
+                onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                maxLength={40}
+                autoComplete="off"
+                aria-describedby={editError ? editErrorId : undefined}
+                className={`rounded-md border px-3 py-2 text-sm ${FOCUS_RING}`}
+                style={{
+                  borderColor: "var(--ink-2)",
+                  background: "var(--surface)",
+                  color: "var(--ink)",
+                }}
+              />
+            </label>
+
+            {/* Distinct radio-group names from the add form's, which is still
+                mounted behind this dialog — sharing a name would make a
+                choice here clear the one below. */}
+            <ColourPicker
+              groupName={`${kind}-edit-color-slot`}
+              value={editing.colorSlot}
+              onChange={(slot) => setEditing({ ...editing, colorSlot: slot })}
+            />
+            <IconPicker
+              groupName={`${kind}-edit-icon`}
+              value={editing.icon}
+              onChange={(next) => setEditing({ ...editing, icon: next })}
+            />
+
+            {/* Kind and wallet are absent rather than shown disabled — this
+                codebase's convention for a control that could never succeed.
+                Neither is editable: 0018_category_update_grant.sql revokes
+                the column privilege for both, and changing a category's kind
+                would leave every transaction filed under it holding a
+                mismatched category, which updateTransaction then refuses. */}
+            <div className="flex items-center gap-2">
+              <button
+                type="submit"
+                disabled={saving}
+                className={`rounded-md px-3 py-2 text-sm font-medium disabled:opacity-60 ${FOCUS_RING}`}
+                style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+              >
+                {saving ? "Saving…" : "Save"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditing(null)}
+                className={`rounded-md px-3 py-2 text-sm ${FOCUS_RING}`}
+                style={{ color: "var(--ink-2)" }}
+              >
+                Cancel
+              </button>
+            </div>
+
+            {/* Always mounted, same reasoning as the add form's alert. */}
+            <p id={editErrorId} role="alert" className="text-sm" style={{ color: "var(--neg)" }}>
+              {editError}
+            </p>
+          </form>
+        </Modal>
+      )}
     </section>
+  );
+}
+
+
+/**
+ * The colour and icon pickers, lifted out of the add form so the edit dialog
+ * renders the SAME controls rather than a second copy that drifts. Both take
+ * their radio-group `name` from the caller: the add form and an open edit
+ * dialog are on the page at once, and two radio groups sharing a name would
+ * make choosing a colour in the dialog silently clear the one in the form
+ * beneath it.
+ */
+function ColourPicker({
+  groupName,
+  value,
+  onChange,
+}: {
+  groupName: string;
+  value: number;
+  onChange: (slot: number) => void;
+}) {
+  return (
+        <fieldset>
+        <legend className="text-xs" style={{ color: "var(--ink-2)" }}>
+        Colour
+        </legend>
+        <div className="mt-1 flex flex-wrap gap-2">
+        {SLOTS.map((slot) => {
+          const selected = value === slot;
+          return (
+            <label key={slot} className="cursor-pointer">
+              <input
+                type="radio"
+                name={groupName}
+                value={slot}
+                checked={selected}
+                onChange={() => onChange(slot)}
+                className="peer sr-only"
+                aria-label={`Colour ${slot}`}
+              />
+              {/* Selection is shown with more than the swatch's own
+                  hue: a visible outline ring plus a Check glyph
+                  overlay, not just "this circle is a different colour
+                  from the others" (it can't be — the colour IS the
+                  slot being chosen). The Check glyph is rendered in
+                  var(--surface), which measures >= 3.09:1 against
+                  every one of the 8 slot colours in both themes (this
+                  task's report's existing glyph-vs-surface table,
+                  recomputed here for the inverse pairing — same 8
+                  background colours, so the same figures apply). */}
+              <span
+                aria-hidden
+                className={`flex h-7 w-7 items-center justify-center rounded-full ${SWATCH_FOCUS_RING}`}
+                style={{
+                  background: slotVar(slot),
+                  outline: selected ? "2px solid var(--ink)" : "2px solid transparent",
+                  outlineOffset: 2,
+                }}
+              >
+                {selected && <Check size={14} aria-hidden style={{ color: "var(--surface)" }} />}
+              </span>
+            </label>
+          );
+        })}
+        </div>
+      </fieldset>
+  );
+}
+
+function IconPicker({
+  groupName,
+  value,
+  onChange,
+}: {
+  groupName: string;
+  value: CategoryIcon;
+  onChange: (icon: CategoryIcon) => void;
+}) {
+  return (
+        <fieldset>
+        <legend className="text-xs" style={{ color: "var(--ink-2)" }}>
+        Icon
+        </legend>
+        {/* Grouped and scroll-bounded rather than one flat wrap row. At 17
+          icons a single row was fine; at 132 it is a wall of glyphs
+          several screens tall on a phone, which pushes the Add button
+          out of reach — the control the user came here to press. The
+          groups are a partition of CATEGORY_ICONS, proven at import
+          time in src/lib/category-icons.ts, so nothing the schema
+          accepts can be missing from this list.
+
+          One radio group across all sections (every input shares
+          `${kind}-icon`), so arrow keys still traverse the whole set
+          and only one icon can be chosen — the headings are visual
+          grouping, not separate controls. */}
+        <div
+        className="mt-1 max-h-56 overflow-y-auto rounded-md border p-2"
+        style={{ borderColor: "var(--grid)" }}
+        >
+        {CATEGORY_ICON_GROUPS.map((group) => (
+          <div key={group.label} className="mb-3 last:mb-0">
+            <p
+              className="mb-1 text-[11px] font-medium uppercase tracking-wide"
+              style={{ color: "var(--muted)" }}
+            >
+              {group.label}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {group.icons.map((iconName) => {
+                const Icon = CATEGORY_ICON_COMPONENTS[iconName];
+                const selected = value === iconName;
+                return (
+                  <label key={iconName} className="cursor-pointer">
+                    <input
+                      type="radio"
+                      name={groupName}
+                      value={iconName}
+                      checked={selected}
+                      onChange={() => onChange(iconName)}
+                      className="peer sr-only"
+                      aria-label={iconName.replace(/-/g, " ")}
+                    />
+                    {/* Same mitigation shape as src/components/shell/
+                        Sidebar.tsx's active-nav-item indicator
+                        (border-left colour change plus a second cue —
+                        there font-weight, here the icon's own stroke
+                        colour), not the background-alone approach that
+                        failed elsewhere on this branch. var(--cat-1)
+                        measures 5.60:1 (light) / 5.20:1 (dark) against
+                        var(--surface); var(--ink-2) (unselected)
+                        measures 7.73:1 / 9.72:1. */}
+                    <span
+                      aria-hidden
+                      className={`flex h-7 w-7 items-center justify-center rounded-md ${SWATCH_FOCUS_RING}`}
+                      style={{
+                        borderLeft: `3px solid ${selected ? "var(--cat-1)" : "transparent"}`,
+                        background: selected ? "var(--grid)" : "transparent",
+                        color: selected ? "var(--cat-1)" : "var(--ink-2)",
+                      }}
+                    >
+                      <Icon size={16} aria-hidden />
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+        </div>
+      </fieldset>
   );
 }

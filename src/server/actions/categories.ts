@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { categoryInput, nextColorSlot } from "@/lib/validation/category";
+import { categoryInput, categoryEditInput, nextColorSlot } from "@/lib/validation/category";
 import type { Database } from "@/lib/database.types";
 
 // Not exported: a file-level "use server" directive requires every EXPORT
@@ -167,6 +167,65 @@ export async function createCategory(raw: unknown): Promise<CategoryResult> {
  * `setDeletedAt` (Task 16), which counts affected rows for the identical
  * reason — see that function's doc comment.
  */
+/**
+ * Renames / recolours / re-icons an existing category. Name, colour and icon
+ * are the whole of it — see `categoryEditInput`'s doc comment for what is
+ * deliberately not here and why the database now refuses those columns too
+ * (supabase/migrations/0018_category_update_grant.sql).
+ *
+ * No membership lookup of its own, matching `archiveCategory` rather than
+ * `createCategory`: `categories_member` RLS scopes this UPDATE to wallets the
+ * caller belongs to, so a foreign id already affects zero rows and lands on
+ * "Category not found". `createCategory` needs its explicit `wallet_members`
+ * check because an INSERT's `with check` alone cannot distinguish "not a
+ * member" from a malformed row, and it wants the readable message.
+ *
+ * `.is("archived_at", null)` for the same reason `updateTransaction` filters
+ * on `deleted_at`: an archived category is not offered anywhere in the UI,
+ * and editing one directly would be an unstated asymmetry with archive
+ * itself. The filter is on the UPDATE, not a preceding SELECT, so an archive
+ * racing this edit lands on "not found" rather than a stray write.
+ *
+ * A wallet being archived is deliberately NOT checked, matching
+ * `archiveCategory`'s existing behaviour rather than `updateTransaction`'s:
+ * renaming a category inside a wallet you have archived changes no money and
+ * no balance, and inventing a refusal here that archive itself does not make
+ * would be a new asymmetry rather than a removed one.
+ */
+export async function updateCategory(raw: unknown): Promise<MutationResult> {
+  const parsed = categoryEditInput.safeParse(raw);
+  if (!parsed.success) return { error: parsed.error.issues[0]!.message };
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in" };
+
+  const { id, name, color_slot, icon } = parsed.data;
+
+  const { data, error } = await supabase
+    .from("categories")
+    .update({ name, color_slot, icon })
+    .eq("id", id)
+    .is("archived_at", null)
+    .select("id");
+
+  if (error) {
+    // `categories_unique_active_name` is unique on (wallet_id, kind,
+    // lower(btrim(name))) among ACTIVE rows, so renaming onto a sibling's
+    // name raises 23505. Same message shape `createCategory` already uses
+    // for the identical collision — a driver error would reach the user as
+    // "Could not save", which says nothing about the one thing they can fix.
+    if (error.code === "23505") return { error: `"${name}" already exists` };
+    return { error: "Could not save category. Please try again." };
+  }
+  if (!data || data.length === 0) return { error: "Category not found" };
+
+  revalidatePath("/", "layout");
+  return { ok: true };
+}
+
 export async function archiveCategory(id: string): Promise<MutationResult> {
   const parsedId = idSchema.safeParse(id);
   // Deliberately the same "not found" message a real-but-nonexistent id

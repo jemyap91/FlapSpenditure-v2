@@ -1,0 +1,68 @@
+-- supabase/migrations/0018_category_update_grant.sql
+
+-- `categories` never got the column-scoped UPDATE grant that `transactions`
+-- has had since 0004_rls.sql:82-83 and that `recurring_rules` was given in
+-- 0015. It has been carrying Supabase's default table-wide UPDATE, on every
+-- column, while `categories_member` checks membership with BOTH `using` and
+-- `with check`:
+--
+--   using       is_wallet_member(wallet_id)   -- the OLD row
+--   with check  is_wallet_member(wallet_id)   -- the NEW row
+--
+-- A user who belongs to two wallets satisfies both halves while moving a row
+-- OUT of one and into the other. That is the same escalation 0004 documents
+-- at length for transactions and 0015 closed for recurring rules; this is the
+-- third table with the shape and the only one where it was still open.
+--
+-- Confirmed against a live database rather than argued, as an ordinary
+-- member of a shared wallet (not its owner), through the same
+-- `set local role authenticated` + `request.jwt.claims` impersonation
+-- supabase/tests/rls.sql uses:
+--
+--   update categories set wallet_id = '<my private wallet>' where id = '<shared>';
+--   -- ESCALATION CONFIRMED: category moved into U2's private wallet
+--   update categories set kind = 'income' where id = '<shared>';
+--   -- kind now: income
+--
+-- Both are now regression-tested in supabase/tests/rls.sql.
+--
+-- The `wallet_id` move is bounded but real: `transactions_category_same_wallet`
+-- ((category_id, wallet_id) -> categories(id, wallet_id)) means a category
+-- with transactions filed against it cannot move without breaking that FK, so
+-- the reachable case is an unused or freshly-seeded category. The effect is a
+-- member silently removing a category from everyone else's shared list.
+--
+-- `kind` is the worse of the two and has no FK standing in its way. Flipping an
+-- expense category to income leaves every transaction already filed under it
+-- holding a category whose kind disagrees with the transaction's own — and
+-- `updateTransaction` refuses exactly that combination ("That category doesn't
+-- match this transaction type", src/server/actions/transactions.ts). One
+-- member's PATCH makes another member's transactions permanently uneditable
+-- until the category is changed back.
+--
+-- Revoke-then-grant, the same two-step 0004:82-83 uses, because grants are
+-- ADDITIVE: naming columns in a later `grant` does not narrow an earlier
+-- table-wide one. Only the revoke narrows anything.
+
+revoke update on categories from authenticated;
+
+-- What stays writable, and why each one is safe:
+--
+--   name        the rename this migration's UI exists for. Bounded by
+--               `length(btrim(name)) between 1 and 40` and by the partial
+--               unique index on (wallet_id, kind, lower(btrim(name))).
+--   color_slot  1..16 since 0017. Cosmetic, wallet-independent.
+--   icon        free text at the database level, constrained to the
+--               CATEGORY_ICONS enum by zod in the application.
+--   sort_order  ordering within a wallet's list. Cannot move a row between
+--               wallets, so it carries none of the escalation risk.
+--   archived_at `archiveCategory` writes this, and RLS still confines the
+--               write to wallets the caller belongs to.
+--
+-- Deliberately absent: `wallet_id` (the escalation above), `kind` (the
+-- uneditable-transactions problem above, and spec §3.1's rule that a
+-- transaction's kind is fixed applies just as strongly to the category that
+-- classifies it), `is_default` (0007/0008 seeding state, not user data),
+-- `id` and `created_at` (identity and provenance, never user-writable).
+grant update (name, color_slot, icon, sort_order, archived_at)
+  on categories to authenticated;

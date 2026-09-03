@@ -3784,3 +3784,98 @@ begin;
       'SAFETY BROKEN: a transfer leg gained a category during an edit';
   end $$;
 commit;
+
+-- =====================================================================
+-- 0018: a wallet member cannot move a category out of a shared wallet,
+--       and cannot change its kind.
+--
+-- Regression test for a live escalation, reproduced against a real
+-- database before it was closed. `categories` carried Supabase's default
+-- table-wide UPDATE grant while `categories_member` checks membership
+-- with both `using` (old row) and `with check` (new row), so a user who
+-- belongs to two wallets satisfied both halves while moving a row out of
+-- one. See supabase/migrations/0018_category_update_grant.sql for the
+-- full writeup and the exact statements that succeeded.
+--
+-- Written as "the row did not change" rather than "the statement threw":
+-- a column-level grant makes Postgres raise 42501, but RLS alone would
+-- have made the same UPDATE affect zero rows silently. Asserting the
+-- OUTCOME covers both mechanisms, so this test keeps its meaning if the
+-- protection is ever re-implemented as a policy instead of a grant.
+-- =====================================================================
+begin;
+  -- Alice owns a shared wallet; Bob is an ordinary member of it and also
+  -- owns a private wallet of his own -- the two-wallet membership the
+  -- escalation needs.
+  insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+  values ('c0de0000-0000-4000-8000-00000000a001', 'aaaaaaaa-0000-0000-0000-000000000001',
+          'Shared household', 'bank', 'USD', 1, 'wallet'),
+         ('c0de0000-0000-4000-8000-00000000b002', 'bbbbbbbb-0000-0000-0000-000000000002',
+          'Bob private', 'bank', 'USD', 2, 'wallet');
+  insert into wallet_members (wallet_id, user_id, role)
+  values ('c0de0000-0000-4000-8000-00000000a001', 'bbbbbbbb-0000-0000-0000-000000000002', 'member')
+  on conflict do nothing;
+
+  insert into categories (id, wallet_id, name, kind, color_slot, icon)
+  values ('c0de0000-0000-4000-8000-00000000c003', 'c0de0000-0000-4000-8000-00000000a001',
+          'Shared groceries', 'expense', 1, 'shopping-basket');
+
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002"}';
+
+  -- Each attempt is wrapped so a 42501 from the column grant is caught and
+  -- the block continues to the assertions; without this, ON_ERROR_STOP
+  -- would end the file on the very refusal the test is trying to observe.
+  do $$
+  begin
+    begin
+      update categories set wallet_id = 'c0de0000-0000-4000-8000-00000000b002'
+       where id = 'c0de0000-0000-4000-8000-00000000c003';
+    exception when insufficient_privilege then null;
+    end;
+
+    begin
+      update categories set kind = 'income'
+       where id = 'c0de0000-0000-4000-8000-00000000c003';
+    exception when insufficient_privilege then null;
+    end;
+
+    begin
+      update categories set is_default = true
+       where id = 'c0de0000-0000-4000-8000-00000000c003';
+    exception when insufficient_privilege then null;
+    end;
+  end $$;
+
+  do $$
+  declare w uuid; k category_kind; d boolean; nm text;
+  begin
+    select wallet_id, kind, is_default, name into w, k, d, nm
+      from categories where id = 'c0de0000-0000-4000-8000-00000000c003';
+
+    assert w = 'c0de0000-0000-4000-8000-00000000a001',
+      format('ESCALATION: a member moved a shared category into wallet %s', w);
+    assert k = 'expense',
+      format('a member changed a shared category''s kind to %s, which would make every transaction filed under it uneditable', k);
+    assert d = false, 'a member changed is_default, which is seeding state and not user data';
+    assert nm = 'Shared groceries', 'the control column changed unexpectedly';
+  end $$;
+
+  -- The positive control, and the reason the three assertions above cannot
+  -- pass by the writes simply being impossible for some unrelated reason:
+  -- the SAME member, on the SAME row, in the same transaction, may still
+  -- edit exactly what the new grant allows.
+  do $$
+  declare nm text; c smallint; ic text;
+  begin
+    update categories
+       set name = 'Renamed by member', color_slot = 12, icon = 'carrot'
+     where id = 'c0de0000-0000-4000-8000-00000000c003';
+
+    select name, color_slot, icon into nm, c, ic
+      from categories where id = 'c0de0000-0000-4000-8000-00000000c003';
+    assert nm = 'Renamed by member', 'a member could not rename a category they share';
+    assert c = 12, 'a member could not recolour a category they share';
+    assert ic = 'carrot', 'a member could not change a category''s icon';
+  end $$;
+rollback;
