@@ -90,3 +90,100 @@ export function defaultCurrencyFor(
   // happened to arrive in.
   return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]![0];
 }
+export type WalletGroup = { id: string; name: string; sort_order: number };
+export type WalletPref = { wallet_id: string; group_id: string | null; sort_order: number };
+
+/** One rendered section of the wallets list: a named group, or the trailing
+ *  ungrouped one (`group: null`). */
+export type WalletSection = { group: WalletGroup | null; wallets: WalletWithBalance[] };
+
+/**
+ * Arranges the wallets list into the sections the screen renders, applying
+ * the user's own grouping and their chosen ordering.
+ *
+ * Pure, and separate from page.tsx for the same reason `mergeWalletBalances`
+ * is: this is where every ordering rule actually lives, and it is worth
+ * testing without a Supabase stack.
+ *
+ * Grouping is applied under ALL three sort modes, not just "manual". The
+ * alternative — groups collapsing whenever you sort by name — would make
+ * sorting look like it had deleted the arrangement. The sort chooses the
+ * order WITHIN each section, and the sections themselves always run in the
+ * user's group order with ungrouped last.
+ *
+ * `prefs` covers only wallets the user has actually arranged; a wallet they
+ * have never touched, or one shared with them a moment ago, simply has no
+ * row. Those are ungrouped with sort_order 0, which under manual ordering
+ * puts them at the top of the ungrouped section rather than dropping them —
+ * a wallet must never disappear from this screen because a preference row is
+ * missing.
+ *
+ * Ties are always broken by name, then by id. Without that, two wallets
+ * sharing a sort_order (or a created_at, which a seeded pair can) would
+ * render in whatever order the query happened to return, and the list would
+ * appear to shuffle itself between visits.
+ */
+export function arrangeWallets(
+  wallets: readonly WalletWithBalance[],
+  groups: readonly WalletGroup[],
+  prefs: readonly WalletPref[],
+  sort: "manual" | "name" | "created",
+  /** `created_at` per wallet id. Not on `WalletRow` — the list has never
+   *  needed it before — so it is passed alongside rather than widening a
+   *  type six other call sites share. A wallet missing from this map sorts
+   *  as if created at epoch, which only affects `sort: "created"`. */
+  createdAt: ReadonlyMap<string, string> = new Map(),
+): WalletSection[] {
+  const prefByWallet = new Map(prefs.map((p) => [p.wallet_id, p]));
+  const groupById = new Map(groups.map((g) => [g.id, g]));
+
+  const byName = (a: WalletWithBalance, b: WalletWithBalance) =>
+    a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+
+  const compare = (a: WalletWithBalance, b: WalletWithBalance) => {
+    if (sort === "name") return byName(a, b);
+    if (sort === "created") {
+      const at = createdAt.get(a.id) ?? "";
+      const bt = createdAt.get(b.id) ?? "";
+      return at.localeCompare(bt) || byName(a, b);
+    }
+    const ao = prefByWallet.get(a.id)?.sort_order ?? 0;
+    const bo = prefByWallet.get(b.id)?.sort_order ?? 0;
+    return ao - bo || byName(a, b);
+  };
+
+  const buckets = new Map<string | null, WalletWithBalance[]>();
+  for (const w of wallets) {
+    // A pref pointing at a group that no longer exists is treated as
+    // ungrouped rather than dropped. `on delete set null (group_id)` already
+    // nulls these, so it should not happen — but a wallet vanishing from the
+    // list is a far worse failure than one appearing in the wrong section,
+    // and this is the only place that choice can be made.
+    const raw = prefByWallet.get(w.id)?.group_id ?? null;
+    const key = raw !== null && groupById.has(raw) ? raw : null;
+    const bucket = buckets.get(key);
+    if (bucket) bucket.push(w);
+    else buckets.set(key, [w]);
+  }
+
+  const ordered = [...groups].sort(
+    (a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name),
+  );
+
+  const sections: WalletSection[] = [];
+  for (const g of ordered) {
+    const inGroup = buckets.get(g.id);
+    // Empty groups are still rendered: a user who made "Savings" and has not
+    // filed anything into it yet needs to see it exists, and it is the drop
+    // target for doing so.
+    sections.push({ group: g, wallets: (inGroup ?? []).sort(compare) });
+  }
+  const ungrouped = buckets.get(null) ?? [];
+  // The ungrouped section is omitted only when it is empty AND there is at
+  // least one group to show instead — with no groups at all it IS the list,
+  // and an empty one carries the "No wallets yet" empty state.
+  if (ungrouped.length > 0 || sections.length === 0) {
+    sections.push({ group: null, wallets: ungrouped.sort(compare) });
+  }
+  return sections;
+}

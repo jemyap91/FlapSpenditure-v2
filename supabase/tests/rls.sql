@@ -3879,3 +3879,106 @@ begin;
     assert ic = 'carrot', 'a member could not change a category''s icon';
   end $$;
 rollback;
+
+-- =====================================================================
+-- 0019: wallet grouping and ordering are PRIVATE to each user.
+--
+-- The whole reason these live in their own tables rather than as columns
+-- on `wallets` is that wallets are shared: a column would mean one member
+-- rearranging every other member's screen. That promise is only worth
+-- anything if one user genuinely cannot read or write another's rows.
+-- =====================================================================
+begin;
+  insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+  values ('9a9a0000-0000-4000-8000-00000000a001', 'aaaaaaaa-0000-0000-0000-000000000001',
+          'Shared for grouping', 'bank', 'USD', 1, 'wallet');
+  insert into wallet_members (wallet_id, user_id, role)
+  values ('9a9a0000-0000-4000-8000-00000000a001', 'bbbbbbbb-0000-0000-0000-000000000002', 'member')
+  on conflict do nothing;
+
+  -- Alice groups the shared wallet her way.
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
+  insert into wallet_groups (id, user_id, name, sort_order)
+  values ('9a9a0000-0000-4000-8000-00000000c001'::uuid, 'aaaaaaaa-0000-0000-0000-000000000001',
+          'Alice long term', 0);
+  insert into wallet_prefs (user_id, wallet_id, group_id, sort_order)
+  values ('aaaaaaaa-0000-0000-0000-000000000001', '9a9a0000-0000-4000-8000-00000000a001',
+          '9a9a0000-0000-4000-8000-00000000c001'::uuid, 7);
+
+  -- Bob shares the wallet but must see none of Alice's arrangement of it.
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002"}';
+  do $$
+  declare n int;
+  begin
+    select count(*) into n from wallet_groups;
+    assert n = 0, format('a member read %s of another user''s wallet groups', n);
+
+    select count(*) into n from wallet_prefs;
+    assert n = 0, format('a member read %s of another user''s wallet preferences', n);
+
+    -- ...and cannot rewrite what he cannot see. RLS reduces this to zero
+    -- rows rather than raising, so the assertion is on the outcome.
+    update wallet_groups set name = 'Bob was here';
+    select count(*) into n from wallet_groups
+      where name = 'Bob was here';
+    assert n = 0, 'ESCALATION: a member renamed another user''s wallet group';
+
+    update wallet_prefs set sort_order = 99;
+    delete from wallet_prefs;
+  end $$;
+
+  -- Filing his OWN preference into ALICE's group is refused by the
+  -- composite FK on (group_id, user_id) -- the same shape
+  -- transactions_category_same_wallet uses. Without it, group_id is just a
+  -- uuid, and Bob's wallet would render under a group name that is not his.
+  do $$
+  declare ok boolean := false;
+  begin
+    begin
+      insert into wallet_prefs (user_id, wallet_id, group_id, sort_order)
+      values ('bbbbbbbb-0000-0000-0000-000000000002',
+              '9a9a0000-0000-4000-8000-00000000a001',
+              '9a9a0000-0000-4000-8000-00000000c001'::uuid, 0);
+    exception when foreign_key_violation then ok := true;
+    end;
+    assert ok, 'ESCALATION: a user filed a wallet into another user''s group';
+  end $$;
+
+  -- Positive control: Bob CAN arrange the same shared wallet his own way,
+  -- and Alice's row is untouched by it. Without this the assertions above
+  -- would also pass if the tables were simply unusable.
+  do $$
+  declare n int;
+  begin
+    insert into wallet_prefs (user_id, wallet_id, group_id, sort_order)
+    values ('bbbbbbbb-0000-0000-0000-000000000002',
+            '9a9a0000-0000-4000-8000-00000000a001', null, 3);
+    select count(*) into n from wallet_prefs where sort_order = 3;
+    assert n = 1, 'a member could not record their own arrangement of a shared wallet';
+  end $$;
+
+  -- A preference about a wallet Bob is NOT a member of is refused by
+  -- wallet_prefs_own's `with check`, so an arbitrary uuid cannot be used to
+  -- probe which wallet ids exist.
+  do $$
+  declare ok boolean := false;
+  begin
+    begin
+      insert into wallet_prefs (user_id, wallet_id, group_id, sort_order)
+      values ('bbbbbbbb-0000-0000-0000-000000000002',
+              'a4a40000-0000-0000-0000-00000000a001', null, 0);
+    exception when insufficient_privilege or check_violation then ok := true;
+    end;
+    assert ok, 'a user recorded a preference about a wallet they cannot see';
+  end $$;
+
+  -- Alice still has hers, with the order she chose.
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
+  do $$
+  declare n int;
+  begin
+    select count(*) into n from wallet_prefs where sort_order = 7;
+    assert n = 1, 'another user''s writes disturbed this user''s arrangement';
+  end $$;
+rollback;

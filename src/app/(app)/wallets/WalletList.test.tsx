@@ -4,6 +4,13 @@ import userEvent from "@testing-library/user-event";
 import { WalletList } from "./WalletList";
 import type { WalletWithBalance } from "./wallet-rows";
 import { archiveWallet } from "@/server/actions/wallets";
+import {
+  createWalletGroup,
+  deleteWalletGroup,
+  setWalletGroup,
+  setWalletOrder,
+  setWalletSort,
+} from "@/server/actions/wallet-groups";
 
 /**
  * Same reasoning as src/components/TransactionList.test.tsx: this action
@@ -14,6 +21,19 @@ import { archiveWallet } from "@/server/actions/wallets";
  */
 vi.mock("@/server/actions/wallets", () => ({
   archiveWallet: vi.fn(),
+}));
+
+// WalletList now also imports the per-user grouping/ordering actions
+// (0019). Same reasoning as the mock above: that module carries a
+// file-level "use server" and reaches @/lib/supabase/server -> the env
+// helpers, and `npm test` runs with no .env.local.
+vi.mock("@/server/actions/wallet-groups", () => ({
+  createWalletGroup: vi.fn(),
+  renameWalletGroup: vi.fn(),
+  deleteWalletGroup: vi.fn(),
+  setWalletGroup: vi.fn(),
+  setWalletOrder: vi.fn(),
+  setWalletSort: vi.fn(),
 }));
 
 /** The signed-in user for every render below, unless a case deliberately
@@ -39,6 +59,24 @@ const wallet = (id: string, over: Partial<WalletWithBalance> = {}): WalletWithBa
   ...over,
 });
 
+
+/**
+ * These tests were written against a flat `wallets` prop. WalletList now
+ * takes the list already arranged into sections (0019's per-user grouping),
+ * so this supplies the one-ungrouped-section shape `arrangeWallets` produces
+ * when the viewer has made no groups — which is every case here, and the
+ * state every user starts in.
+ *
+ * Deliberately not calling `arrangeWallets` itself: it has its own tests in
+ * ./wallet-rows.test.ts, and routing these through it would make one sorting
+ * bug there fail dozens of unrelated assertions here.
+ */
+const listProps = (wallets: WalletWithBalance[]) => ({
+  sections: [{ group: null, wallets }],
+  groups: [],
+  sort: "manual" as const,
+});
+
 beforeEach(() => {
   vi.mocked(archiveWallet).mockReset();
   vi.mocked(archiveWallet).mockResolvedValue({});
@@ -49,10 +87,10 @@ describe("WalletList", () => {
     render(
       <WalletList
         currentUserId={ME}
-        wallets={[
+        {...listProps([
           wallet("a", { name: "Everyday", currency_code: "USD", balanceMinor: 125000 }),
           wallet("b", { name: "Tokyo", currency_code: "JPY", balanceMinor: 4200 }),
-        ]}
+        ])}
       />,
     );
     expect(screen.getByText("Everyday")).toBeInTheDocument();
@@ -62,12 +100,12 @@ describe("WalletList", () => {
   });
 
   it("renders a negative balance with a sign rather than as a bare magnitude", () => {
-    render(<WalletList currentUserId={ME} wallets={[wallet("a", { kind: "card", balanceMinor: -5000 })]} />);
+    render(<WalletList currentUserId={ME} {...listProps([wallet("a", { kind: "card", balanceMinor: -5000 })])} />);
     expect(screen.getByText("−$50.00")).toBeInTheDocument();
   });
 
   it("shows an em dash, not $0.00, when a balance could not be computed", () => {
-    render(<WalletList currentUserId={ME} wallets={[wallet("a", { balanceMinor: null })]} />);
+    render(<WalletList currentUserId={ME} {...listProps([wallet("a", { balanceMinor: null })])} />);
     expect(screen.getByText("—")).toBeInTheDocument();
     expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
   });
@@ -80,7 +118,7 @@ describe("WalletList", () => {
    * this exact accessible name with a Playwright selector.
    */
   it("links the wallet's name to its detail screen", () => {
-    render(<WalletList currentUserId={ME} wallets={[wallet("a", { name: "Everyday" })]} />);
+    render(<WalletList currentUserId={ME} {...listProps([wallet("a", { name: "Everyday" })])} />);
     const link = screen.getByRole("link", { name: "Everyday" });
     expect(link).toHaveAttribute("href", "/wallets/a");
   });
@@ -92,7 +130,7 @@ describe("WalletList", () => {
      for the gesture's own cases. */
 
   it("refuses to archive the only wallet, and says why", () => {
-    render(<WalletList currentUserId={ME} wallets={[wallet("a", { name: "Everyday" })]} />);
+    render(<WalletList currentUserId={ME} {...listProps([wallet("a", { name: "Everyday" })])} />);
 
     swipeLeft(screen.getByRole("listitem", { name: "Everyday" }));
 
@@ -101,7 +139,7 @@ describe("WalletList", () => {
   });
 
   it("allows archiving once a second wallet exists", () => {
-    render(<WalletList currentUserId={ME} wallets={[wallet("a", { name: "Everyday" }), wallet("b", { name: "Savings" })]} />);
+    render(<WalletList currentUserId={ME} {...listProps([wallet("a", { name: "Everyday" }), wallet("b", { name: "Savings" })])} />);
 
     swipeLeft(screen.getByRole("listitem", { name: "Everyday" }));
 
@@ -110,7 +148,7 @@ describe("WalletList", () => {
 
   it("archives the wallet that was swiped, not the first one", async () => {
     const user = userEvent.setup();
-    render(<WalletList currentUserId={ME} wallets={[wallet("a", { name: "Everyday" }), wallet("b", { name: "Savings" })]} />);
+    render(<WalletList currentUserId={ME} {...listProps([wallet("a", { name: "Everyday" }), wallet("b", { name: "Savings" })])} />);
 
     swipeLeft(screen.getByRole("listitem", { name: "Savings" }));
     await user.click(screen.getByRole("button", { name: "Archive" }));
@@ -127,7 +165,7 @@ describe("WalletList", () => {
     // would reach the browser as an opaque identifier.
     vi.mocked(archiveWallet).mockResolvedValue({ error: "Could not archive wallet" });
     const user = userEvent.setup();
-    render(<WalletList currentUserId={ME} wallets={[wallet("a", { name: "Everyday" }), wallet("b", { name: "Savings" })]} />);
+    render(<WalletList currentUserId={ME} {...listProps([wallet("a", { name: "Everyday" }), wallet("b", { name: "Savings" })])} />);
 
     swipeLeft(screen.getByRole("listitem", { name: "Savings" }));
     await user.click(screen.getByRole("button", { name: "Archive" }));
@@ -136,7 +174,7 @@ describe("WalletList", () => {
   });
 
   it("renders the empty state rather than an empty list", () => {
-    render(<WalletList currentUserId={ME} wallets={[]} />);
+    render(<WalletList currentUserId={ME} {...listProps([])} />);
     expect(screen.getByText(/no wallets yet/i)).toBeInTheDocument();
   });
 
@@ -156,10 +194,10 @@ describe("WalletList", () => {
     render(
       <WalletList
         currentUserId={ME}
-        wallets={[
+        {...listProps([
           wallet("a", { name: "Everyday" }),
           wallet("b", { name: "Household", owner_id: PARTNER }),
-        ]}
+        ])}
       />,
     );
     // Positive pairing: the gesture still works on the wallet they DO own,
@@ -179,10 +217,10 @@ describe("WalletList", () => {
     render(
       <WalletList
         currentUserId={ME}
-        wallets={[
+        {...listProps([
           wallet("a", { name: "Everyday" }),
           wallet("b", { name: "Household", owner_id: PARTNER }),
-        ]}
+        ])}
       />,
     );
     swipeLeft(screen.getByRole("listitem", { name: "Everyday" }));
@@ -195,11 +233,11 @@ describe("WalletList", () => {
     render(
       <WalletList
         currentUserId={ME}
-        wallets={[
+        {...listProps([
           wallet("a", { name: "Everyday" }),
           wallet("b", { name: "Savings" }),
           wallet("c", { name: "Household", owner_id: PARTNER }),
-        ]}
+        ])}
       />,
     );
     // Two OWNED wallets, so the guard lifts even though one of the three
@@ -216,7 +254,7 @@ describe("WalletList — members and edit dialogs", () => {
   it("shows no members until asked, and no dialog at rest", () => {
     render(
       <WalletList
-        wallets={[wallet("a", { name: "Test" })]}
+        {...listProps([wallet("a", { name: "Test" })])}
         currentUserId={ME}
         memberSections={{ a: <p>members for Test</p> }}
       />,
@@ -231,7 +269,7 @@ describe("WalletList — members and edit dialogs", () => {
     const user = userEvent.setup();
     render(
       <WalletList
-        wallets={[wallet("a", { name: "Test" }), wallet("b", { name: "Citi" })]}
+        {...listProps([wallet("a", { name: "Test" }), wallet("b", { name: "Citi" })])}
         currentUserId={ME}
         memberSections={{ a: <p>members for Test</p>, b: <p>members for Citi</p> }}
       />,
@@ -250,7 +288,7 @@ describe("WalletList — members and edit dialogs", () => {
     const user = userEvent.setup();
     render(
       <WalletList
-        wallets={[wallet("a", { name: "Test" })]}
+        {...listProps([wallet("a", { name: "Test" })])}
         currentUserId={ME}
         memberSections={{ a: <p>members for Test</p> }}
         editActions={{ a: noopAction }}
@@ -279,7 +317,7 @@ describe("WalletList — members and edit dialogs", () => {
   it("offers no Edit for a wallet with no edit slot", () => {
     render(
       <WalletList
-        wallets={[wallet("a", { name: "Shared", owner_id: PARTNER })]}
+        {...listProps([wallet("a", { name: "Shared", owner_id: PARTNER })])}
         currentUserId={ME}
         memberSections={{ a: <p>members for Shared</p> }}
         editActions={{}}
@@ -300,7 +338,7 @@ describe("WalletList — members and edit dialogs", () => {
     const user = userEvent.setup();
     render(
       <WalletList
-        wallets={[wallet("a", { name: "Test" })]}
+        {...listProps([wallet("a", { name: "Test" })])}
         currentUserId={ME}
         editActions={{ a: noopAction }}
       />,
@@ -320,7 +358,7 @@ describe("WalletList — members and edit dialogs", () => {
     const user = userEvent.setup();
     render(
       <WalletList
-        wallets={[wallet("a", { name: "Test" })]}
+        {...listProps([wallet("a", { name: "Test" })])}
         currentUserId={ME}
         editActions={{ a: async () => ({ error: "Name is required" }) }}
       />,
@@ -337,7 +375,7 @@ describe("WalletList — members and edit dialogs", () => {
     const user = userEvent.setup();
     render(
       <WalletList
-        wallets={[wallet("a", { name: "Test" })]}
+        {...listProps([wallet("a", { name: "Test" })])}
         currentUserId={ME}
         memberSections={{ a: <p>members for Test</p> }}
       />,
@@ -353,7 +391,7 @@ describe("WalletList — members and edit dialogs", () => {
   it("keeps the balance on the row — it is why the page is opened", () => {
     render(
       <WalletList
-        wallets={[wallet("a", { name: "Test", balanceMinor: 1491200, currency_code: "SGD" })]}
+        {...listProps([wallet("a", { name: "Test", balanceMinor: 1491200, currency_code: "SGD" })])}
         currentUserId={ME}
         memberSections={{ a: <p>hidden</p> }}
       />,
@@ -371,13 +409,13 @@ describe("WalletList — search", () => {
   ];
 
   it("stays out of the way until there are enough wallets to need it", () => {
-    render(<WalletList wallets={many.slice(0, 2)} currentUserId={ME} />);
+    render(<WalletList {...listProps(many.slice(0, 2))} currentUserId={ME} />);
     expect(screen.queryByLabelText(/Search wallets/i)).not.toBeInTheDocument();
   });
 
   it("filters by wallet name, case-insensitively", async () => {
     const user = userEvent.setup();
-    render(<WalletList wallets={many} currentUserId={ME} />);
+    render(<WalletList {...listProps(many)} currentUserId={ME} />);
     await user.type(screen.getByLabelText(/Search wallets/i), "cItI");
     expect(screen.getByText("Citi Rewards")).toBeInTheDocument();
     expect(screen.queryByText("Everyday")).not.toBeInTheDocument();
@@ -385,7 +423,7 @@ describe("WalletList — search", () => {
 
   it("says so when nothing matches, rather than rendering an empty list", async () => {
     const user = userEvent.setup();
-    render(<WalletList wallets={many} currentUserId={ME} />);
+    render(<WalletList {...listProps(many)} currentUserId={ME} />);
     await user.type(screen.getByLabelText(/Search wallets/i), "zzzz");
     expect(screen.getByText(/No wallets match/i)).toBeInTheDocument();
   });
@@ -395,7 +433,7 @@ describe("WalletList — search", () => {
     // concern; hiding three wallets must not make the fourth look like the
     // only one.
     const user = userEvent.setup();
-    render(<WalletList wallets={many} currentUserId={ME} />);
+    render(<WalletList {...listProps(many)} currentUserId={ME} />);
     await user.type(screen.getByLabelText(/Search wallets/i), "Travel");
 
     swipeLeft(screen.getByRole("listitem", { name: "Travel" }));
@@ -422,7 +460,7 @@ describe("WalletList — archiving", () => {
   const two = [wallet("a", { name: "Test" }), wallet("b", { name: "Citi" })];
 
   it("no longer spends row width on an Archive button", () => {
-    render(<WalletList wallets={two} currentUserId={ME} />);
+    render(<WalletList {...listProps(two)} currentUserId={ME} />);
 
     // The width this frees is the entire point of the change — a wallet
     // name was being truncated on a phone to make room for it.
@@ -430,7 +468,7 @@ describe("WalletList — archiving", () => {
   });
 
   it("asks before archiving, naming the wallet and promising its transactions", () => {
-    render(<WalletList wallets={two} currentUserId={ME} />);
+    render(<WalletList {...listProps(two)} currentUserId={ME} />);
 
     swipeLeft(screen.getByRole("listitem", { name: "Test" }));
 
@@ -443,7 +481,7 @@ describe("WalletList — archiving", () => {
 
   it("does nothing at all until the confirmation is accepted", async () => {
     const user = userEvent.setup();
-    render(<WalletList wallets={two} currentUserId={ME} />);
+    render(<WalletList {...listProps(two)} currentUserId={ME} />);
 
     swipeLeft(screen.getByRole("listitem", { name: "Test" }));
     await user.click(screen.getByRole("button", { name: "Cancel" }));
@@ -455,7 +493,7 @@ describe("WalletList — archiving", () => {
   it("archives the swiped wallet once confirmed", async () => {
     vi.mocked(archiveWallet).mockResolvedValue({});
     const user = userEvent.setup();
-    render(<WalletList wallets={two} currentUserId={ME} />);
+    render(<WalletList {...listProps(two)} currentUserId={ME} />);
 
     swipeLeft(screen.getByRole("listitem", { name: "Citi" }));
     await user.click(screen.getByRole("button", { name: "Archive" }));
@@ -466,7 +504,7 @@ describe("WalletList — archiving", () => {
   });
 
   it("ignores a short drag, so a scroll is not an archive", () => {
-    render(<WalletList wallets={two} currentUserId={ME} />);
+    render(<WalletList {...listProps(two)} currentUserId={ME} />);
 
     swipeLeft(screen.getByRole("listitem", { name: "Test" }), 20);
 
@@ -481,7 +519,7 @@ describe("WalletList — archiving", () => {
    * wallet list would open a confirmation dialog at random.
    */
   it("ignores a mostly-vertical drag, so scrolling is not archiving", () => {
-    render(<WalletList wallets={two} currentUserId={ME} />);
+    render(<WalletList {...listProps(two)} currentUserId={ME} />);
     const target = screen.getByRole("listitem", { name: "Test" });
 
     // 80px left, but 160px down: far enough left to clear the distance
@@ -494,7 +532,7 @@ describe("WalletList — archiving", () => {
   });
 
   it("ignores a swipe to the RIGHT", () => {
-    render(<WalletList wallets={two} currentUserId={ME} />);
+    render(<WalletList {...listProps(two)} currentUserId={ME} />);
     const target = screen.getByRole("listitem", { name: "Test" });
 
     fireEvent.touchStart(target, { touches: [{ clientX: 100, clientY: 40 }] });
@@ -511,7 +549,7 @@ describe("WalletList — archiving", () => {
    */
   it("also offers Archive inside the edit dialog, for keyboard and desktop", async () => {
     const user = userEvent.setup();
-    render(<WalletList wallets={two} currentUserId={ME} editActions={{ a: noopAction }} />);
+    render(<WalletList {...listProps(two)} currentUserId={ME} editActions={{ a: noopAction }} />);
 
     await user.click(screen.getByRole("button", { name: "Edit Test" }));
     await user.click(screen.getByRole("button", { name: /Archive this wallet/i }));
@@ -526,7 +564,7 @@ describe("WalletList — archiving", () => {
    * silently doing nothing, which would read as a broken swipe.
    */
   it("refuses to archive a lone wallet, and says why", () => {
-    render(<WalletList wallets={[wallet("a", { name: "Only" })]} currentUserId={ME} />);
+    render(<WalletList {...listProps([wallet("a", { name: "Only" })])} currentUserId={ME} />);
 
     swipeLeft(screen.getByRole("listitem", { name: "Only" }));
 
@@ -536,12 +574,159 @@ describe("WalletList — archiving", () => {
   });
 
   it("offers no swipe on a wallet somebody else owns", () => {
-    render(<WalletList wallets={[...two, wallet("c", { name: "Shared", owner_id: PARTNER })]} currentUserId={ME} />);
+    render(<WalletList {...listProps([...two, wallet("c", { name: "Shared", owner_id: PARTNER })])} currentUserId={ME} />);
 
     swipeLeft(screen.getByRole("listitem", { name: "Shared" }));
 
     // archiveWallet is owner-scoped; a member's archive would match zero
     // rows and be reported as success. Same reasoning as the absent button.
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+});
+
+describe("WalletList — grouping and ordering", () => {
+  const everyday = wallet("a", { name: "Everyday" });
+  const savings = wallet("b", { name: "Savings" });
+  const holiday = wallet("c", { name: "Holiday" });
+  const GROUP = { id: "g1", name: "Long term", sort_order: 0 };
+
+  const grouped = {
+    sections: [
+      { group: GROUP, wallets: [savings, holiday] },
+      { group: null, wallets: [everyday] },
+    ],
+    groups: [GROUP],
+    sort: "manual" as const,
+  };
+
+  beforeEach(() => {
+    vi.mocked(setWalletOrder).mockReset().mockResolvedValue({ ok: true });
+    vi.mocked(setWalletSort).mockReset().mockResolvedValue({ ok: true });
+    vi.mocked(setWalletGroup).mockReset().mockResolvedValue({ ok: true });
+    vi.mocked(createWalletGroup).mockReset();
+    vi.mocked(deleteWalletGroup).mockReset().mockResolvedValue({ ok: true });
+  });
+
+  it("renders a heading per group, with the ungrouped section labelled last", () => {
+    render(<WalletList currentUserId={ME} {...grouped} />);
+    const headings = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent);
+    expect(headings).toEqual(["Long term", "Ungrouped"]);
+  });
+
+  it("does not label the list at all when there are no groups", () => {
+    // A lone "Ungrouped" heading over the whole list says nothing.
+    render(<WalletList currentUserId={ME} {...listProps([everyday, savings])} />);
+    expect(screen.queryByRole("heading", { level: 3 })).toBeNull();
+  });
+
+  it("sends the whole list, reordered, when a wallet moves down", async () => {
+    const user = userEvent.setup();
+    render(<WalletList currentUserId={ME} {...grouped} />);
+
+    await user.click(screen.getByRole("button", { name: "Move Savings down" }));
+
+    // Every wallet, in display order across all sections — not just the two
+    // that swapped. sort_order is one integer per wallet across the whole
+    // list, so a partial renumbering would contradict the wallets it stepped
+    // over.
+    expect(setWalletOrder).toHaveBeenCalledWith({ wallet_ids: ["c", "b", "a"] });
+  });
+
+  it("moves a wallet up within its own section only", async () => {
+    const user = userEvent.setup();
+    render(<WalletList currentUserId={ME} {...grouped} />);
+
+    await user.click(screen.getByRole("button", { name: "Move Holiday up" }));
+
+    expect(setWalletOrder).toHaveBeenCalledWith({ wallet_ids: ["c", "b", "a"] });
+  });
+
+  it("cannot move the first row up or the last row down", () => {
+    render(<WalletList currentUserId={ME} {...grouped} />);
+    expect(screen.getByRole("button", { name: "Move Savings up" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Move Holiday down" })).toBeDisabled();
+  });
+
+  it("offers no reordering when the list is sorted by name", () => {
+    // The position is derived under name/date ordering, so a move would
+    // either be ignored or silently switch the list back to manual.
+    render(<WalletList currentUserId={ME} {...grouped} sort="name" />);
+    expect(screen.queryByRole("button", { name: /^Move / })).toBeNull();
+  });
+
+  it("shows the new order immediately, before the server answers", async () => {
+    const user = userEvent.setup();
+    // Never resolves: proves the row moved optimistically rather than only
+    // after a round trip, which on a phone would read as a dead button.
+    vi.mocked(setWalletOrder).mockReturnValue(new Promise(() => {}));
+    render(<WalletList currentUserId={ME} {...grouped} />);
+
+    await user.click(screen.getByRole("button", { name: "Move Savings down" }));
+
+    const names = screen.getAllByRole("listitem").map((li) => li.getAttribute("aria-label"));
+    expect(names).toEqual(["Holiday", "Savings", "Everyday"]);
+  });
+
+  it("records the chosen ordering", async () => {
+    const user = userEvent.setup();
+    render(<WalletList currentUserId={ME} {...grouped} />);
+    await user.selectOptions(screen.getByLabelText("Order"), "name");
+    expect(setWalletSort).toHaveBeenCalledWith("name");
+  });
+
+  it("creates a group, and refuses an empty name without calling the server", async () => {
+    const user = userEvent.setup();
+    vi.mocked(createWalletGroup).mockResolvedValue({
+      group: { id: "g2", name: "Business", sort_order: 1 },
+    });
+    render(<WalletList currentUserId={ME} {...grouped} />);
+
+    await user.click(screen.getByRole("button", { name: "Add group" }));
+    expect(createWalletGroup).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Name is required");
+
+    await user.type(screen.getByLabelText("New group"), "Business");
+    await user.click(screen.getByRole("button", { name: "Add group" }));
+    expect(createWalletGroup).toHaveBeenCalledWith({ name: "Business" });
+  });
+
+  it("files a wallet into a group from its edit dialog, and back out again", async () => {
+    const user = userEvent.setup();
+    render(<WalletList currentUserId={ME} {...grouped} editActions={{ a: noopAction }} />);
+
+    await user.click(screen.getByRole("button", { name: "Edit Everyday" }));
+    await user.selectOptions(screen.getByLabelText("Group"), "g1");
+    expect(setWalletGroup).toHaveBeenCalledWith({ wallet_id: "a", group_id: "g1" });
+  });
+
+  it("sends null, not an empty string, when a wallet leaves every group", async () => {
+    const user = userEvent.setup();
+    render(<WalletList currentUserId={ME} {...grouped} editActions={{ b: noopAction }} />);
+
+    await user.click(screen.getByRole("button", { name: "Edit Savings" }));
+    // The <option> value is "" — an empty string reaching the action would
+    // fail uuid validation instead of ungrouping the wallet.
+    await user.selectOptions(screen.getByLabelText("Group"), "");
+    expect(setWalletGroup).toHaveBeenCalledWith({ wallet_id: "b", group_id: null });
+  });
+
+  it("seeds the group control from the wallet's current group", async () => {
+    const user = userEvent.setup();
+    render(<WalletList currentUserId={ME} {...grouped} editActions={{ b: noopAction }} />);
+    await user.click(screen.getByRole("button", { name: "Edit Savings" }));
+    expect(screen.getByLabelText("Group")).toHaveValue("g1");
+  });
+
+  it("says what happens to the wallets before deleting a group", async () => {
+    const user = userEvent.setup();
+    render(<WalletList currentUserId={ME} {...grouped} />);
+
+    await user.click(screen.getByRole("button", { name: "Rename or delete Long term" }));
+    // The question a delete control raises, answered before it is pressed:
+    // wallet_prefs.group_id is `on delete set null (group_id)`.
+    expect(screen.getByText(/keeps its wallets/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Delete group" }));
+    expect(deleteWalletGroup).toHaveBeenCalledWith("g1");
   });
 });

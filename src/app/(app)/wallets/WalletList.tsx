@@ -1,14 +1,27 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
-import { Landmark, CreditCard, Settings, User } from "lucide-react";
+import { Landmark, CreditCard, Settings, User, ChevronUp, ChevronDown } from "lucide-react";
+import type { WalletSort } from "@/lib/validation/wallet-group";
+import {
+  createWalletGroup,
+  renameWalletGroup,
+  deleteWalletGroup,
+  setWalletGroup,
+  setWalletOrder,
+  setWalletSort,
+} from "@/server/actions/wallet-groups";
 import { archiveWallet, type WalletState } from "@/server/actions/wallets";
 import { formatAmountInput, formatMoney, minorUnitFor } from "@/lib/money";
 import { slotVar } from "@/lib/palette";
 import { Modal } from "@/components/Modal";
 import { WalletForm } from "@/components/WalletForm";
-import type { WalletWithBalance } from "./wallet-rows";
+import type {
+  WalletWithBalance,
+  WalletSection,
+  WalletGroup,
+} from "./wallet-rows";
 
 /** How far a finger must travel left before it counts as a swipe rather
  *  than a tap that wandered. */
@@ -52,12 +65,26 @@ const WALLET_ICON_COMPONENTS = {
  * case instead — archiving your last wallet — is what the guard below does.
  */
 export function WalletList({
-  wallets,
+  sections,
+  groups,
+  sort,
   currentUserId,
   memberSections,
   editActions,
 }: {
-  wallets: WalletWithBalance[];
+  /**
+   * The list already arranged into the viewer's own sections by
+   * `arrangeWallets` (./wallet-rows.ts), rather than a flat array this
+   * component sorts itself. The arranging is pure and unit-tested there;
+   * doing it here would put every ordering rule inside a component that
+   * needs a DOM to test.
+   */
+  sections: WalletSection[];
+  /** The viewer's own groups, for the "move to group" control. Passed
+   *  separately from `sections` because a group with no wallets in it still
+   *  has to be offered as a destination. */
+  groups: WalletGroup[];
+  sort: WalletSort;
   currentUserId: string;
   /**
    * Per-wallet content rendered INSIDE that wallet's row — the members list
@@ -106,6 +133,28 @@ export function WalletList({
    *  on every touchmove and nothing on screen depends on it, so re-rendering
    *  the whole list mid-gesture would be pure cost. */
   const touchStart = useRef<{ x: number; y: number } | null>(null);
+
+  /** Which group's rename/delete dialog is open. */
+  const [groupDialog, setGroupDialog] = useState<WalletGroup | null>(null);
+  const [groupName, setGroupName] = useState("");
+  const [newGroup, setNewGroup] = useState("");
+  /** Arrangement writes share one pending flag. Unlike archiving — where
+   *  each row needs its own, so one archive does not disable every other
+   *  row's control — reordering and regrouping both rewrite the same list,
+   *  and letting a second land while the first is in flight would race two
+   *  orderings against each other. */
+  const [arranging, startArrange] = useTransition();
+
+  /** Optimistic, and deliberately so: the server action revalidates, but a
+   *  move that only appeared after a round trip would feel broken on a
+   *  phone. The list re-renders from the server's answer when it arrives. */
+  const [orderOverride, setOrderOverride] = useState<Record<string, string[]>>({});
+
+  // Flattened once for the guards that reason about the whole list — the
+  // last-wallet check, whether a search box is worth showing, and the empty
+  // state. Those questions are about the set of wallets, not its
+  // arrangement, so they are unchanged by grouping.
+  const wallets = useMemo(() => sections.flatMap((s) => s.wallets), [sections]);
 
   // The app requires at least one active wallet to function: (app)/layout.tsx
   // redirects a user with zero active wallets to /onboarding. Archiving the
@@ -167,6 +216,83 @@ export function WalletList({
     });
   }
 
+  const sectionKey = (sec: WalletSection) => sec.group?.id ?? "\u0000ungrouped";
+
+  /** A section's wallets in display order, honouring an optimistic move that
+   *  the server has not confirmed yet. An override naming an id no longer in
+   *  the section (a wallet archived in another tab) is skipped rather than
+   *  rendered as a hole, and any wallet the override does not mention is
+   *  appended — so a stale override can reorder the list but never lose a
+   *  row from it. */
+  function orderedWallets(sec: WalletSection): WalletWithBalance[] {
+    const ids = orderOverride[sectionKey(sec)];
+    if (!ids) return sec.wallets;
+    const byId = new Map(sec.wallets.map((w) => [w.id, w]));
+    const out = ids.map((id) => byId.get(id)).filter((w): w is WalletWithBalance => Boolean(w));
+    const seen = new Set(out.map((w) => w.id));
+    return [...out, ...sec.wallets.filter((w) => !seen.has(w.id))];
+  }
+
+  /**
+   * Moves one wallet up or down within its own section.
+   *
+   * Up/down controls rather than drag-and-drop: a drag needs a pointer that
+   * can hover, competes with the swipe-to-archive gesture already bound to
+   * these rows, and is close to untestable without a real browser — which
+   * this plan has none of. Two buttons work with touch, mouse, keyboard and
+   * a screen reader, and each press is a discrete, assertable event.
+   *
+   * The payload is the WHOLE list, every section flattened in display order,
+   * not just the two rows that swapped: `sort_order` is one integer per
+   * wallet across the user's whole list, so renumbering only a pair would
+   * leave it inconsistent with every wallet the move stepped over.
+   */
+  function move(sec: WalletSection, index: number, delta: -1 | 1) {
+    const current = orderedWallets(sec);
+    const target = index + delta;
+    if (target < 0 || target >= current.length) return;
+    const next = [...current];
+    [next[index], next[target]] = [next[target]!, next[index]!];
+
+    const key = sectionKey(sec);
+    setOrderOverride((prev) => ({ ...prev, [key]: next.map((w) => w.id) }));
+
+    const flat = sections.flatMap((other) =>
+      sectionKey(other) === key ? next.map((w) => w.id) : orderedWallets(other).map((w) => w.id),
+    );
+    startArrange(async () => {
+      const res = await setWalletOrder({ wallet_ids: flat });
+      if ("error" in res) {
+        setError(res.error);
+        // Rolled back, so the list never shows an order the server refused.
+        setOrderOverride((prev) => {
+          const copy = { ...prev };
+          delete copy[key];
+          return copy;
+        });
+      }
+    });
+  }
+
+  /** Which group a wallet is currently filed under, read back out of the
+   *  arranged sections rather than tracked separately — `sections` is the
+   *  single source of that fact, and a second copy would be one more thing
+   *  to keep in step. */
+  function groupOf(walletId: string): string | null {
+    for (const sec of sections) {
+      if (sec.group && sec.wallets.some((w) => w.id === walletId)) return sec.group.id;
+    }
+    return null;
+  }
+
+  function assignGroup(walletId: string, groupId: string | null) {
+    startArrange(async () => {
+      const res = await setWalletGroup({ wallet_id: walletId, group_id: groupId });
+      if ("error" in res) setError(res.error);
+      else setDialog(null);
+    });
+  }
+
   if (!wallets.length) {
     return (
       <p className="py-8 text-sm" style={{ color: "var(--ink-2)" }}>
@@ -185,6 +311,74 @@ export function WalletList({
       <p role="alert" className="text-sm" style={{ color: "var(--neg)" }}>
         {error}
       </p>
+
+      {/* Sorting and grouping controls. Rendered above the search box
+          because they change what the list IS, while search only narrows
+          what is already there. */}
+      <div className="mb-2 flex flex-wrap items-end gap-2">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs" style={{ color: "var(--ink-2)" }}>
+            Order
+          </span>
+          <select
+            value={sort}
+            onChange={(e) => {
+              const next = e.target.value as WalletSort;
+              startArrange(async () => {
+                const res = await setWalletSort(next);
+                if ("error" in res) setError(res.error);
+              });
+            }}
+            className={`rounded-md border px-2 py-1 text-sm ${FOCUS_RING}`}
+            style={{ borderColor: "var(--ink-2)", background: "var(--surface)", color: "var(--ink)" }}
+          >
+            <option value="manual">My order</option>
+            <option value="name">Name (A-Z)</option>
+            <option value="created">Date added</option>
+          </select>
+        </label>
+
+        <form
+          className="flex items-end gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const name = newGroup.trim();
+            if (!name) {
+              setError("Name is required");
+              return;
+            }
+            setError("");
+            startArrange(async () => {
+              const res = await createWalletGroup({ name });
+              if ("error" in res) setError(res.error);
+              else setNewGroup("");
+            });
+          }}
+        >
+          <label className="flex flex-col gap-1">
+            <span className="text-xs" style={{ color: "var(--ink-2)" }}>
+              New group
+            </span>
+            <input
+              value={newGroup}
+              onChange={(e) => setNewGroup(e.target.value)}
+              maxLength={40}
+              placeholder="Savings"
+              autoComplete="off"
+              className={`rounded-md border px-2 py-1 text-sm ${FOCUS_RING}`}
+              style={{ borderColor: "var(--ink-2)", background: "var(--surface)", color: "var(--ink)" }}
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={arranging}
+            className={`rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-60 ${FOCUS_RING}`}
+            style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+          >
+            Add group
+          </button>
+        </form>
+      </div>
 
       {showSearch && (
         <label className="mb-3 flex flex-col gap-1">
@@ -208,8 +402,48 @@ export function WalletList({
         </p>
       )}
 
+      {sections.map((section) => {
+        const inOrder = orderedWallets(section);
+        const rows = q ? inOrder.filter((w) => w.name.toLowerCase().includes(q)) : inOrder;
+        // A section with nothing matching the search is hidden entirely
+        // rather than rendered as an empty heading — during a search the
+        // headings are noise, and an "Everyday (empty)" line would read as
+        // "your Everyday group is empty" rather than "nothing here matches".
+        if (q && rows.length === 0) return null;
+        return (
+          <div key={section.group?.id ?? "\u0000ungrouped"} className="mb-2">
+            {/* The ungrouped section is only labelled when there is
+                something to distinguish it FROM. With no groups at all it is
+                the whole list, and a lone "Ungrouped" heading over
+                everything says nothing. */}
+            {(section.group || sections.length > 1) && (
+              <div className="mb-1 flex items-center gap-2 px-1">
+                <h3
+                  className="text-xs font-medium uppercase tracking-wide"
+                  style={{ color: "var(--muted)" }}
+                >
+                  {section.group?.name ?? "Ungrouped"}
+                </h3>
+                {section.group && (
+                  <button
+                    type="button"
+                    onClick={() => setGroupDialog(section.group!)}
+                    aria-label={`Rename or delete ${section.group.name}`}
+                    className={`rounded-sm p-1 ${FOCUS_RING}`}
+                    style={{ color: "var(--ink-2)" }}
+                  >
+                    <Settings size={13} aria-hidden />
+                  </button>
+                )}
+              </div>
+            )}
+            {rows.length === 0 && (
+              <p className="px-1 pb-2 text-sm" style={{ color: "var(--ink-2)" }}>
+                Nothing here yet.
+              </p>
+            )}
       <ul className="flex flex-col">
-        {visible.map((w) => {
+        {rows.map((w, rowIndex) => {
           const Icon = WALLET_ICON_COMPONENTS[w.icon as keyof typeof WALLET_ICON_COMPONENTS] ??
             (w.kind === "card" ? CreditCard : Landmark);
           // The confirmation dialog closes as soon as Archive is pressed,
@@ -304,6 +538,37 @@ export function WalletList({
                   h-11 w-11 is a 44px target — the size WCAG 2.5.8 and both
                   platform guidelines ask for, and a real improvement on the
                   ~16px text links these replace. */}
+              {/* Reordering is offered only under "My order". Under name or
+                  date the position is derived, so a move would either be
+                  ignored or silently switch the whole list back to manual —
+                  both worse than not offering the control. Hidden rather
+                  than disabled, following this codebase's rule about
+                  controls that cannot succeed. */}
+              {sort === "manual" && !q && rows.length > 1 && (
+                <>
+                  <button
+                    type="button"
+                    aria-label={`Move ${w.name} up`}
+                    disabled={arranging || rowIndex === 0}
+                    onClick={() => move(section, rowIndex, -1)}
+                    className={`grid h-11 w-8 shrink-0 place-items-center rounded-md disabled:opacity-30 ${FOCUS_RING}`}
+                    style={{ color: "var(--ink-2)" }}
+                  >
+                    <ChevronUp size={16} aria-hidden />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Move ${w.name} down`}
+                    disabled={arranging || rowIndex === rows.length - 1}
+                    onClick={() => move(section, rowIndex, 1)}
+                    className={`grid h-11 w-8 shrink-0 place-items-center rounded-md disabled:opacity-30 ${FOCUS_RING}`}
+                    style={{ color: "var(--ink-2)" }}
+                  >
+                    <ChevronDown size={16} aria-hidden />
+                  </button>
+                </>
+              )}
+
               {editActions?.[w.id] && (
                 <button
                   type="button"
@@ -332,6 +597,98 @@ export function WalletList({
           );
         })}
       </ul>
+          </div>
+        );
+      })}
+
+      {/* Rename or delete a group. Separate from the wallet dialog because
+          it acts on the group, not on any wallet in it — and because
+          deleting one must be able to say what happens to the wallets,
+          which is the question a user actually has at that moment. */}
+      {groupDialog && (
+        <Modal
+          open
+          title={`Edit ${groupDialog.name}`}
+          onClose={() => {
+            setGroupDialog(null);
+            setGroupName("");
+          }}
+        >
+          <form
+            className="flex flex-col gap-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const name = (groupName || groupDialog.name).trim();
+              if (!name) {
+                setError("Name is required");
+                return;
+              }
+              setError("");
+              startArrange(async () => {
+                const res = await renameWalletGroup({ id: groupDialog.id, name });
+                if ("error" in res) setError(res.error);
+                else {
+                  setGroupDialog(null);
+                  setGroupName("");
+                }
+              });
+            }}
+          >
+            <label className="flex flex-col gap-1">
+              <span className="text-xs" style={{ color: "var(--ink-2)" }}>
+                Name
+              </span>
+              <input
+                value={groupName || groupDialog.name}
+                onChange={(e) => setGroupName(e.target.value)}
+                maxLength={40}
+                autoComplete="off"
+                className={`rounded-md border px-3 py-2 text-sm ${FOCUS_RING}`}
+                style={{
+                  borderColor: "var(--ink-2)",
+                  background: "var(--surface)",
+                  color: "var(--ink)",
+                }}
+              />
+            </label>
+            <div className="flex items-center gap-2">
+              <button
+                type="submit"
+                disabled={arranging}
+                className={`rounded-md px-3 py-2 text-sm font-medium disabled:opacity-60 ${FOCUS_RING}`}
+                style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                disabled={arranging}
+                onClick={() => {
+                  startArrange(async () => {
+                    const res = await deleteWalletGroup(groupDialog.id);
+                    if ("error" in res) setError(res.error);
+                    else {
+                      setGroupDialog(null);
+                      setGroupName("");
+                    }
+                  });
+                }}
+                className={`rounded-md px-3 py-2 text-sm ${FOCUS_RING}`}
+                style={{ color: "var(--neg)" }}
+              >
+                Delete group
+              </button>
+            </div>
+            {/* Stated because it is the question a delete control raises, and
+                the answer is not obvious: wallet_prefs.group_id is
+                `on delete set null (group_id)`, so the wallets survive and
+                keep their order -- they simply return to Ungrouped. */}
+            <p className="text-xs" style={{ color: "var(--ink-2)" }}>
+              Deleting a group keeps its wallets. They move back to Ungrouped.
+            </p>
+          </form>
+        </Modal>
+      )}
 
       {isLastWallet && (
         <p className="text-xs" style={{ color: "var(--ink-2)" }}>
@@ -427,6 +784,49 @@ export function WalletList({
               with a keyboard or a mouse, and hiding a function entirely
               behind one would put it out of reach for anyone not on a
               touchscreen. Both paths open the same confirmation. */}
+          {/* Group assignment sits with the wallet's other settings, but
+              OUTSIDE WalletForm: it is per-user state about a shared object
+              (0019_wallet_groups.sql), written through its own action, and
+              folding it into the wallet's own form would imply it travels
+              with the wallet to every member. Available to any member, not
+              just the owner — arranging your own screen is not an ownership
+              decision, which is exactly why Archive below is gated and this
+              is not. */}
+          {dialog!.view === "edit" && (
+            <label className="mt-4 flex flex-col gap-1">
+              <span className="text-sm" style={{ color: "var(--ink-2)" }}>
+                Group
+              </span>
+              <select
+                value={groupOf(dialogWallet.id) ?? ""}
+                disabled={arranging}
+                onChange={(e) => assignGroup(dialogWallet.id, e.target.value || null)}
+                className={`rounded-md border px-3 py-2 text-sm ${FOCUS_RING}`}
+                style={{
+                  borderColor: "var(--ink-2)",
+                  background: "var(--surface)",
+                  color: "var(--ink)",
+                }}
+              >
+                <option value="">No group</option>
+                {groups.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {dialog!.view === "edit" && (
+            /* Outside the <label>, deliberately. A label's accessible name is
+               its whole text content, so keeping this hint inside made the
+               select's name "GroupOnly you see this grouping." — matching
+               neither what a user reads nor what a test asks for. */
+            <p className="mt-1 text-xs" style={{ color: "var(--ink-2)" }}>
+              Only you see this grouping.
+            </p>
+          )}
+
           {dialog!.view === "edit" && dialogWallet.owner_id === currentUserId && (
             <div className="mt-4 border-t pt-4" style={{ borderColor: "var(--grid)" }}>
               <button

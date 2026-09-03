@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { mergeWalletBalances, defaultCurrencyFor, type BalanceRow, type WalletRow } from "./wallet-rows";
+import {
+  mergeWalletBalances,
+  defaultCurrencyFor,
+  arrangeWallets,
+  type BalanceRow,
+  type WalletRow,
+  type WalletWithBalance,
+  type WalletGroup,
+  type WalletPref,
+} from "./wallet-rows";
 
 const wallet = (id: string, over: Partial<WalletRow> = {}): WalletRow => ({
   id,
@@ -102,5 +111,122 @@ describe("defaultCurrencyFor", () => {
     // A wallet could hold a code that is no longer in CURRENCY_CODES; a
     // <select> given a value with no matching <option> renders blank.
     expect(defaultCurrencyFor([wallet("a", { currency_code: "ZZZ" })], "SGD")).toBe("SGD");
+  });
+});
+
+describe("arrangeWallets", () => {
+  const w = (id: string, name: string): WalletWithBalance => ({
+    ...wallet(id, { name }),
+    balanceMinor: 0,
+  });
+  const alpha = w("a", "Alpha");
+  const bravo = w("b", "Bravo");
+  const carol = w("c", "Carol");
+  const all = [carol, alpha, bravo]; // deliberately unsorted on the way in
+
+  const g = (id: string, name: string, sort_order: number): WalletGroup => ({
+    id,
+    name,
+    sort_order,
+  });
+  const pref = (wallet_id: string, group_id: string | null, sort_order = 0): WalletPref => ({
+    wallet_id,
+    group_id,
+    sort_order,
+  });
+
+  it("puts everything in one ungrouped section when there are no groups", () => {
+    const out = arrangeWallets(all, [], [], "name");
+    expect(out).toHaveLength(1);
+    expect(out[0]!.group).toBeNull();
+    expect(out[0]!.wallets.map((x) => x.name)).toEqual(["Alpha", "Bravo", "Carol"]);
+  });
+
+  it("orders sections by the group's sort_order, ungrouped last", () => {
+    const groups = [g("g2", "Savings", 1), g("g1", "Everyday", 0)];
+    const prefs = [pref("a", "g1"), pref("b", "g2")];
+    const out = arrangeWallets(all, groups, prefs, "name");
+    expect(out.map((s) => s.group?.name ?? "(ungrouped)")).toEqual([
+      "Everyday",
+      "Savings",
+      "(ungrouped)",
+    ]);
+    expect(out[2]!.wallets.map((x) => x.name)).toEqual(["Carol"]);
+  });
+
+  it("keeps the grouping when sorting by name", () => {
+    // The regression this guards: sorting collapsing the sections would look
+    // exactly like the sort having deleted the user's arrangement.
+    const groups = [g("g1", "Everyday", 0)];
+    const prefs = [pref("a", "g1"), pref("c", "g1")];
+    const out = arrangeWallets(all, groups, prefs, "name");
+    expect(out[0]!.group!.name).toBe("Everyday");
+    expect(out[0]!.wallets.map((x) => x.name)).toEqual(["Alpha", "Carol"]);
+  });
+
+  it("sorts by created_at when asked, not by name", () => {
+    const created = new Map([
+      ["a", "2026-03-01T00:00:00Z"],
+      ["b", "2026-01-01T00:00:00Z"],
+      ["c", "2026-02-01T00:00:00Z"],
+    ]);
+    const out = arrangeWallets(all, [], [], "created", created);
+    expect(out[0]!.wallets.map((x) => x.name)).toEqual(["Bravo", "Carol", "Alpha"]);
+  });
+
+  it("follows sort_order under manual ordering", () => {
+    const prefs = [pref("a", null, 2), pref("b", null, 0), pref("c", null, 1)];
+    const out = arrangeWallets(all, [], prefs, "manual");
+    expect(out[0]!.wallets.map((x) => x.name)).toEqual(["Bravo", "Carol", "Alpha"]);
+  });
+
+  it("breaks a sort_order tie by name, so the list cannot shuffle between visits", () => {
+    const prefs = [pref("a", null, 0), pref("b", null, 0), pref("c", null, 0)];
+    const out = arrangeWallets(all, [], prefs, "manual");
+    expect(out[0]!.wallets.map((x) => x.name)).toEqual(["Alpha", "Bravo", "Carol"]);
+  });
+
+  it("keeps a wallet with no preference row rather than dropping it", () => {
+    // A wallet shared with you a moment ago has no pref row at all. Losing
+    // it here would remove it from the screen entirely.
+    const out = arrangeWallets(all, [g("g1", "Everyday", 0)], [pref("a", "g1")], "manual");
+    const ungrouped = out.find((s) => s.group === null)!;
+    expect(ungrouped.wallets.map((x) => x.name)).toEqual(["Bravo", "Carol"]);
+  });
+
+  it("treats a pref pointing at a missing group as ungrouped, never as missing", () => {
+    const out = arrangeWallets(all, [], [pref("a", "deleted-group")], "name");
+    expect(out).toHaveLength(1);
+    expect(out[0]!.wallets.map((x) => x.name)).toEqual(["Alpha", "Bravo", "Carol"]);
+  });
+
+  it("renders an empty group, so a newly made one is visible", () => {
+    const out = arrangeWallets(all, [g("g1", "Savings", 0)], [], "name");
+    expect(out[0]!.group!.name).toBe("Savings");
+    expect(out[0]!.wallets).toEqual([]);
+  });
+
+  it("keeps an ungrouped section when there are no wallets at all", () => {
+    // It carries the "No wallets yet" empty state; returning [] would render
+    // nothing whatsoever.
+    const out = arrangeWallets([], [], [], "name");
+    expect(out).toHaveLength(1);
+    expect(out[0]!.group).toBeNull();
+  });
+
+  it("omits an empty ungrouped section when every wallet is grouped", () => {
+    const groups = [g("g1", "Everyday", 0)];
+    const prefs = [pref("a", "g1"), pref("b", "g1"), pref("c", "g1")];
+    const out = arrangeWallets(all, groups, prefs, "name");
+    expect(out).toHaveLength(1);
+    expect(out[0]!.group!.name).toBe("Everyday");
+  });
+
+  it("does not mutate its inputs", () => {
+    const wallets = [carol, alpha, bravo];
+    const groups = [g("g2", "B", 1), g("g1", "A", 0)];
+    arrangeWallets(wallets, groups, [], "name");
+    expect(wallets.map((x) => x.id)).toEqual(["c", "a", "b"]);
+    expect(groups.map((x) => x.id)).toEqual(["g2", "g1"]);
   });
 });

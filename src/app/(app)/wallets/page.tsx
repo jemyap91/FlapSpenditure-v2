@@ -5,7 +5,8 @@ import { WalletForm } from "@/components/WalletForm";
 import { WalletList } from "./WalletList";
 import { MembersSection, type Member, type PendingInvite as SectionInvite } from "./MembersSection";
 import { PendingInvites, type PendingInvite } from "./PendingInvites";
-import { mergeWalletBalances, defaultCurrencyFor, type BalanceRow, type WalletRow } from "./wallet-rows";
+import { walletSortInput } from "@/lib/validation/wallet-group";
+import { mergeWalletBalances, arrangeWallets, defaultCurrencyFor, type BalanceRow, type WalletRow } from "./wallet-rows";
 
 /**
  * /wallets — the wallets screen. Both the Sidebar and the TabBar have
@@ -60,10 +61,12 @@ export default async function WalletsPage() {
     { data: members, error: membersError },
     { data: invites, error: invitesError },
     { data: sentInvites, error: sentInvitesError },
+    { data: groups, error: groupsError },
+    { data: prefs, error: prefsError },
   ] = await Promise.all([
     supabase
       .from("wallets")
-      .select("id, name, kind, currency_code, color_slot, icon, owner_id, starting_balance_minor")
+      .select("id, name, kind, currency_code, color_slot, icon, owner_id, starting_balance_minor, created_at")
       .is("archived_at", null)
       .order("created_at"),
     supabase.rpc("get_wallet_balances"),
@@ -78,6 +81,12 @@ export default async function WalletsPage() {
       .from("wallet_invites")
       .select("id, wallet_id, invited_email")
       .eq("status", "pending"),
+    // This viewer's own grouping and ordering (0019_wallet_groups.sql).
+    // Both tables are scoped to `user_id = auth.uid()` by RLS, so neither
+    // needs an explicit filter — and neither can see another member's
+    // arrangement of the same wallets, which is the point of them existing.
+    supabase.from("wallet_groups").select("id, name, sort_order").order("sort_order"),
+    supabase.from("wallet_prefs").select("wallet_id, group_id, sort_order"),
   ]);
 
   // A query error is not an empty result — `data` comes back null for all
@@ -89,6 +98,8 @@ export default async function WalletsPage() {
   if (balancesError) throw new Error("Failed to load balances");
   if (membersError) throw new Error("Failed to load members");
   if (invitesError) throw new Error("Failed to load invitations");
+  if (groupsError) throw new Error("Failed to load wallet groups");
+  if (prefsError) throw new Error("Failed to load wallet preferences");
 
   const rows = mergeWalletBalances(
     (wallets ?? []) as WalletRow[],
@@ -96,6 +107,19 @@ export default async function WalletsPage() {
   );
 
   if (sentInvitesError) throw new Error("Failed to load sent invitations");
+
+  // `wallet_sort` is validated here rather than trusted: the column has a
+  // CHECK, but `profiles` is typed as plain `string` by the generated types,
+  // and arrangeWallets takes a union. A value outside the set falls back to
+  // "manual" instead of rendering nothing.
+  const sort = walletSortInput.safeParse(profile.wallet_sort);
+  const sections = arrangeWallets(
+    rows,
+    groups ?? [],
+    prefs ?? [],
+    sort.success ? sort.data : "manual",
+    new Map((wallets ?? []).map((w) => [w.id, w.created_at])),
+  );
 
   const ownerByWalletId = new Map((wallets ?? []).map((w) => [w.id, w.owner_id]));
 
@@ -142,7 +166,9 @@ export default async function WalletsPage() {
           headings stacked underneath, with nothing visible saying which
           belonged to which. Containment fixes that structurally. */}
       <WalletList
-        wallets={rows}
+        sections={sections}
+        groups={groups ?? []}
+        sort={sort.success ? sort.data : "manual"}
         currentUserId={profile.id}
         memberSections={Object.fromEntries(
           rows.map((w) => [

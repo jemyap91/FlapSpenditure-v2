@@ -177,6 +177,7 @@ export type Database = {
           display_name: string | null
           id: string
           theme: Database["public"]["Enums"]["theme_pref"]
+          wallet_sort: string
         }
         Insert: {
           base_currency?: string
@@ -184,6 +185,7 @@ export type Database = {
           display_name?: string | null
           id: string
           theme?: Database["public"]["Enums"]["theme_pref"]
+          wallet_sort?: string
         }
         Update: {
           base_currency?: string
@@ -191,6 +193,7 @@ export type Database = {
           display_name?: string | null
           id?: string
           theme?: Database["public"]["Enums"]["theme_pref"]
+          wallet_sort?: string
         }
         Relationships: [
           {
@@ -404,6 +407,30 @@ export type Database = {
           },
         ]
       }
+      wallet_groups: {
+        Row: {
+          created_at: string
+          id: string
+          name: string
+          sort_order: number
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          name: string
+          sort_order?: number
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          name?: string
+          sort_order?: number
+          user_id?: string
+        }
+        Relationships: []
+      }
       wallet_invites: {
         Row: {
           created_at: string
@@ -464,6 +491,49 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "wallet_members_wallet_id_fkey"
+            columns: ["wallet_id"]
+            isOneToOne: false
+            referencedRelation: "wallets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      wallet_prefs: {
+        Row: {
+          group_id: string | null
+          sort_order: number
+          user_id: string
+          wallet_id: string
+        }
+        Insert: {
+          group_id?: string | null
+          sort_order?: number
+          user_id: string
+          wallet_id: string
+        }
+        Update: {
+          group_id?: string | null
+          sort_order?: number
+          user_id?: string
+          wallet_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "wallet_prefs_group_id_fkey"
+            columns: ["group_id"]
+            isOneToOne: false
+            referencedRelation: "wallet_groups"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "wallet_prefs_group_same_user"
+            columns: ["group_id", "user_id"]
+            isOneToOne: false
+            referencedRelation: "wallet_groups"
+            referencedColumns: ["id", "user_id"]
+          },
+          {
+            foreignKeyName: "wallet_prefs_wallet_id_fkey"
             columns: ["wallet_id"]
             isOneToOne: false
             referencedRelation: "wallets"

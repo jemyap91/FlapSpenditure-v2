@@ -11,6 +11,11 @@ export type CurrentUserProfile = {
   /** The person's own default currency. Used to seed the currency select
    *  when they have no wallets yet to infer one from. */
   base_currency: string;
+  /** How this person orders their own wallets list — "manual", "name" or
+   *  "created" (0019_wallet_groups.sql). Typed as plain `string` because the
+   *  column is a CHECK rather than an enum, so the generated types cannot
+   *  narrow it; /wallets validates it with `walletSortInput` before use. */
+  wallet_sort: string;
 };
 
 /**
@@ -53,7 +58,7 @@ export const getCurrentUserProfile = cache(async (): Promise<CurrentUserProfile 
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("theme, base_currency")
+    .select("theme, base_currency, wallet_sort")
     .eq("id", user.id)
     .single();
 
@@ -64,5 +69,7 @@ export const getCurrentUserProfile = cache(async (): Promise<CurrentUserProfile 
     id: user.id,
     theme: profile?.theme ?? "system",
     base_currency: profile?.base_currency ?? "USD",
+    // Mirrors the column default for the same reason as base_currency above.
+    wallet_sort: profile?.wallet_sort ?? "manual",
   };
 });
