@@ -61,7 +61,7 @@ export default async function BudgetsPage() {
     supabase.rpc("get_budget_status", { from_date: from, to_date: to }),
     supabase
       .from("wallets")
-      .select("id, name, currency_code")
+      .select("id, name, currency_code, space_id")
       .is("archived_at", null)
       .order("created_at"),
   ]);
@@ -123,12 +123,17 @@ export default async function BudgetsPage() {
     primaryWallets.length > 0
       ? supabase
           .from("categories")
-          .select("name, wallet_id")
-          .in("wallet_id", primaryWallets.map((w) => w.id))
+          .select("id, name")
+          // By HOUSEHOLD, not by wallet (0022), and by ID (0023): a budget
+          // now references a category row directly, so the picker offers ids
+          // and the label is just the row's own name. Under 0008 this query
+          // returned one row per wallet per name and the caller de-duplicated
+          // into normalised keys; one list per household made that go away.
+          .in("space_id", [...new Set(primaryWallets.map((w) => w.space_id))])
           .eq("kind", "expense")
           .is("archived_at", null)
           .order("name")
-      : Promise.resolve({ data: [] as { name: string; wallet_id: string }[], error: null }),
+      : Promise.resolve({ data: [] as { id: string; name: string }[], error: null }),
   ]);
 
   if (budgetWalletsError) throw new Error("Failed to load budget wallets");
@@ -141,21 +146,12 @@ export default async function BudgetsPage() {
     walletIdsByBudget[bw.budget_id] = list;
   }
 
-  // Distinct expense category names across the primary-currency wallets,
-  // keyed the same way `set_budget`/`get_budget_status` normalise a
-  // category (`lower(btrim(name))`, 0013's own `category_key` column
-  // comment) so two wallets' "Groceries" and "groceries " collapse to one
-  // picker entry rather than two. The FIRST (alphabetically, since the
-  // query is `.order("name")`) display spelling wins — mirrors
-  // `get_budget_status`'s own `coalesce((select min(name) ...))` label
-  // resolution, so the picker's wording matches what an existing budget row
-  // over the same category already shows.
-  const categoryByKey = new Map<string, string>();
-  for (const c of categoriesData ?? []) {
-    const key = c.name.trim().toLowerCase();
-    if (!categoryByKey.has(key)) categoryByKey.set(key, c.name);
-  }
-  const categories = Array.from(categoryByKey, ([key, label]) => ({ key, label }));
+  // One option per category row. No de-duplication any more: the
+  // household's active expense names are unique by construction
+  // (categories_unique_active_name, 0022), and `get_budget_status` labels a
+  // budget from the same row's name (0023), so the picker's wording always
+  // matches what an existing budget over that category shows.
+  const categories = (categoriesData ?? []).map((c) => ({ id: c.id, label: c.name }));
 
   // Derived from `from` (the exact window just queried) by string slicing,
   // never a second, independent `new Date()` — see month-range.ts's own doc

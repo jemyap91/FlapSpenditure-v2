@@ -57,13 +57,13 @@ describe("nextColorSlot", () => {
   });
 });
 
-describe("categoryInput — wallet scoping", () => {
-  it("requires a wallet_id, since a category now belongs to a wallet", () => {
+describe("categoryInput — household scoping", () => {
+  it("requires a space_id, since a category belongs to a household", () => {
     const result = categoryInput.safeParse({ name: "Vet", kind: "expense", icon: "circle" });
     expect(result.success).toBe(false);
   });
 
-  it("accepts a uuid wallet_id", () => {
+  it("accepts a uuid space_id", () => {
     const result = categoryInput.safeParse({
       name: "Vet",
       kind: "expense",
@@ -73,11 +73,11 @@ describe("categoryInput — wallet scoping", () => {
       // `z.uuid()` (v4.4.3) validates the version/variant nibbles, and that
       // literal fails them (its 4th group starts with "1", not one of
       // 8/9/a/b), so it would fail this "accepts a uuid" case for the wrong
-      // reason. Every real wallet_id here comes from Postgres's
+      // reason. Every real space_id here comes from Postgres's
       // gen_random_uuid(), which always produces a valid v4 uuid, so this
       // stricter check is correct for production; only the test fixture
       // needed to change.
-      wallet_id: "11111111-1111-4111-8111-111111111111",
+      space_id: "11111111-1111-4111-8111-111111111111",
     });
     expect(result.success).toBe(true);
   });
@@ -87,7 +87,7 @@ describe("categoryInput — wallet scoping", () => {
       name: "Vet",
       kind: "expense",
       icon: "circle",
-      wallet_id: "not-a-uuid",
+      space_id: "not-a-uuid",
     });
     expect(result.success).toBe(false);
   });
@@ -148,7 +148,7 @@ describe("categoryEditInput", () => {
     // direct POST and the schema is the first of the two layers.
     const parsed = categoryEditInput.parse({
       ...base,
-      wallet_id: "22222222-2222-4222-8222-222222222222",
+      space_id: "22222222-2222-4222-8222-222222222222",
       kind: "income",
       is_default: true,
     } as never);

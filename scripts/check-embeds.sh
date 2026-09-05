@@ -44,7 +44,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cd "$SCRIPT_DIR/.."
 
-API_URL="${API_URL:-http://127.0.0.1:54321}"
+API_URL="${API_URL:-http://127.0.0.1:54331}"
 
 # Every embed below is issued as a real HTTP request carrying a real
 # `authenticated` JWT. Same guard, same implementation and same reasoning as

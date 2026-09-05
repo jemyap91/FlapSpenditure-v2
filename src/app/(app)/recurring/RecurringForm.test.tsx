@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
+
+const SPACE = "99999999-9999-4999-8999-999999999999";import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RecurringForm } from "./RecurringForm";
@@ -32,18 +33,18 @@ vi.mock("@/server/actions/categories", () => ({
  * real date value instead.
  */
 const WALLETS = [
-  { id: "wallet-usd", name: "Everyday", currency_code: "USD" },
-  { id: "wallet-sgd", name: "Travel", currency_code: "SGD" },
+  { id: "wallet-usd", name: "Everyday", currency_code: "USD", space_id: SPACE },
+  { id: "wallet-sgd", name: "Travel", currency_code: "SGD", space_id: SPACE },
   // KWD has 3 decimal places (src/lib/money.ts's MINOR_UNITS) — one more
   // than USD's 2 — specifically to exercise the reclamp-on-wallet-change
   // fix below.
-  { id: "wallet-kwd", name: "Kuwait", currency_code: "KWD" },
+  { id: "wallet-kwd", name: "Kuwait", currency_code: "KWD", space_id: SPACE },
 ];
 
 const CATEGORIES: Category[] = [
-  { id: "cat-rent", name: "Rent", kind: "expense", color_slot: 1, icon: "circle", wallet_id: "wallet-usd" },
-  { id: "cat-salary", name: "Salary", kind: "income", color_slot: 2, icon: "circle", wallet_id: "wallet-usd" },
-  { id: "cat-travel", name: "Travel fund", kind: "expense", color_slot: 3, icon: "circle", wallet_id: "wallet-sgd" },
+  { id: "cat-rent", name: "Rent", kind: "expense", color_slot: 1, icon: "circle", space_id: SPACE },
+  { id: "cat-salary", name: "Salary", kind: "income", color_slot: 2, icon: "circle", space_id: SPACE },
+  { id: "cat-travel", name: "Travel fund", kind: "expense", color_slot: 3, icon: "circle", space_id: SPACE },
 ];
 
 function boundAction() {

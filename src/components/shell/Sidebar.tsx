@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Wallet, TrendingUp, Tags, LogOut, Plus, Target } from "lucide-react";
+import { Home, Wallet, TrendingUp, Tags, LogOut, Plus, Target, Users } from "lucide-react";
 import { signOut } from "@/server/actions/auth";
 import type { ThemePref } from "@/lib/supabase/current-user";
 import { ThemeToggle } from "./ThemeToggle";
@@ -22,6 +22,10 @@ const NAV = [
   { href: "/transactions", label: "Transactions", Icon: TrendingUp },
   { href: "/budgets", label: "Budgets", Icon: Target },
   { href: "/categories", label: "Categories", Icon: Tags },
+  // Sidebar only: TabBar is already at the five tabs that fit (see its own
+  // comment on six squeezing the wallet names). On mobile /household is
+  // reached from the link at the top of /categories.
+  { href: "/household", label: "Household", Icon: Users },
 ];
 
 const NAV_HREFS = NAV.map((item) => item.href);

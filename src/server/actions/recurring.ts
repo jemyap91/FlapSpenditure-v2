@@ -137,11 +137,26 @@ async function checkCategory(
   walletId: string,
   kind: "expense" | "income",
 ): Promise<RecurringState | null> {
+  // The wallet's HOUSEHOLD, not the wallet: categories moved from the wallet
+  // to the space in 0022, so "is this category legal for this rule" is now a
+  // space question. Resolved here rather than at the three call sites so they
+  // keep passing the wallet id they already have — every one of them has
+  // already proven that wallet exists and is the caller's (checkWalletCurrency
+  // ahead of two of them, an explicit fetch ahead of the third), which is why
+  // a miss below folds into the category error rather than inventing a
+  // "wallet not found" state this function has no field for.
+  const { data: wallet } = await supabase
+    .from("wallets")
+    .select("space_id")
+    .eq("id", walletId)
+    .single();
+  if (!wallet) return { error: "Choose a category", field: "category_id" };
+
   const { data: category } = await supabase
     .from("categories")
     .select("kind, archived_at")
     .eq("id", categoryId)
-    .eq("wallet_id", walletId)
+    .eq("space_id", wallet.space_id)
     .single();
   if (!category || category.archived_at) return { error: "Choose a category", field: "category_id" };
   if (category.kind !== kind) {
@@ -237,8 +252,19 @@ export async function createRule(
   const signed = toSignedMinor(amount, currency_code, kind);
   if ("error" in signed) return { error: signed.error, field: "amount" };
 
+  // The wallet's household, for the same reason createTransaction carries it:
+  // recurring_rules_wallet_same_space verifies it on write, so this is a value
+  // the database checks rather than believes.
+  const { data: ruleWallet } = await supabase
+    .from("wallets")
+    .select("space_id")
+    .eq("id", wallet_id)
+    .single();
+  if (!ruleWallet) return { error: "Wallet not found", field: "wallet_id" };
+
   const { error } = await supabase.from("recurring_rules").insert({
     wallet_id,
+    space_id: ruleWallet.space_id,
     created_by: user.id,
     name,
     kind,
@@ -488,7 +514,9 @@ export async function recordOccurrence(ruleId: string, occurrenceOn: string): Pr
 
   const { data: rule } = await supabase
     .from("recurring_rules")
-    .select("wallet_id, kind, amount_minor, currency_code, category_id, anchor_on, interval_unit, ends_on, archived_at")
+    .select(
+      "wallet_id, space_id, kind, amount_minor, currency_code, category_id, anchor_on, interval_unit, ends_on, archived_at",
+    )
     .eq("id", ruleId)
     .single();
   if (!rule) return { error: "Rule not found" };
@@ -559,6 +587,7 @@ export async function recordOccurrence(ruleId: string, occurrenceOn: string): Pr
 
   const { error } = await supabase.from("transactions").insert({
     wallet_id: rule.wallet_id,
+    space_id: rule.space_id,
     created_by: user.id,
     kind,
     amount_minor: rule.amount_minor,

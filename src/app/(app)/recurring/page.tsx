@@ -53,17 +53,21 @@ export default async function RecurringPage() {
   ] = await Promise.all([
     supabase
       .from("wallets")
-      .select("id, name, currency_code")
+      .select("id, name, currency_code, space_id")
       .is("archived_at", null)
       .order("created_at"),
     supabase
       .from("categories")
-      .select("id, name, kind, color_slot, icon, wallet_id")
+      .select("id, name, kind, color_slot, icon, space_id")
       .is("archived_at", null),
+    // `wallets!recurring_rules_wallet_id_fkey`: pinned because 0022's
+    // recurring_rules_wallet_same_space is a second FK to wallets and an
+    // unhinted embed is ambiguous (PGRST201). See (app)/page.tsx and
+    // scripts/check-embeds.sh.
     supabase
       .from("recurring_rules")
       .select(
-        "id, wallet_id, name, kind, amount_minor, currency_code, category_id, interval_unit, anchor_on, ends_on, wallets(name), categories(name, color_slot, icon)",
+        "id, wallet_id, name, kind, amount_minor, currency_code, category_id, interval_unit, anchor_on, ends_on, wallets!recurring_rules_wallet_id_fkey(name), categories(name, color_slot, icon)",
       )
       .is("archived_at", null)
       .order("created_at"),
@@ -115,7 +119,14 @@ export default async function RecurringPage() {
     ends_on: r.ends_on,
   }));
 
-  const walletRows = wallets.map((w) => ({ id: w.id, name: w.name, currency_code: w.currency_code }));
+  const walletRows = wallets.map((w) => ({
+    id: w.id,
+    name: w.name,
+    currency_code: w.currency_code,
+    // Decides which categories a rule may use (0022) — see RecurringForm's
+    // `spaceCategories`.
+    space_id: w.space_id,
+  }));
   const categoryRows = (categories ?? []) as unknown as Category[];
 
   return (

@@ -41,8 +41,8 @@ function monthAbbrev(periodStart: string, currentPeriodStart: string): string {
  * different noun for the same concept would read as two different features. */
 const OVERALL_LABEL = "Overall budget";
 
-export type BudgetWallet = { id: string; name: string; currency_code: string };
-export type BudgetCategoryOption = { key: string; label: string };
+export type BudgetWallet = { id: string; name: string; currency_code: string; space_id: string };
+export type BudgetCategoryOption = { id: string; label: string };
 
 /**
  * Rows split into the three groups spec §5 (as carried into this task's
@@ -68,10 +68,10 @@ function groupRows(rows: readonly BudgetStatusRow[]): {
   // ORDER BY, so leaving this unsorted renders in whatever order Postgres
   // heap scan happens to return.
   const overall = rows
-    .filter((r) => r.budget_id !== null && r.category_key === null)
+    .filter((r) => r.budget_id !== null && r.category_id === null)
     .sort((a, b) => (a.wallet_names ?? []).join(", ").localeCompare((b.wallet_names ?? []).join(", ")));
   const categoryBudgets = rows
-    .filter((r) => r.budget_id !== null && r.category_key !== null)
+    .filter((r) => r.budget_id !== null && r.category_id !== null)
     .sort((a, b) => (a.category_label ?? "").localeCompare(b.category_label ?? ""));
   // Sorted for the same reason `categoryBudgets` is above: `get_budget_status`
   // has no ORDER BY, so an unsorted `uncovered` renders in Postgres heap
@@ -114,8 +114,8 @@ export function BudgetList({
    *  currency counts as "this budget's own currency" for the per-row
    *  disclosure. */
   primaryCurrency,
-  /** Distinct expense category names available to budget against, across
-   *  the primary-currency wallets — not only categories with spending this
+  /** The household's expense categories available to budget against —
+   *  not only categories with spending this
    *  month, which would leave a wallet with no spending yet offering no
    *  control at all (controller addendum §4). */
   categories = [],
@@ -241,7 +241,7 @@ function BudgetRow({
   walletIds: string[];
   currentPeriodStart?: string;
 }) {
-  const isOverall = row.category_key === null;
+  const isOverall = row.category_id === null;
   const categoryLabel = row.category_label ?? OVERALL_LABEL;
   const scope = scopeLabel(row.wallet_names, row.wallet_count, totalInCurrency);
   const progress = budgetProgress(row);
@@ -249,7 +249,7 @@ function BudgetRow({
   const amountStatusId = useId();
 
   const [formState, formAction, saving] = useActionState<BudgetState, FormData>(
-    setBudget.bind(null, row.category_key),
+    setBudget.bind(null, row.category_id),
     {},
   );
 
@@ -278,7 +278,7 @@ function BudgetRow({
   //
   // The overall cap gets the SAME treatment, not just the category branch:
   // a caller can carry more than one overall cap at once (a different
-  // wallet set each, category_key still null for both) — B2's own e2e fix
+  // wallet set each, category_id still null for both) — B2's own e2e fix
   // puts exactly such a pair on screen together — and their Remove buttons
   // were just as indistinguishable to a screen-reader user as the category
   // case above before this fix.
@@ -487,11 +487,11 @@ function UncoveredSection({ rows }: { rows: BudgetStatusRow[] }) {
       <ul className="flex flex-col gap-3">
         {rows.map((row) => (
           <li
-            // `uncovered` (0013_wallet_set_budgets.sql) groups by category
-            // key AND currency — the same category can have uncovered
+            // `uncovered` (0023_budget_category_id.sql) groups by category
+            // id AND currency — the same category can have uncovered
             // spending in two different currencies at once, which a
-            // category-key-only key would collide on (fix round Minor).
-            key={`${row.category_key ?? row.category_label ?? "uncategorised"}-${row.currency_code}`}
+            // category-only key would collide on (fix round Minor).
+            key={`${row.category_id ?? row.category_label ?? "uncategorised"}-${row.currency_code}`}
             className="flex flex-col gap-1 rounded-lg border p-3"
             style={{ borderColor: "var(--grid)", background: "var(--surface)" }}
           >
@@ -527,7 +527,7 @@ function AddBudgetForm({
   // strings), translated back to `null` right here at the one point it
   // matters, so nothing downstream ever sees the empty string the SQL
   // layer explicitly refuses (controller addendum §4).
-  const [categoryKey, setCategoryKey] = useState<string | null>(null);
+  const [categoryId, setCategoryId] = useState<string | null>(null);
   const amountStatusId = useId();
   const headingId = useId(); // fix round Minor: was a hardcoded id; every other heading in this file uses useId().
 
@@ -543,7 +543,7 @@ function AddBudgetForm({
     primaryWallets.length > 0 && primaryWallets.every((w) => selectedWalletIds.has(w.id));
 
   const [formState, formAction, saving] = useActionState<BudgetState, FormData>(
-    setBudget.bind(null, categoryKey),
+    setBudget.bind(null, categoryId),
     {},
   );
 
@@ -566,14 +566,14 @@ function AddBudgetForm({
             Category
           </span>
           <select
-            value={categoryKey ?? ""}
-            onChange={(e) => setCategoryKey(e.target.value === "" ? null : e.target.value)}
+            value={categoryId ?? ""}
+            onChange={(e) => setCategoryId(e.target.value === "" ? null : e.target.value)}
             className={`rounded-md border px-3 py-2 text-sm ${FOCUS_RING}`}
             style={{ borderColor: "var(--ink-2)", background: "var(--surface)", color: "var(--ink)" }}
           >
             <option value="">{OVERALL_LABEL} (all spending)</option>
             {categories.map((c) => (
-              <option key={c.key} value={c.key}>
+              <option key={c.id} value={c.id}>
                 {c.label}
               </option>
             ))}

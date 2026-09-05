@@ -79,7 +79,7 @@ export function RecurringForm({
   action: (prev: RecurringState, formData: FormData) => Promise<RecurringState>;
   submitLabel: string;
   pendingLabel: string;
-  wallets: { id: string; name: string; currency_code: string }[];
+  wallets: { id: string; name: string; currency_code: string; space_id: string }[];
   categories: Category[];
   /** Which wallet the select starts on when creating. Still required in
    *  edit mode (used for the locked wallet's display line) even though no
@@ -161,10 +161,16 @@ export function RecurringForm({
   const wallet = wallets.find((w) => w.id === walletId) ?? wallets[0];
   const currencyCode = wallet?.currency_code ?? "USD";
   const minorUnit = minorUnitFor(currencyCode);
-  // Categories belong to a wallet (0008) — filtered fresh on every render
+  // Categories belong to a household (0022) — filtered fresh on every render
   // since the wallet select can change after mount, matching
-  // TransactionForm's identical `walletCategories`.
-  const walletCategories = categories.filter((c) => c.wallet_id === walletId);
+  // TransactionForm's identical `spaceCategories`. For a user in one
+  // household this narrows nothing: changing the wallet no longer changes
+  // which categories a rule may use. `wallet` is optional here (unlike
+  // TransactionForm's, which has a non-null fallback), so an empty wallet
+  // list yields an empty space id and therefore an empty picker rather than
+  // a crash.
+  const spaceId = wallet?.space_id ?? "";
+  const spaceCategories = categories.filter((c) => c.space_id === spaceId);
 
   function handleKindChange(next: "expense" | "income") {
     setKind(next);
@@ -333,11 +339,11 @@ export function RecurringForm({
             above still carries the value: CategoryPicker itself submits
             nothing on its own. */}
         <CategoryPicker
-          categories={walletCategories}
+          categories={spaceCategories}
           kind={kind}
           value={categoryId}
           onChange={(c) => setCategoryId(c.id)}
-          walletId={walletId}
+          spaceId={spaceId}
         />
       </div>
 

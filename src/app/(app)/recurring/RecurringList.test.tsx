@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const SPACE = "99999999-9999-4999-8999-999999999999";import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RecurringList, describeSchedule, type RecurringRuleRow } from "./RecurringList";
@@ -34,9 +35,9 @@ beforeEach(() => {
  *  WalletList.test.tsx's identical `noopAction`. */
 const noopAction = async () => ({});
 
-const WALLETS = [{ id: "wallet-1", name: "Everyday", currency_code: "USD" }];
+const WALLETS = [{ id: "wallet-1", name: "Everyday", currency_code: "USD", space_id: SPACE }];
 const CATEGORIES: Category[] = [
-  { id: "cat-1", name: "Bills", kind: "expense", color_slot: 1, icon: "circle", wallet_id: "wallet-1" },
+  { id: "cat-1", name: "Bills", kind: "expense", color_slot: 1, icon: "circle", space_id: SPACE },
 ];
 
 /**

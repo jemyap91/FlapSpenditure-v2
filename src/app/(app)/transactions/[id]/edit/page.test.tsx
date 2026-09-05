@@ -50,12 +50,12 @@ vi.mock("@/server/actions/categories", () => ({
 // `vi.mock` factories are hoisted above this file's own top-level `const`s
 // (same reason `/wallets/[id]/page.test.tsx` wraps its fixtures in
 // `vi.hoisted`), so every fixture map has to live in here too.
-const { txnById, legsByTransferId, walletsById, categoriesByWalletId, categoryById, UUID_RE } = vi.hoisted(
+const { txnById, legsByTransferId, walletsById, categoriesBySpaceId, categoryById, UUID_RE } = vi.hoisted(
   () => ({
     txnById: new Map<string, Record<string, unknown>>(),
     legsByTransferId: new Map<string, Record<string, unknown>[]>(),
     walletsById: new Map<string, Record<string, unknown>>(),
-    categoriesByWalletId: new Map<string, Record<string, unknown>[]>(),
+    categoriesBySpaceId: new Map<string, Record<string, unknown>[]>(),
     categoryById: new Map<string, Record<string, unknown>>(),
     // Deliberately loose, matching `/wallets/[id]/page.test.tsx`'s own
     // comment on its identical constant: only needs to tell this file's own
@@ -160,23 +160,25 @@ vi.mock("@/lib/supabase/server", () => ({
         return builder;
       }
       if (table === "categories") {
-        // `walletIds`, plural, since 0020: the page now loads categories for
-        // every wallet the transaction could be re-filed into, not just the
-        // one it is in, so the picker can offer the destination's. A single
-        // `.eq("wallet_id", ...)` is still honoured for the archived-category
+        // `spaceIds`, plural, since 0022: the page loads categories by
+        // HOUSEHOLD, and a caller who belongs to two can hold same-currency
+        // wallets in both. Under 0020 this was a list of wallet ids, one per
+        // wallet the transaction could be re-filed into; space scoping
+        // collapses that to a single id in the ordinary case. A single
+        // `.eq("id", ...)` is still honoured for the archived-category
         // lookup, which names one row.
-        let walletIds: string[] | undefined;
+        let spaceIds: string[] | undefined;
         let categoryId: string | undefined;
         let activeOnly = false;
         let single = false;
         const builder = {
           select: () => builder,
           in: (col: string, v: string[]) => {
-            if (col === "wallet_id") walletIds = v;
+            if (col === "space_id") spaceIds = v;
             return builder;
           },
           eq: (col: string, v: string) => {
-            if (col === "wallet_id") walletIds = [v];
+            if (col === "space_id") spaceIds = [v];
             if (col === "id") categoryId = v;
             return builder;
           },
@@ -193,8 +195,8 @@ vi.mock("@/lib/supabase/server", () => ({
               resolve({ data: (categoryId && categoryById.get(categoryId)) ?? null, error: null });
               return;
             }
-            const rows: Record<string, unknown>[] = (walletIds ?? []).flatMap(
-              (w) => categoriesByWalletId.get(w) ?? [],
+            const rows: Record<string, unknown>[] = (spaceIds ?? []).flatMap(
+              (sp) => categoriesBySpaceId.get(sp) ?? [],
             );
             resolve({
               data: activeOnly ? rows.filter((r) => !r.archived_at) : rows,
@@ -216,6 +218,9 @@ const TXN_B = "22222222-2222-4222-8222-222222222222";
 const WALLET_A = "33333333-3333-4333-8333-333333333333";
 const WALLET_B = "44444444-4444-4444-8444-444444444444";
 const CATEGORY_A = "55555555-5555-4555-8555-555555555555";
+// One household for every fixture wallet below. Under 0022 that is what makes
+// a category offerable from ANY of them — the point of the change.
+const SPACE = "77777777-7777-4777-8777-777777777777";
 const TRANSFER_A = "66666666-6666-4666-8666-666666666666";
 
 function txn(id: string, over: Record<string, unknown> = {}) {
@@ -239,12 +244,13 @@ function wallet(id: string, over: Record<string, unknown> = {}) {
   // fixture keeps rendering the FORM — the archived cases have to opt in,
   // which is what makes the archived tests below discriminating rather than
   // the ambient state of this file.
-  return { id, name: "Everyday", currency_code: "USD", archived_at: null, ...over };
+  return { id, name: "Everyday", currency_code: "USD", archived_at: null, space_id: SPACE, ...over };
 }
 
 function category(id: string, over: Record<string, unknown> = {}) {
   return {
     id,
+    space_id: SPACE,
     name: "Groceries",
     kind: "expense",
     color_slot: 1,
@@ -260,7 +266,7 @@ beforeEach(() => {
   txnById.clear();
   legsByTransferId.clear();
   walletsById.clear();
-  categoriesByWalletId.clear();
+  categoriesBySpaceId.clear();
   categoryById.clear();
 });
 
@@ -311,7 +317,7 @@ describe("EditTransactionPage — seeds an expense/income transaction", () => {
   it("renders the edit form seeded from the loaded row", async () => {
     txnById.set(TXN_A, txn(TXN_A));
     walletsById.set(WALLET_A, wallet(WALLET_A, { name: "Everyday" }));
-    categoriesByWalletId.set(WALLET_A, [category(CATEGORY_A, { name: "Groceries" })]);
+    categoriesBySpaceId.set(SPACE, [category(CATEGORY_A, { name: "Groceries" })]);
 
     const ui = await EditTransactionPage({ params: Promise.resolve({ id: TXN_A }), searchParams: Promise.resolve({}) });
     render(ui);
@@ -331,7 +337,7 @@ describe("EditTransactionPage — seeds an expense/income transaction", () => {
     txnById.set(TXN_A, txn(TXN_A, { category_id: CATEGORY_A }));
     walletsById.set(WALLET_A, wallet(WALLET_A));
     // The wallet's ACTIVE category list does not include it...
-    categoriesByWalletId.set(WALLET_A, []);
+    categoriesBySpaceId.set(SPACE, []);
     // ...but the row's own category is still fetchable directly.
     categoryById.set(CATEGORY_A, category(CATEGORY_A, { name: "Old Category", archived_at: "2026-01-01T00:00:00Z" }));
 
@@ -362,7 +368,7 @@ describe("EditTransactionPage — the ?from return trip", () => {
   it("reads ?from and hands it to the form, normalising a repeated param to its first value", async () => {
     txnById.set(TXN_A, txn(TXN_A));
     walletsById.set(WALLET_A, wallet(WALLET_A));
-    categoriesByWalletId.set(WALLET_A, [category(CATEGORY_A)]);
+    categoriesBySpaceId.set(SPACE, [category(CATEGORY_A)]);
 
     const ui = await EditTransactionPage({
       params: Promise.resolve({ id: TXN_A }),
@@ -378,7 +384,7 @@ describe("EditTransactionPage — the ?from return trip", () => {
   it("lands on /transactions when there is no ?from, exactly as before", async () => {
     txnById.set(TXN_A, txn(TXN_A));
     walletsById.set(WALLET_A, wallet(WALLET_A));
-    categoriesByWalletId.set(WALLET_A, [category(CATEGORY_A)]);
+    categoriesBySpaceId.set(SPACE, [category(CATEGORY_A)]);
 
     const ui = await EditTransactionPage({
       params: Promise.resolve({ id: TXN_A }),
@@ -500,7 +506,7 @@ describe("EditTransactionPage — an archived wallet's transaction is read-only"
   it("replaces the form with a reason and the transaction's own values", async () => {
     txnById.set(TXN_A, txn(TXN_A));
     walletsById.set(WALLET_A, wallet(WALLET_A, { name: "Everyday", archived_at: "2026-01-01T00:00:00Z" }));
-    categoriesByWalletId.set(WALLET_A, [category(CATEGORY_A)]);
+    categoriesBySpaceId.set(SPACE, [category(CATEGORY_A)]);
 
     const ui = await EditTransactionPage({
       params: Promise.resolve({ id: TXN_A }),

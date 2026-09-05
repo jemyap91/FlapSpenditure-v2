@@ -29,13 +29,13 @@ const uuid = z.uuid();
  * a destination for a *new* transaction, even though the server actions
  * independently re-check this (defense in depth, not the only gate).
  *
- * The categories query is deliberately UNFILTERED by wallet: categories
- * belong to a wallet, not a user (0008), and `categories_member` RLS
- * already scopes this SELECT to every wallet the caller belongs to — so
- * this single query returns every wallet's categories at once, tagged with
- * `wallet_id`. TransactionForm filters that combined list down to the
- * currently-selected wallet client-side (its `walletCategories`), so
- * switching the wallet chip needs no refetch.
+ * The categories query is unfiltered: categories belong to a household, not
+ * to a wallet (0022), and `categories_space` RLS already scopes this SELECT
+ * to every space the caller belongs to — so it returns the caller's whole
+ * list at once, tagged with `space_id`. TransactionForm narrows that only by
+ * the selected wallet's space (its `spaceCategories`), which for the ordinary
+ * one-household case narrows nothing at all: switching the wallet chip no
+ * longer changes what the picker offers, and needs no refetch either way.
  */
 export default async function NewTransactionPage({
   searchParams,
@@ -82,12 +82,12 @@ export default async function NewTransactionPage({
   ] = await Promise.all([
     supabase
       .from("wallets")
-      .select("id, name, currency_code")
+      .select("id, name, currency_code, space_id")
       .is("archived_at", null)
       .order("created_at"),
     supabase
       .from("categories")
-      .select("id, name, kind, color_slot, icon, wallet_id")
+      .select("id, name, kind, color_slot, icon, space_id")
       .is("archived_at", null)
       .order("kind")
       .order("sort_order"),

@@ -19,22 +19,18 @@ export type BudgetState = { error?: string; notice?: string };
 // kept here.
 const idSchema = z.uuid();
 
-// N3 (whole-branch review): `categoryKey` was the one server-action input
-// never re-validated with zod — `amount` and `walletIds` both go through
-// `budgetInput` above, but `categoryKey` (a bound Server Function argument,
-// so reachable with any string a direct POST cares to send, exactly like
-// `idSchema`'s own reasoning above) was passed straight to `set_budget`.
-// `.min(1)`: an empty string is refused HERE now, before any Supabase
-// client is constructed — `set_budget`'s own `btrim(p_category_key) = ''`
-// check (0013_wallet_set_budgets.sql) still exists and still refuses it too,
-// the same defense-in-depth relationship `budgetInput.walletIds`'s `z.uuid()`
-// already has with `set_budget`'s own `uuid[]` cast. `.max(60)`: no
-// reasonable category name approaches this; it exists only to give an
-// absurdly long string a readable rejection instead of an opaque round trip.
-// `.nullable()`: the overall cap's own explicit `null` must still pass
-// through untouched — see setBudget's own comment below on `categoryKey`
-// never being coalesced.
-const categoryKeySchema = z.string().trim().min(1).max(60).nullable();
+// N3 (whole-branch review): the bound category argument is a Server
+// Function input like any other — reachable with any string a direct POST
+// cares to send, exactly like `idSchema`'s own reasoning above — so it is
+// re-validated here before any Supabase client is constructed. A category
+// is an ID since 0023 (a real foreign key onto the household's list, not
+// the normalised NAME 0013 had to settle for), so this is `z.uuid()`: a
+// blank, a name, or an over-long string is refused with a readable message
+// rather than surfacing as an opaque round trip through `set_budget`'s
+// own `uuid` cast. `.nullable()`: the overall cap's own explicit `null`
+// must still pass through untouched — see setBudget's own comment below on
+// `categoryId` never being coalesced.
+const categoryIdSchema = z.uuid().nullable();
 
 /**
  * Server Functions are reachable by direct POST, not only through this app's
@@ -45,7 +41,7 @@ const categoryKeySchema = z.string().trim().min(1).max(60).nullable();
  */
 
 export async function setBudget(
-  categoryKey: string | null,
+  categoryId: string | null,
   _prev: BudgetState,
   formData: FormData,
 ): Promise<BudgetState> {
@@ -59,12 +55,12 @@ export async function setBudget(
   });
   if (!parsed.success) return { error: parsed.error.issues[0]!.message };
 
-  // N3: re-validate the bound `categoryKey` argument itself, same as every
+  // N3: re-validate the bound `categoryId` argument itself, same as every
   // other input this action trusts nothing about. Before any Supabase
   // client is constructed, matching every other pre-DB rejection above.
-  const categoryKeyParsed = categoryKeySchema.safeParse(categoryKey);
-  if (!categoryKeyParsed.success) return { error: "That category is not valid." };
-  categoryKey = categoryKeyParsed.data;
+  const categoryIdParsed = categoryIdSchema.safeParse(categoryId);
+  if (!categoryIdParsed.success) return { error: "That category is not valid." };
+  categoryId = categoryIdParsed.data;
 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -108,39 +104,35 @@ export async function setBudget(
   // re-checks everything above itself (membership, currency, archived
   // status, duplicate ids) before writing.
   //
-  // set_budget's `p_category_key` is a plain (non-defaulted) `text` param,
+  // set_budget's `p_category_id` is a plain (non-defaulted) `uuid` param,
   // which accepts NULL at the SQL level -- the overall-cap branch of the
   // function depends on that (an explicit NULL is a deliberate caller
-  // choice; '' or whitespace is refused rather than silently normalised to
-  // NULL, so a blank form field can never accidentally edit the household's
-  // wallet-wide cap). Supabase's codegen has no way to see that from
+  // choice). Supabase's codegen has no way to see that from
   // information_schema (a parameter's own nullability isn't exposed the way
   // a column's is), so the generated Args type is the bare `string`, not
   // `string | null`.
   //
   // The relaxation is confined to that one field via `satisfies`, rather
   // than casting the whole args object to `string`: a bare
-  // `p_category_key: categoryKey as string` would equally silence a future
+  // `p_category_id: categoryId as string` would equally silence a future
   // type error if that expression became a number or undefined. Building
   // the object against `SetBudgetArgsRelaxed` means every OTHER field is
   // still checked against the real generated `Args` type, so a typo or a
   // signature change elsewhere in `set_budget` still fails typecheck here.
   //
-  // `categoryKey` is never coalesced — never `categoryKey ?? null` or
-  // `categoryKey || null` — so an explicit `null` (the overall cap) is never
-  // silently reinterpreted as anything else. An accidental blank string no
-  // longer reaches `set_budget` at all (N3, whole-branch review):
-  // `categoryKeySchema`'s `.min(1)` above refuses it before any Supabase
-  // client is even constructed. `set_budget`'s own
-  // `btrim(p_category_key) = ''` refusal still exists and still fires for
-  // anyone who reaches it directly (e.g. a future non-zod caller) — belt
-  // and braces, the same relationship `budgetInput.walletIds`'s `z.uuid()`
-  // already has with `set_budget`'s own `uuid[]` cast.
+  // `categoryId` is never coalesced — never `categoryId ?? null` or
+  // `categoryId || null` — so an explicit `null` (the overall cap) is never
+  // silently reinterpreted as anything else. A blank or malformed id never
+  // reaches `set_budget` at all (N3, whole-branch review): `categoryIdSchema`
+  // above refuses it before any Supabase client is even constructed.
+  // `set_budget` (0023) then checks the id itself — it must name an EXPENSE
+  // category of the wallet set's own household — so a well-formed id for a
+  // category the caller cannot see is refused there, not silently filed.
   type SetBudgetArgs = Database["public"]["Functions"]["set_budget"]["Args"];
-  type SetBudgetArgsRelaxed = Omit<SetBudgetArgs, "p_category_key"> & { p_category_key: string | null };
+  type SetBudgetArgsRelaxed = Omit<SetBudgetArgs, "p_category_id"> & { p_category_id: string | null };
 
   const args = {
-    p_category_key: categoryKey,
+    p_category_id: categoryId,
     p_period_start: monthRange().from,
     p_amount_minor: amountMinor,
     // A flat array of strings, exactly as `formData.getAll` produced it via

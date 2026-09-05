@@ -37,14 +37,17 @@ export type Database = {
       budget_wallets: {
         Row: {
           budget_id: string
+          space_id: string
           wallet_id: string
         }
         Insert: {
           budget_id: string
+          space_id: string
           wallet_id: string
         }
         Update: {
           budget_id?: string
+          space_id?: string
           wallet_id?: string
         }
         Relationships: [
@@ -56,49 +59,80 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "budget_wallets_budget_same_space"
+            columns: ["budget_id", "space_id"]
+            isOneToOne: false
+            referencedRelation: "budgets"
+            referencedColumns: ["id", "space_id"]
+          },
+          {
             foreignKeyName: "budget_wallets_wallet_id_fkey"
             columns: ["wallet_id"]
             isOneToOne: false
             referencedRelation: "wallets"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "budget_wallets_wallet_same_space"
+            columns: ["wallet_id", "space_id"]
+            isOneToOne: false
+            referencedRelation: "wallets"
+            referencedColumns: ["id", "space_id"]
+          },
         ]
       }
       budgets: {
         Row: {
           amount_minor: number
-          category_key: string | null
+          category_id: string | null
           created_at: string
           created_by: string
           currency_code: string
           id: string
           period_start: string
+          space_id: string
         }
         Insert: {
           amount_minor: number
-          category_key?: string | null
+          category_id?: string | null
           created_at?: string
           created_by: string
           currency_code: string
           id?: string
           period_start: string
+          space_id: string
         }
         Update: {
           amount_minor?: number
-          category_key?: string | null
+          category_id?: string | null
           created_at?: string
           created_by?: string
           currency_code?: string
           id?: string
           period_start?: string
+          space_id?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "budgets_category_same_space"
+            columns: ["category_id", "space_id"]
+            isOneToOne: false
+            referencedRelation: "categories"
+            referencedColumns: ["id", "space_id"]
+          },
           {
             foreignKeyName: "budgets_currency_code_fkey"
             columns: ["currency_code"]
             isOneToOne: false
             referencedRelation: "currencies"
             referencedColumns: ["code"]
+          },
+          {
+            foreignKeyName: "budgets_space_id_fkey"
+            columns: ["space_id"]
+            isOneToOne: false
+            referencedRelation: "spaces"
+            referencedColumns: ["id"]
           },
         ]
       }
@@ -113,7 +147,7 @@ export type Database = {
           kind: Database["public"]["Enums"]["category_kind"]
           name: string
           sort_order: number
-          wallet_id: string
+          space_id: string
         }
         Insert: {
           archived_at?: string | null
@@ -125,7 +159,7 @@ export type Database = {
           kind: Database["public"]["Enums"]["category_kind"]
           name: string
           sort_order?: number
-          wallet_id: string
+          space_id: string
         }
         Update: {
           archived_at?: string | null
@@ -137,14 +171,14 @@ export type Database = {
           kind?: Database["public"]["Enums"]["category_kind"]
           name?: string
           sort_order?: number
-          wallet_id?: string
+          space_id?: string
         }
         Relationships: [
           {
-            foreignKeyName: "categories_wallet_id_fkey"
-            columns: ["wallet_id"]
+            foreignKeyName: "categories_space_id_fkey"
+            columns: ["space_id"]
             isOneToOne: false
-            referencedRelation: "wallets"
+            referencedRelation: "spaces"
             referencedColumns: ["id"]
           },
         ]
@@ -219,6 +253,7 @@ export type Database = {
           interval_unit: Database["public"]["Enums"]["recur_interval"]
           kind: Database["public"]["Enums"]["txn_kind"]
           name: string
+          space_id: string
           updated_at: string
           wallet_id: string
         }
@@ -235,6 +270,7 @@ export type Database = {
           interval_unit: Database["public"]["Enums"]["recur_interval"]
           kind: Database["public"]["Enums"]["txn_kind"]
           name: string
+          space_id: string
           updated_at?: string
           wallet_id: string
         }
@@ -251,16 +287,17 @@ export type Database = {
           interval_unit?: Database["public"]["Enums"]["recur_interval"]
           kind?: Database["public"]["Enums"]["txn_kind"]
           name?: string
+          space_id?: string
           updated_at?: string
           wallet_id?: string
         }
         Relationships: [
           {
-            foreignKeyName: "recurring_rules_category_same_wallet"
-            columns: ["category_id", "wallet_id"]
+            foreignKeyName: "recurring_rules_category_same_space"
+            columns: ["category_id", "space_id"]
             isOneToOne: false
             referencedRelation: "categories"
-            referencedColumns: ["id", "wallet_id"]
+            referencedColumns: ["id", "space_id"]
           },
           {
             foreignKeyName: "recurring_rules_currency_code_fkey"
@@ -275,6 +312,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "wallets"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "recurring_rules_wallet_same_space"
+            columns: ["wallet_id", "space_id"]
+            isOneToOne: false
+            referencedRelation: "wallets"
+            referencedColumns: ["id", "space_id"]
           },
         ]
       }
@@ -307,6 +351,53 @@ export type Database = {
           },
         ]
       }
+      space_members: {
+        Row: {
+          joined_at: string
+          role: Database["public"]["Enums"]["member_role"]
+          space_id: string
+          user_id: string
+        }
+        Insert: {
+          joined_at?: string
+          role?: Database["public"]["Enums"]["member_role"]
+          space_id: string
+          user_id: string
+        }
+        Update: {
+          joined_at?: string
+          role?: Database["public"]["Enums"]["member_role"]
+          space_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "space_members_space_id_fkey"
+            columns: ["space_id"]
+            isOneToOne: false
+            referencedRelation: "spaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      spaces: {
+        Row: {
+          created_at: string
+          id: string
+          name: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          name: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          name?: string
+        }
+        Relationships: []
+      }
       transactions: {
         Row: {
           amount_minor: number
@@ -322,6 +413,7 @@ export type Database = {
           occurred_on: string
           recurring_id: string | null
           recurring_occurrence_on: string | null
+          space_id: string
           transfer_id: string | null
           updated_at: string
           wallet_id: string
@@ -340,6 +432,7 @@ export type Database = {
           occurred_on: string
           recurring_id?: string | null
           recurring_occurrence_on?: string | null
+          space_id: string
           transfer_id?: string | null
           updated_at?: string
           wallet_id: string
@@ -358,6 +451,7 @@ export type Database = {
           occurred_on?: string
           recurring_id?: string | null
           recurring_occurrence_on?: string | null
+          space_id?: string
           transfer_id?: string | null
           updated_at?: string
           wallet_id?: string
@@ -371,11 +465,11 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "transactions_category_same_wallet"
-            columns: ["category_id", "wallet_id"]
+            foreignKeyName: "transactions_category_same_space"
+            columns: ["category_id", "space_id"]
             isOneToOne: false
             referencedRelation: "categories"
-            referencedColumns: ["id", "wallet_id"]
+            referencedColumns: ["id", "space_id"]
           },
           {
             foreignKeyName: "transactions_currency_code_fkey"
@@ -404,6 +498,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "wallets"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "transactions_wallet_same_space"
+            columns: ["wallet_id", "space_id"]
+            isOneToOne: false
+            referencedRelation: "wallets"
+            referencedColumns: ["id", "space_id"]
           },
         ]
       }
@@ -473,28 +574,45 @@ export type Database = {
         Row: {
           joined_at: string
           role: Database["public"]["Enums"]["member_role"]
+          space_id: string
           user_id: string
           wallet_id: string
         }
         Insert: {
           joined_at?: string
           role?: Database["public"]["Enums"]["member_role"]
+          space_id: string
           user_id: string
           wallet_id: string
         }
         Update: {
           joined_at?: string
           role?: Database["public"]["Enums"]["member_role"]
+          space_id?: string
           user_id?: string
           wallet_id?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "wallet_members_in_space"
+            columns: ["space_id", "user_id"]
+            isOneToOne: false
+            referencedRelation: "space_members"
+            referencedColumns: ["space_id", "user_id"]
+          },
           {
             foreignKeyName: "wallet_members_wallet_id_fkey"
             columns: ["wallet_id"]
             isOneToOne: false
             referencedRelation: "wallets"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "wallet_members_wallet_same_space"
+            columns: ["wallet_id", "space_id"]
+            isOneToOne: false
+            referencedRelation: "wallets"
+            referencedColumns: ["id", "space_id"]
           },
         ]
       }
@@ -552,6 +670,7 @@ export type Database = {
           kind: Database["public"]["Enums"]["wallet_kind"]
           name: string
           owner_id: string
+          space_id: string
           starting_balance_minor: number
           updated_at: string
         }
@@ -565,6 +684,7 @@ export type Database = {
           kind: Database["public"]["Enums"]["wallet_kind"]
           name: string
           owner_id: string
+          space_id: string
           starting_balance_minor?: number
           updated_at?: string
         }
@@ -578,6 +698,7 @@ export type Database = {
           kind?: Database["public"]["Enums"]["wallet_kind"]
           name?: string
           owner_id?: string
+          space_id?: string
           starting_balance_minor?: number
           updated_at?: string
         }
@@ -588,6 +709,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "currencies"
             referencedColumns: ["code"]
+          },
+          {
+            foreignKeyName: "wallets_space_id_fkey"
+            columns: ["space_id"]
+            isOneToOne: false
+            referencedRelation: "spaces"
+            referencedColumns: ["id"]
           },
         ]
       }
@@ -616,7 +744,7 @@ export type Database = {
           budget_id: string
           budget_minor: number
           budget_period_start: string
-          category_key: string
+          category_id: string
           category_label: string
           currency_code: string
           spent_minor: number
@@ -656,6 +784,16 @@ export type Database = {
           wallet_name: string
         }[]
       }
+      get_space_members: {
+        Args: never
+        Returns: {
+          display_name: string
+          joined_at: string
+          role: Database["public"]["Enums"]["member_role"]
+          space_id: string
+          user_id: string
+        }[]
+      }
       get_wallet_balances: {
         Args: never
         Returns: {
@@ -673,6 +811,7 @@ export type Database = {
           wallet_id: string
         }[]
       }
+      is_space_member: { Args: { s: string }; Returns: boolean }
       is_wallet_member: { Args: { w: string }; Returns: boolean }
       move_transaction: {
         Args: {
@@ -689,7 +828,7 @@ export type Database = {
       set_budget: {
         Args: {
           p_amount_minor: number
-          p_category_key: string
+          p_category_id: string
           p_period_start: string
           p_wallet_ids: string[]
         }
@@ -723,6 +862,7 @@ export type Database = {
           occurred_on: string
           recurring_id: string | null
           recurring_occurrence_on: string | null
+          space_id: string
           transfer_id: string | null
           updated_at: string
           wallet_id: string

@@ -15,6 +15,7 @@
     "test:rls": "./scripts/test-rls.sh",
     "test:constraints": "./scripts/test-constraints.sh",
     "test:seed": "./scripts/test-seed.sh",
+    "test:migration:0022": "./scripts/test-migration-0022.sh",
     "test:embeds": "./scripts/check-embeds.sh",
     "validate:palette": "node scripts/validate-palette.mjs",
     "db:types": "supabase gen types typescript --local > src/lib/database.types.ts"

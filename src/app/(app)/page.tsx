@@ -196,10 +196,16 @@ export default async function DashboardPage() {
     { data: dueSkipRows, error: dueSkipsError },
     { data: dueRecordedRows, error: dueRecordedError },
   ] = await Promise.all([
+    // `wallets!recurring_rules_wallet_id_fkey`: 0022 added a second FK from
+    // recurring_rules to wallets (recurring_rules_wallet_same_space), so an
+    // unhinted `wallets(...)` is ambiguous (PGRST201 / HTTP 300) -- the same
+    // failure 0015 caused for transactions. `categories(...)` needs no hint:
+    // the composite FK is the ONLY one from recurring_rules to categories.
+    // scripts/check-embeds.sh is what catches this.
     supabase
       .from("recurring_rules")
       .select(
-        "id, name, kind, amount_minor, currency_code, interval_unit, anchor_on, ends_on, archived_at, wallets(name, currency_code, archived_at), categories(kind, archived_at)",
+        "id, name, kind, amount_minor, currency_code, interval_unit, anchor_on, ends_on, archived_at, wallets!recurring_rules_wallet_id_fkey(name, currency_code, archived_at), categories(kind, archived_at)",
       )
       .order("created_at"),
     supabase.from("recurring_skips").select("rule_id, occurrence_on").gte("occurrence_on", dueFloor),
