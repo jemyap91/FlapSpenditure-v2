@@ -784,6 +784,16 @@ export type Database = {
           wallet_name: string
         }[]
       }
+      get_space_members: {
+        Args: never
+        Returns: {
+          display_name: string
+          joined_at: string
+          role: Database["public"]["Enums"]["member_role"]
+          space_id: string
+          user_id: string
+        }[]
+      }
       get_wallet_balances: {
         Args: never
         Returns: {

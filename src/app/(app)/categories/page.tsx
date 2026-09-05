@@ -73,9 +73,18 @@ export default async function CategoriesPage({
 
   return (
     <div className="mx-auto max-w-2xl p-6">
-      <h1 className="mb-6 text-2xl font-semibold" style={{ color: "var(--ink)" }}>
+      <h1 className="mb-1 text-2xl font-semibold" style={{ color: "var(--ink)" }}>
         Categories
       </h1>
+      {/* The one list is the household's, so the household is the natural
+          place to explain who else sees it. This link is also the mobile
+          route to /household, which has no TabBar entry. */}
+      <p className="mb-6 text-sm" style={{ color: "var(--ink-2)" }}>
+        Shared with everyone in {selected.name}.{" "}
+        <Link href="/household" className="underline" style={{ color: "var(--cat-1)" }}>
+          View household
+        </Link>
+      </p>
       {/* Only when there is a choice. Plain links, not a <select>: this is a
           Server Component and the selection is a URL, so it needs no client
           JS and is shareable. */}

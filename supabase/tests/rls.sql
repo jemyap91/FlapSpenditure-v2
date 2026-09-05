@@ -4383,3 +4383,50 @@ begin;
     assert ok, 'a user arranged a wallet they are not a member of';
   end $$;
 rollback;
+
+-- =====================================================================
+-- 0024: get_space_members(). SECURITY DEFINER for the reason 0010's
+-- get_wallet_members is: profiles_own hides a co-member's display_name
+-- from a plain space_members -> profiles read. Self-scoped through
+-- is_space_member(), so a caller sees the names in THEIR households and
+-- no other. Alice's household holds carol (joined by accepting invite
+-- '50505050-...-050' onto wallet '40404040-...-040' above); a fresh user
+-- with no wallets and no invites is in a household of one and must see
+-- exactly that.
+-- =====================================================================
+insert into auth.users (id, email) values ('d0d0d0d0-0000-4000-8000-00000000000d', 'dave-0024@x.io');
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+    assert (
+      select array_agg(display_name order by display_name)
+      from public.get_space_members()
+      where space_id = (select space_id from public.wallets where id = '40404040-0000-0000-0000-000000000040')
+    ) @> array['alice','carol'],
+      'PERMISSION BROKEN: alice cannot see her co-member carol''s display name via get_space_members()';
+    assert (select count(*) from public.get_space_members() where display_name = 'dave-0024') = 0,
+      'LEAK: alice sees a member of a household she is not in via get_space_members()';
+  end $$;
+commit;
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"d0d0d0d0-0000-4000-8000-00000000000d","email":"dave-0024@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'd0d0d0d0-0000-4000-8000-00000000000d'::uuid, 'impersonation failed';
+    assert (select array_agg(display_name) from public.get_space_members()) = array['dave-0024'],
+      'LEAK: a user in a household of one sees other households'' members via get_space_members()';
+    assert (select role from public.get_space_members()) = 'owner',
+      'SEED BROKEN: a fresh user does not own the household signup made for them';
+  end $$;
+commit;
+
+do $$ begin
+  assert has_function_privilege('authenticated', 'public.get_space_members()', 'EXECUTE'),
+    'GRANT BROKEN: authenticated must be able to EXECUTE get_space_members';
+  assert not has_function_privilege('anon', 'public.get_space_members()', 'EXECUTE'),
+    'LEAK: anon must not be able to EXECUTE get_space_members';
+end $$;

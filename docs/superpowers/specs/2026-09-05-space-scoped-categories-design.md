@@ -341,4 +341,6 @@ Where the shipped migrations differ from the sections above, and why.
 | §9 | The migration-correctness fixture is `supabase/tests/migration_0022.sql`, run by `npm run test:migration:0022`, which resets to `0021`, plants the fixture, applies `0022` then `0023` each in one transaction, and asserts. |
 | — | `set_budget` refuses a category from another household, a nonexistent id, and an **income** category; the last is new (a name could previously match either kind). A wallet set spanning two households is refused in words before the composite FKs would refuse it anyway. |
 
-§5.1's pre-flight check against the hosted database has not been run; hosted migrations are applied by hand.
+A read-only `/household` screen was added after review (0024 `get_space_members()`, Sidebar entry, link from `/categories`). It lists each household's members and the wallets the viewer is in; membership stays derived, per §10.
+
+§5.1's pre-flight check was run against the hosted database on 2026-09-05; see the session notes for the result. Hosted migrations are applied by hand.
