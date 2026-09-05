@@ -279,8 +279,11 @@ test.describe("wallets", () => {
     await expect(dialog).toBeVisible();
 
     // Currency is not offered: it is fixed once a wallet exists, because
-    // every amount already recorded is stored in it.
-    await expect(dialog.getByRole("combobox")).toHaveCount(0);
+    // every amount already recorded is stored in it. Named, not "no combobox
+    // at all": the dialog legitimately carries a Group select since wallet
+    // grouping landed, and that one is not the control being ruled out.
+    await expect(dialog.getByRole("combobox", { name: "Currency" })).toHaveCount(0);
+    await expect(dialog.getByRole("combobox", { name: "Group" })).toHaveCount(1);
 
     const balance = dialog.getByLabel("Starting balance");
     await balance.fill("700.00");

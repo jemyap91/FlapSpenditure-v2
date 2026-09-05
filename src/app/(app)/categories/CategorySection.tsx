@@ -492,9 +492,13 @@ const IconPicker = memo(function IconPicker({
         >
         {CATEGORY_ICON_GROUPS.map((group) => (
           <div key={group.label} className="mb-3 last:mb-0">
+            {/* var(--ink-2), not var(--muted): at 11px this is body-size
+                text and needs 4.5:1. --muted on --surface measures 3.49:1
+                in light mode (axe, CI's accessibility gate); --ink-2
+                measures 7.73:1 light / 9.72:1 dark (TabBar's own numbers). */}
             <p
               className="mb-1 text-[11px] font-medium uppercase tracking-wide"
-              style={{ color: "var(--muted)" }}
+              style={{ color: "var(--ink-2)" }}
             >
               {group.label}
             </p>

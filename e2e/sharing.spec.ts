@@ -204,7 +204,10 @@ test("a household shares one ledger between two real people", async ({ browser }
   // --- 4. B sees the pending invitation on /wallets, naming A's WALLET
   // (not A, not an id), and accepts it.
   await b.goto("/wallets");
-  await expect(b.getByText("Household")).toBeVisible();
+  // Scoped to the invitations region: the desktop Sidebar has a "Household"
+  // nav link (the /household screen), so a page-wide getByText would find
+  // two elements. The claim here is about the invite card naming the WALLET.
+  await expect(b.getByLabel("Pending invitations").getByText("Household")).toBeVisible();
   await b.getByRole("button", { name: "Accept" }).click();
 
   // `respondToInvite` runs inside a client-side transition (PendingInvites'

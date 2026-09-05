@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, useTransition } from "react";
+import { useId, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { Landmark, CreditCard, Settings, User, GripVertical } from "lucide-react";
 import type { WalletSort } from "@/lib/validation/wallet-group";
@@ -173,6 +173,15 @@ export function WalletList({
   /** Optimistic, and deliberately so: the server action revalidates, but a
    *  move that only appeared after a round trip would feel broken on a
    *  phone. The list re-renders from the server's answer when it arrives. */
+  // Explicit ids for the two <select>s below, so each is labelled with
+  // htmlFor rather than by a wrapping <label>. A wrapping label's accessible
+  // name is its whole text content, option text included, so the Order
+  // control was named "OrderMy orderName (A-Z)Date" -- and any
+  // getByLabel("Name") on this page (every e2e helper that adds a wallet)
+  // matched it as well as the real Name field. Same defect the hint under
+  // the Group select already documents from the other side.
+  const orderSelectId = useId();
+  const groupSelectId = useId();
   const [orderOverride, setOrderOverride] = useState<Record<string, string[]>>({});
 
   /** The row elements, so a drag can ask where each one currently sits.
@@ -440,11 +449,12 @@ export function WalletList({
           because they change what the list IS, while search only narrows
           what is already there. */}
       <div className="mb-2 flex flex-wrap items-end gap-2">
-        <label className="flex flex-col gap-1">
-          <span className="text-xs" style={{ color: "var(--ink-2)" }}>
+        <div className="flex flex-col gap-1">
+          <label htmlFor={orderSelectId} className="text-xs" style={{ color: "var(--ink-2)" }}>
             Order
-          </span>
+          </label>
           <select
+            id={orderSelectId}
             value={sort}
             onChange={(e) => {
               const next = e.target.value as WalletSort;
@@ -460,7 +470,7 @@ export function WalletList({
             <option value="name">Name (A-Z)</option>
             <option value="created">Date added</option>
           </select>
-        </label>
+        </div>
 
         <form
           className="flex items-end gap-2"
@@ -958,11 +968,12 @@ export function WalletList({
               decision, which is exactly why Archive below is gated and this
               is not. */}
           {dialog!.view === "edit" && (
-            <label className="mt-4 flex flex-col gap-1">
-              <span className="text-sm" style={{ color: "var(--ink-2)" }}>
+            <div className="mt-4 flex flex-col gap-1">
+              <label htmlFor={groupSelectId} className="text-sm" style={{ color: "var(--ink-2)" }}>
                 Group
-              </span>
+              </label>
               <select
+                id={groupSelectId}
                 value={groupOf(dialogWallet.id) ?? ""}
                 disabled={arranging}
                 onChange={(e) => assignGroup(dialogWallet.id, e.target.value || null)}
@@ -980,13 +991,14 @@ export function WalletList({
                   </option>
                 ))}
               </select>
-            </label>
+            </div>
           )}
           {dialog!.view === "edit" && (
-            /* Outside the <label>, deliberately. A label's accessible name is
-               its whole text content, so keeping this hint inside made the
-               select's name "GroupOnly you see this grouping." — matching
-               neither what a user reads nor what a test asks for. */
+            /* Outside the label, deliberately. A wrapping label's accessible
+               name is its whole text content, so keeping this hint inside
+               made the select's name "GroupOnly you see this grouping." --
+               matching neither what a user reads nor what a test asks for.
+               The label is now htmlFor-bound for the same reason. */
             <p className="mt-1 text-xs" style={{ color: "var(--ink-2)" }}>
               Only you see this grouping.
             </p>
