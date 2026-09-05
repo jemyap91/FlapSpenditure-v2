@@ -19,7 +19,7 @@ import type { BudgetStatusRow } from "@/lib/budget-status";
  *  "budget row" shape `get_budget_status` emits (controller addendum §4). */
 const row = (over: Partial<BudgetStatusRow> = {}): BudgetStatusRow => ({
   budget_id: "b1",
-  category_key: "groceries",
+  category_id: "groceries",
   category_label: "Groceries",
   currency_code: "SGD",
   wallet_names: ["Everyday", "Savings"],

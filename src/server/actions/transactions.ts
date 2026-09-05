@@ -112,24 +112,21 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
   // make its own decision.
   const { data: wallet } = await supabase
     .from("wallets")
-    .select("currency_code, archived_at")
+    .select("currency_code, archived_at, space_id")
     .eq("id", wallet_id)
     .single();
   if (!wallet || wallet.archived_at) return { error: "Wallet not found" };
 
-  // `categories_member` RLS (0008: `is_wallet_member(wallet_id)`, which
-  // REPLACED `categories_own`) scopes this to every wallet the caller
-  // belongs to — which, since categories became wallet-scoped and wallets
-  // became shareable, is no longer the same set as "this transaction's
-  // wallet". So RLS alone stops a stranger's category but NOT a
-  // cross-wallet one of the caller's own: without the explicit
-  // `.eq("wallet_id", wallet_id)` below, a category from wallet A reached
-  // the INSERT and died there on 0008's composite FK
-  // `transactions_category_same_wallet`, surfacing as the generic "Could
-  // not save transaction. Please try again." with nothing the user could
-  // act on. Filtering on wallet_id here turns that dead end back into the
-  // ordinary "Choose a category" validation error, and is defence in depth
-  // against a direct POST naming another wallet's category id.
+  // `categories_space` RLS (0022: `is_space_member(space_id)`, which
+  // REPLACED 0008's `categories_member`) scopes this to every household the
+  // caller belongs to. For a caller in one household that is already exactly
+  // the legal set, so the filter below is usually a no-op — the cross-WALLET
+  // dead end it was written for (a wallet-A category reaching the INSERT and
+  // dying on a composite FK, surfacing as "Could not save transaction") no
+  // longer exists, because there is no longer a per-wallet copy to pick the
+  // wrong one of. It stays as defence in depth for the case that IS still
+  // real: a caller who belongs to two households naming the other one's
+  // category id in a direct POST.
   //
   // The kind check catches a mismatch nothing in the schema's CHECK
   // constraints forbids — e.g. filing an expense against an income
@@ -155,7 +152,7 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
     .from("categories")
     .select("kind, archived_at")
     .eq("id", category_id)
-    .eq("wallet_id", wallet_id)
+    .eq("space_id", wallet.space_id)
     .single();
   if (!category || category.archived_at) return { error: "Choose a category" };
   if (category.kind !== kind) return { error: "That category doesn't match this transaction type" };
@@ -176,6 +173,11 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
     .from("transactions")
     .insert({
       wallet_id,
+      // Denormalised from the wallet (0022), the same way currency_code above
+      // is. Not trusted on arrival: transactions_wallet_same_space re-derives
+      // it from the wallet on write, so a wrong value is rejected rather than
+      // stored.
+      space_id: wallet.space_id,
       created_by: user.id,
       kind,
       amount_minor: signedAmount(kind, magnitude),
@@ -304,7 +306,7 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
 
   const { data: wallet } = await supabase
     .from("wallets")
-    .select("currency_code, archived_at")
+    .select("currency_code, archived_at, space_id")
     .eq("id", wallet_id)
     .single();
   if (!wallet) return { error: "Wallet not found" };
@@ -343,12 +345,14 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
       };
     }
 
-    // transactions_category_same_wallet. Categories belong to a wallet
-    // (0008), so a move always leaves the old category behind; the form
-    // clears it and asks for one from the destination.
-    if (category_id === currentCategoryId && category_id !== null) {
-      return { error: "Choose a category from the wallet you're moving this to" };
-    }
+    // 0008 forced a re-pick on EVERY move, because a move always left the old
+    // category behind: each wallet had its own copy, so the destination's
+    // "Groceries" was a different row with a different id. Under 0022 a move
+    // within one household keeps the category valid, and that refusal would
+    // now reject a perfectly legal edit. A move to ANOTHER household does
+    // still invalidate it, and the category lookup below catches that on its
+    // own — `.eq("space_id", wallet.space_id)` finds nothing, and the user
+    // gets "Choose a category".
   }
 
   // Unlike createTransaction, category_id may be null here — clearing a
@@ -360,7 +364,7 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
       .from("categories")
       .select("kind, archived_at")
       .eq("id", category_id)
-      .eq("wallet_id", wallet_id)
+      .eq("space_id", wallet.space_id)
       .single();
     if (!category) return { error: "Choose a category" };
 

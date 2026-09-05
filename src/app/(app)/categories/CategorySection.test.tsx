@@ -20,15 +20,15 @@ vi.mock("@/server/actions/categories", () => ({
   archiveCategory: vi.fn(),
 }));
 
-const WALLET = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const SPACE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 const renderSection = () =>
-  render(<CategorySection kind="expense" label="Expense" initial={[]} walletId={WALLET} />);
+  render(<CategorySection kind="expense" label="Expense" initial={[]} spaceId={SPACE} />);
 
 beforeEach(() => {
   vi.mocked(createCategory).mockReset();
   vi.mocked(createCategory).mockResolvedValue({
-    category: { id: "new", name: "Vet", kind: "expense", color_slot: 1, icon: "circle", wallet_id: WALLET },
+    category: { id: "new", name: "Vet", kind: "expense", color_slot: 1, icon: "circle", space_id: SPACE },
   } as Awaited<ReturnType<typeof createCategory>>);
   vi.mocked(updateCategory).mockReset();
   vi.mocked(updateCategory).mockResolvedValue({ ok: true });
@@ -40,12 +40,12 @@ const GROCERIES = {
   kind: "expense" as const,
   color_slot: 3,
   icon: "shopping-basket",
-  wallet_id: WALLET,
+  space_id: SPACE,
 };
 
 const renderWithRow = () =>
   render(
-    <CategorySection kind="expense" label="Expense" initial={[GROCERIES]} walletId={WALLET} />,
+    <CategorySection kind="expense" label="Expense" initial={[GROCERIES]} spaceId={SPACE} />,
   );
 
 const openEditor = async (user: ReturnType<typeof userEvent.setup>) => {
@@ -93,7 +93,7 @@ describe("CategorySection — adding a category", () => {
 
     expect(screen.getByRole("alert")).toHaveTextContent("");
     expect(createCategory).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "Vet", kind: "expense", wallet_id: WALLET }),
+      expect.objectContaining({ name: "Vet", kind: "expense", space_id: SPACE }),
     );
   });
 
@@ -211,9 +211,9 @@ describe("CategorySection — existing rows", () => {
         kind="expense"
         label="Expense"
         initial={[
-          { id: "c1", name: "Travel", kind: "expense", color_slot: 16, icon: "plane", wallet_id: WALLET },
+          { id: "c1", name: "Travel", kind: "expense", color_slot: 16, icon: "plane", space_id: SPACE },
         ]}
-        walletId={WALLET}
+        spaceId={SPACE}
       />,
     );
     // slotVar throws a RangeError above SLOT_COUNT, so a row on slot 16 would

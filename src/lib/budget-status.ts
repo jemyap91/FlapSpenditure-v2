@@ -1,16 +1,16 @@
 import type { Database } from "@/lib/database.types";
 
 /**
- * `get_budget_status`'s (0013) generated row type, narrowed to reflect
+ * `get_budget_status`'s (0013, rebuilt on ids by 0023) generated row type, narrowed to reflect
  * nullability its `returns table(...)` signature actually has but
  * Supabase's codegen cannot express. `returns table` columns are typed
  * from the declared column type alone (e.g. `budget_id uuid`), with no way
  * to see that a specific SELECT branch inside the function body emits NULL
- * for it -- the same class of gap `set_budget`'s `p_category_key` argument
+ * for it -- the same class of gap `set_budget`'s `p_category_id` argument
  * has (src/server/actions/budgets.ts), just on the return side instead of
  * the argument side.
  *
- * Concretely, the function's own SQL (0013_wallet_set_budgets.sql, final
+ * Concretely, the function's own SQL (0023_budget_category_id.sql, final
  * `select ... union all select ...`) is NULL for:
  * - `budget_id`, `wallet_names`, `wallet_count`, `budget_minor`,
  *   `budget_period_start` -- the UNCOVERED-spending branch (`union all`'s
@@ -19,12 +19,11 @@ import type { Database } from "@/lib/database.types";
  *   covers for that wallet. There is no budget row backing it, so nothing
  *   about the budget -- its id, its wallet set, its amount, or the period it
  *   was set in -- exists to report.
- * - `category_key`, `category_label` -- the OVERALL-CAP row (a budget with
- *   a NULL `category_key`, representing a wallet set's total cap rather
- *   than any one category). The main branch's `coalesce((select min(name)
- *   from categories where lower(btrim(name)) = e.category_key), ...)`
- *   can't resolve a label when the key itself is NULL, so both stay NULL
- *   together.
+ * - `category_id`, `category_label` -- the OVERALL-CAP row (a budget with
+ *   a NULL `category_id`, representing a wallet set's total cap rather
+ *   than any one category). The main branch's `left join categories c on
+ *   c.id = e.category_id` (0023) yields no name when the id itself is
+ *   NULL, so both stay NULL together.
  *
  * Deliberately NOT a hand-edit of `database.types.ts` (generated file,
  * regenerated wholesale by `npm run db:types` -- a hand-edit there would
@@ -34,7 +33,7 @@ type GeneratedBudgetStatusRow = Database["public"]["Functions"]["get_budget_stat
 export type BudgetStatusRow = Omit<
   GeneratedBudgetStatusRow,
   | "budget_id"
-  | "category_key"
+  | "category_id"
   | "category_label"
   | "wallet_names"
   | "wallet_count"
@@ -42,7 +41,7 @@ export type BudgetStatusRow = Omit<
   | "budget_period_start"
 > & {
   budget_id: string | null;
-  category_key: string | null;
+  category_id: string | null;
   category_label: string | null;
   wallet_names: string[] | null;
   wallet_count: number | null;

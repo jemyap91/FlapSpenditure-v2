@@ -37,9 +37,10 @@ begin;
   -- collide with categories_unique_active_name instead of exercising this
   -- file's own CHECK-constraint assertions. wallet_id, not owner_id (0008):
   -- categories now belong to a wallet.
-  insert into categories (id,wallet_id,name,kind,color_slot,icon)
+  insert into categories (id,space_id,name,kind,color_slot,icon)
     values ('55555555-5555-5555-5555-555555555555',
-            '33333333-3333-3333-3333-333333333333','Constraint Test Category','expense',1,'shopping-cart');
+            (select space_id from wallets where id='33333333-3333-3333-3333-333333333333'),
+            'Constraint Test Category','expense',1,'shopping-cart');
 
   -- ACCEPT: a valid expense row must succeed.
   insert into transactions (wallet_id,created_by,kind,amount_minor,currency_code,occurred_on)
@@ -155,30 +156,67 @@ begin;
   end $$;
 rollback;
 
--- transactions_category_same_wallet (0008): a transaction may not point at a
--- category belonging to a different wallet. The REJECT below is paired with
--- two positives, so this proves a constraint and not a broken insert path:
--- a SAME-wallet category is accepted, and a transfer (category_id null,
--- exempt by MATCH SIMPLE) is accepted. Both positives were described by this
--- comment before they existed -- review-caught, and the reason a claim in a
--- comment is not evidence.
+-- transactions_category_same_space (0022, replacing 0008's
+-- transactions_category_same_wallet): a transaction may not point at a
+-- category belonging to a different HOUSEHOLD. The REJECT below is paired
+-- with three positives, so this proves a constraint and not a broken insert
+-- path: a category from a SIBLING wallet of the same household is accepted,
+-- the transaction's own wallet's is accepted, and a transfer (category_id
+-- null, exempt by MATCH SIMPLE) is accepted.
+--
+-- The first of those positives is the whole point of 0022 and would have
+-- FAILED before it: erin's two wallets each carried their own copy of the
+-- category list, and using X's "Groceries" on a transaction in Y violated
+-- transactions_category_same_wallet. That was the reported bug -- a category
+-- created on one wallet's screen was unusable everywhere else -- and it is
+-- asserted here rather than merely described.
 insert into auth.users (id, email) values ('eeeeeeee-0000-0000-0000-000000000005','erin@x.io');
 insert into public.wallets (id, owner_id, name, kind, currency_code, starting_balance_minor, color_slot, icon)
 values ('55555555-0000-0000-0000-000000000005','eeeeeeee-0000-0000-0000-000000000005','X','bank','USD',0,1,'landmark'),
        ('66666666-0000-0000-0000-000000000006','eeeeeeee-0000-0000-0000-000000000005','Y','bank','USD',0,2,'landmark');
 
+-- A SECOND household. Erin's two wallets share one (they share an owner, so
+-- 0022's backfill and set_wallet_space both put them together), which is
+-- exactly why the foreign category can no longer come from wallet X -- it
+-- would be perfectly legal. It has to come from someone else entirely.
+insert into auth.users (id, email) values ('eeeeeeee-0000-0000-0000-000000000015','erik@x.io');
+insert into public.wallets (id, owner_id, name, kind, currency_code, starting_balance_minor, color_slot, icon)
+values ('55555555-0000-0000-0000-000000000015','eeeeeeee-0000-0000-0000-000000000015','Z','bank','USD',0,1,'landmark');
+
 do $$
 declare foreign_cat uuid;
 begin
-  select id into foreign_cat from public.categories
-  where wallet_id = '55555555-0000-0000-0000-000000000005' limit 1;
+  select c.id into foreign_cat from public.categories c
+    join public.wallets w on w.space_id = c.space_id
+   where w.id = '55555555-0000-0000-0000-000000000015' limit 1;
+  assert foreign_cat is not null, 'test setup broken: the second household has no category';
   begin
     insert into public.transactions (wallet_id, kind, amount_minor, currency_code, category_id, occurred_on)
     values ('66666666-0000-0000-0000-000000000006','expense',-100,'USD', foreign_cat, current_date);
-    raise exception 'expected transactions_category_same_wallet to reject a cross-wallet category';
+    raise exception 'expected transactions_category_same_space to reject another household''s category';
   exception when foreign_key_violation then
     null; -- correct
   end;
+end $$;
+
+-- POSITIVE 0: the case 0022 exists for. A category reached through wallet X
+-- is used by a transaction in wallet Y, its household sibling. Under 0008
+-- this raised foreign_key_violation.
+do $$
+declare sibling_cat uuid; n int;
+begin
+  select c.id into sibling_cat from public.categories c
+    join public.wallets w on w.space_id = c.space_id
+   where w.id = '55555555-0000-0000-0000-000000000005' and c.kind = 'expense' limit 1;
+  assert sibling_cat is not null, 'test setup broken: wallet X reaches no expense category';
+
+  insert into public.transactions (wallet_id, kind, amount_minor, currency_code, category_id, occurred_on)
+  values ('66666666-0000-0000-0000-000000000006','expense',-100,'USD', sibling_cat, current_date);
+
+  select count(*) into n from public.transactions
+  where wallet_id = '66666666-0000-0000-0000-000000000006' and category_id = sibling_cat;
+  assert n = 1,
+    format('0022 BROKEN: a category reached through a sibling wallet of the same household was rejected (%s row(s) landed)', n);
 end $$;
 
 -- POSITIVE 1: the SAME wallet's own category is accepted. Without this, a
@@ -188,17 +226,24 @@ end $$;
 do $$
 declare own_cat uuid; n int;
 begin
-  select id into own_cat from public.categories
-  where wallet_id = '66666666-0000-0000-0000-000000000006' and kind = 'expense' limit 1;
-  assert own_cat is not null, 'test setup broken: wallet Y has no seeded expense category';
+  select c.id into own_cat from public.categories c
+    join public.wallets w on w.space_id = c.space_id
+   where w.id = '66666666-0000-0000-0000-000000000006' and c.kind = 'expense' limit 1;
+  assert own_cat is not null, 'test setup broken: wallet Y reaches no seeded expense category';
 
+  -- A distinctive amount, because POSITIVE 0 above has already filed a row in
+  -- this wallet against what is now the SAME category row: with one list per
+  -- household, "reached via the sibling wallet" and "reached via its own
+  -- wallet" name the same category, so counting by (wallet, category) alone
+  -- would count both inserts and this assertion would fail on its own success.
   insert into public.transactions (wallet_id, kind, amount_minor, currency_code, category_id, occurred_on)
-  values ('66666666-0000-0000-0000-000000000006','expense',-100,'USD', own_cat, current_date);
+  values ('66666666-0000-0000-0000-000000000006','expense',-102,'USD', own_cat, current_date);
 
   select count(*) into n from public.transactions
-  where wallet_id = '66666666-0000-0000-0000-000000000006' and category_id = own_cat;
+  where wallet_id = '66666666-0000-0000-0000-000000000006' and category_id = own_cat
+    and amount_minor = -102;
   assert n = 1,
-    format('CONSTRAINT BROKEN: transactions_category_same_wallet rejected a category from the transaction''s OWN wallet (%s row(s) landed)', n);
+    format('CONSTRAINT BROKEN: transactions_category_same_space rejected a category from the transaction''s OWN household (%s row(s) landed)', n);
 end $$;
 
 -- POSITIVE 2: a transfer leg carries category_id null and must be accepted.
@@ -245,8 +290,9 @@ do $$
 declare v_constraint text;
 begin
   begin
-    insert into public.budgets (created_by, currency_code, category_key, period_start, amount_minor)
-    values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', 'groceries', '2026-11-15', 50000);
+    insert into public.budgets (created_by, currency_code, space_id, category_id, period_start, amount_minor)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003'),
+            (select id from public.categories where kind = 'expense' and name = 'Groceries' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')), '2026-11-15', 50000);
     raise exception 'CONSTRAINT BROKEN: budgets accepted a mid-month period_start';
   exception when check_violation then
     get stacked diagnostics v_constraint = constraint_name;
@@ -263,8 +309,9 @@ do $$
 declare v_constraint text;
 begin
   begin
-    insert into public.budgets (created_by, currency_code, category_key, period_start, amount_minor)
-    values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', 'groceries', '2026-11-01', 0);
+    insert into public.budgets (created_by, currency_code, space_id, category_id, period_start, amount_minor)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003'),
+            (select id from public.categories where kind = 'expense' and name = 'Groceries' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')), '2026-11-01', 0);
     raise exception 'CONSTRAINT BROKEN: budgets accepted a zero amount';
   exception when check_violation then
     get stacked diagnostics v_constraint = constraint_name;
@@ -272,8 +319,9 @@ begin
       format('wrong constraint fired (zero): %s', v_constraint);
   end;
   begin
-    insert into public.budgets (created_by, currency_code, category_key, period_start, amount_minor)
-    values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', 'groceries', '2026-11-01', -100);
+    insert into public.budgets (created_by, currency_code, space_id, category_id, period_start, amount_minor)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003'),
+            (select id from public.categories where kind = 'expense' and name = 'Groceries' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')), '2026-11-01', -100);
     raise exception 'CONSTRAINT BROKEN: budgets accepted a negative amount';
   exception when check_violation then
     get stacked diagnostics v_constraint = constraint_name;
@@ -286,13 +334,19 @@ end $$;
 do $$
 declare v_budget uuid; v_rows int; v_constraint text;
 begin
-  insert into public.budgets (created_by, currency_code, category_key, period_start, amount_minor)
-  values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', 'groceries', '2026-11-01', 50000)
+  insert into public.budgets (created_by, currency_code, space_id, category_id, period_start, amount_minor)
+  values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003'),
+            (select id from public.categories where kind = 'expense' and name = 'Groceries' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')), '2026-11-01', 50000)
   returning id into v_budget;
 
   begin
-    insert into public.budget_wallets (budget_id, wallet_id)
-    values (v_budget, '00000000-0000-0000-0000-0000000000ff');
+    -- space_id supplied by hand: budget_wallets_set_space (0023) derives it
+    -- from the wallet, and a wallet that does not exist yields NULL, which
+    -- would trip NOT NULL before any foreign key was consulted. The point
+    -- here is the FK, so the trigger is given nothing to do.
+    insert into public.budget_wallets (budget_id, wallet_id, space_id)
+    values (v_budget, '00000000-0000-0000-0000-0000000000ff',
+            (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003'));
     raise exception 'CONSTRAINT BROKEN: budget_wallets accepted a nonexistent wallet';
   exception when foreign_key_violation then
     -- m8 fix round: name the constraint, not just the SQLSTATE class --
@@ -321,8 +375,9 @@ do $$
 declare v_constraint text;
 begin
   begin
-    insert into public.budgets (created_by, currency_code, category_key, period_start, amount_minor)
-    values ('aaaaaaaa-0000-0000-0000-000000000001', 'ZZZ', 'groceries', '2026-11-01', 50000);
+    insert into public.budgets (created_by, currency_code, space_id, category_id, period_start, amount_minor)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', 'ZZZ', (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003'),
+            (select id from public.categories where kind = 'expense' and name = 'Groceries' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')), '2026-11-01', 50000);
     raise exception 'CONSTRAINT BROKEN: budgets accepted a currency_code with no matching currency';
   exception when foreign_key_violation then
     get stacked diagnostics v_constraint = constraint_name;
@@ -331,42 +386,71 @@ begin
   end;
 end $$;
 
--- budgets_category_key_check (I6 fix round): the comment on the column
--- promises `lower(btrim(name))`, or NULL for the overall cap. A CHECK is
--- satisfied by NULL -- proven here, not assumed -- and a value that isn't
--- already normalised (leading/trailing space, wrong case) or is empty must
--- be rejected, or the next task's join against categories.name would miss
--- rows silently instead of failing loudly.
+-- budgets_category_same_space (0023): a budget's category must belong to
+-- the budget's own household, and NULL -- the overall cap -- must pass. The
+-- 0013 CHECK this replaces guarded a NAME's spelling; a composite foreign
+-- key guards the thing that spelling stood in for. MATCH SIMPLE skips the
+-- check when category_id is null, which is proven here rather than assumed.
+insert into auth.users (id, email) values ('dddddddd-0000-0000-0000-0000000000d1', 'dana@x.io');
+insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+  values ('cccccccc-0000-0000-0000-0000000000d1',
+          'dddddddd-0000-0000-0000-0000000000d1', 'Dana Wallet', 'bank', 'SGD', 1, 'landmark');
+
 do $$
 declare v_constraint text; v_id uuid;
 begin
-  -- ACCEPT: NULL (the overall cap) must not trip the CHECK.
-  insert into public.budgets (created_by, currency_code, category_key, period_start, amount_minor)
-  values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', null, '2026-12-01', 50000)
+  -- ACCEPT: NULL (the overall cap) must not trip the FK.
+  insert into public.budgets (created_by, currency_code, space_id, category_id, period_start, amount_minor)
+  values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003'), null, '2026-12-01', 50000)
   returning id into v_id;
-  assert v_id is not null, 'CONSTRAINT BROKEN: budgets_category_key_check rejected a NULL category_key (the overall cap)';
+  assert v_id is not null, 'CONSTRAINT BROKEN: budgets_category_same_space rejected a NULL category_id (the overall cap)';
 
-  -- REJECT: not already lower(btrim(...)) -- mixed case and untrimmed space.
+  -- ACCEPT: a category of the budget's own household.
+  insert into public.budgets (created_by, currency_code, space_id, category_id, period_start, amount_minor)
+  values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003'), (select id from public.categories where kind = 'expense' and name = 'Groceries' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')), '2026-12-01', 50000)
+  returning id into v_id;
+  assert v_id is not null, 'CONSTRAINT BROKEN: budgets_category_same_space rejected the household''s own category';
+
+  -- REJECT: another household's category, in alice's budget.
   begin
-    insert into public.budgets (created_by, currency_code, category_key, period_start, amount_minor)
-    values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', ' Groceries ', '2026-12-01', 50000);
-    raise exception 'CONSTRAINT BROKEN: budgets accepted a non-normalised category_key';
-  exception when check_violation then
+    insert into public.budgets (created_by, currency_code, space_id, category_id, period_start, amount_minor)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003'),
+            (select id from public.categories where kind = 'expense' and name = 'Groceries' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-0000000000d1')),
+            '2026-12-01', 50000);
+    raise exception 'CONSTRAINT BROKEN: budgets accepted a category from another household';
+  exception when foreign_key_violation then
     get stacked diagnostics v_constraint = constraint_name;
-    assert v_constraint = 'budgets_category_key_check',
-      format('wrong constraint fired (non-normalised): %s', v_constraint);
+    assert v_constraint = 'budgets_category_same_space',
+      format('wrong constraint fired (other household): %s', v_constraint);
+  end;
+end $$;
+
+-- budget_wallets_wallet_same_space / budget_wallets_budget_same_space
+-- (0023): a budget's wallet set cannot reach into another household.
+-- space_id is filled by budget_wallets_set_space from the wallet, so the
+-- wallet-side FK always agrees; it is the budget-side FK that refuses a
+-- wallet from a household the budget is not in.
+do $$
+declare v_constraint text; v_budget uuid;
+begin
+  insert into public.budgets (created_by, currency_code, space_id, category_id, period_start, amount_minor)
+  values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003'), null, '2027-01-01', 50000)
+  returning id into v_budget;
+
+  begin
+    insert into public.budget_wallets (budget_id, wallet_id)
+    values (v_budget, 'cccccccc-0000-0000-0000-0000000000d1');
+    raise exception 'CONSTRAINT BROKEN: budget_wallets accepted a wallet from another household';
+  exception when foreign_key_violation then
+    get stacked diagnostics v_constraint = constraint_name;
+    assert v_constraint = 'budget_wallets_budget_same_space',
+      format('wrong constraint fired (other household wallet): %s', v_constraint);
   end;
 
-  -- REJECT: the empty string, distinct from NULL but equally meaningless.
-  begin
-    insert into public.budgets (created_by, currency_code, category_key, period_start, amount_minor)
-    values ('aaaaaaaa-0000-0000-0000-000000000001', 'SGD', '', '2026-12-01', 50000);
-    raise exception 'CONSTRAINT BROKEN: budgets accepted an empty-string category_key';
-  exception when check_violation then
-    get stacked diagnostics v_constraint = constraint_name;
-    assert v_constraint = 'budgets_category_key_check',
-      format('wrong constraint fired (empty string): %s', v_constraint);
-  end;
+  insert into public.budget_wallets (budget_id, wallet_id)
+  values (v_budget, 'cccccccc-0000-0000-0000-000000000003');
+  assert (select space_id from public.budget_wallets where budget_id = v_budget) = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003'),
+    'TRIGGER BROKEN: budget_wallets_set_space did not fill space_id from the wallet';
 end $$;
 
 -- set_budget (0013, Task 3). This file runs entirely as the table-owning
@@ -430,7 +514,8 @@ begin;
   declare v_ok boolean := false;
   begin
     begin
-      perform set_budget('groceries', '2026-11-01', 50000, array[]::uuid[]);
+      perform set_budget((select id from public.categories where kind = 'expense' and name = 'Groceries' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')),
+        '2026-11-01', 50000, array[]::uuid[]);
       v_ok := true;
     exception when others then
       assert sqlerrm = 'a budget must cover at least one account',
@@ -444,7 +529,8 @@ begin;
   declare v_ok boolean := false;
   begin
     begin
-      perform set_budget('groceries', '2026-11-01', 50000,
+      perform set_budget((select id from public.categories where kind = 'expense' and name = 'Groceries' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')),
+        '2026-11-01', 50000,
         array['cccccccc-0000-0000-0000-0000000000b1', 'cccccccc-0000-0000-0000-0000000000b3']::uuid[]);
       v_ok := true;
     exception when others then
@@ -463,7 +549,8 @@ begin;
   declare v_ok boolean := false;
   begin
     begin
-      perform set_budget('groceries', '2026-11-01', 50000,
+      perform set_budget((select id from public.categories where kind = 'expense' and name = 'Groceries' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')),
+        '2026-11-01', 50000,
         array['cccccccc-0000-0000-0000-0000000000b1', 'cccccccc-0000-0000-0000-0000000000b4']::uuid[]);
       v_ok := true;
     exception when others then
@@ -491,7 +578,8 @@ begin;
   declare v_ok boolean := false;
   begin
     begin
-      perform set_budget('groceries', '2026-11-01', 50000,
+      perform set_budget((select id from public.categories where kind = 'expense' and name = 'Groceries' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')),
+        '2026-11-01', 50000,
         '{{cccccccc-0000-0000-0000-0000000000b1,cccccccc-0000-0000-0000-0000000000b4}}'::uuid[]);
       v_ok := true;
     exception when others then
@@ -510,7 +598,8 @@ begin;
   declare v_ok boolean := false;
   begin
     begin
-      perform set_budget('groceries', '2026-11-01', 50000,
+      perform set_budget((select id from public.categories where kind = 'expense' and name = 'Groceries' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')),
+        '2026-11-01', 50000,
         array['cccccccc-0000-0000-0000-0000000000b5']::uuid[]);
       v_ok := true;
     exception when others then
@@ -525,7 +614,8 @@ begin;
   declare v_ok boolean := false;
   begin
     begin
-      perform set_budget('groceries', '2026-11-15', 50000,
+      perform set_budget((select id from public.categories where kind = 'expense' and name = 'Groceries' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')),
+        '2026-11-15', 50000,
         array['cccccccc-0000-0000-0000-0000000000b1']::uuid[]);
       v_ok := true;
     exception when others then
@@ -535,67 +625,69 @@ begin;
     assert not v_ok, 'GUARD BROKEN: set_budget accepted a period_start that is not the first of a month';
   end $$;
 
-  -- FIX ROUND 2, ITEM 1c: p_category_key normalisation (lower(btrim(...))).
-  -- A category submitted with mixed case and surrounding whitespace must be
-  -- stored canonically, so that a later call differing only in case/
-  -- whitespace matches this same budget rather than silently creating a
-  -- second one.
+  -- 0023: the category must be THIS household's. cccccccc-...-b4 is
+  -- Carol's, so its Groceries row is another household's category; a
+  -- budget over alice's wallets may not name it. Raised by set_budget's own
+  -- guard, before the composite FK would have refused the row anyway.
   do $$
-  declare v_id uuid; v_key text;
+  declare v_ok boolean := false;
   begin
-    v_id := set_budget('  GroCERies  ', '2026-11-01', 50000,
-      array['cccccccc-0000-0000-0000-0000000000b1']::uuid[]);
-    select category_key into v_key from public.budgets where id = v_id;
-    assert v_key = 'groceries',
-      format('NORMALISATION BROKEN: expected category_key ''groceries'', found %L', v_key);
+    begin
+      perform set_budget((select id from public.categories where kind = 'expense' and name = 'Groceries' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-0000000000b4')),
+        '2026-11-01', 50000, array['cccccccc-0000-0000-0000-0000000000b1']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'that category does not belong to this household',
+        format('wrong error for another household''s category: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: set_budget accepted a category from another household';
   end $$;
 
-  -- FIX ROUND 2, ITEM 2: an explicit NULL category_key must still mean
-  -- "this set's overall cap" -- the deliberate case, which must keep
-  -- working even after blank-string input is refused (below).
+  -- 0023: an id that names no category at all gets the same refusal -- a
+  -- caller learns nothing about whether the id exists elsewhere.
   do $$
-  declare v_id uuid; v_key text;
+  declare v_ok boolean := false;
+  begin
+    begin
+      perform set_budget('00000000-0000-4000-8000-0000000000ff'::uuid,
+        '2026-11-01', 50000, array['cccccccc-0000-0000-0000-0000000000b1']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'that category does not belong to this household',
+        format('wrong error for a nonexistent category: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: set_budget accepted a category id that names nothing';
+  end $$;
+
+  -- 0023: only an EXPENSE category can carry a budget. Salary is alice's
+  -- own, in the right household, and still refused.
+  do $$
+  declare v_ok boolean := false;
+  begin
+    begin
+      perform set_budget((select id from public.categories where kind = 'income' and name = 'Salary' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')),
+        '2026-11-01', 50000, array['cccccccc-0000-0000-0000-0000000000b1']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'a budget can only cover an expense category',
+        format('wrong error for an income category: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: set_budget accepted a budget over an income category';
+  end $$;
+
+  -- An explicit NULL category still means "this set's overall cap".
+  do $$
+  declare v_id uuid; v_cat uuid;
   begin
     v_id := set_budget(null, '2026-11-01', 50000,
       array['cccccccc-0000-0000-0000-0000000000b2']::uuid[]);
-    select category_key into v_key from public.budgets where id = v_id;
-    assert v_key is null,
-      format('OVERALL CAP BROKEN: an explicit NULL category_key should stay NULL, found %L', v_key);
-  end $$;
-
-  -- FIX ROUND 2, ITEM 2 (REJECT): an empty-string category must be
-  -- refused, not silently reinterpreted as the overall cap. Before this
-  -- fix, `nullif(lower(btrim(p_category_key)), '')` turned '' into NULL,
-  -- so a blank client form field would silently create/edit the
-  -- household's overall budget instead of erroring.
-  do $$
-  declare v_ok boolean := false;
-  begin
-    begin
-      perform set_budget('', '2026-11-01', 50000,
-        array['cccccccc-0000-0000-0000-0000000000b2']::uuid[]);
-      v_ok := true;
-    exception when others then
-      assert sqlerrm = 'a category budget needs a category',
-        format('wrong error for empty-string category: %s', sqlerrm);
-    end;
-    assert not v_ok, 'GUARD BROKEN: set_budget silently treated an empty-string category as the overall cap';
-  end $$;
-
-  -- FIX ROUND 2, ITEM 2 (REJECT): same, for a whitespace-only string --
-  -- btrim('   ') = '', which must be caught the same way as ''  itself.
-  do $$
-  declare v_ok boolean := false;
-  begin
-    begin
-      perform set_budget('   ', '2026-11-01', 50000,
-        array['cccccccc-0000-0000-0000-0000000000b2']::uuid[]);
-      v_ok := true;
-    exception when others then
-      assert sqlerrm = 'a category budget needs a category',
-        format('wrong error for whitespace-only category: %s', sqlerrm);
-    end;
-    assert not v_ok, 'GUARD BROKEN: set_budget silently treated a whitespace-only category as the overall cap';
+    select category_id into v_cat from public.budgets where id = v_id;
+    assert v_cat is null,
+      format('OVERALL CAP BROKEN: an explicit NULL category_id should stay NULL, found %L', v_cat);
+    assert (select space_id from public.budgets where id = v_id) = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003'),
+      'set_budget did not file the budget in the wallet set''s household';
+    assert (select count(*) from public.budget_wallets where budget_id = v_id and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')) = 1,
+      'set_budget did not carry the household onto budget_wallets';
   end $$;
 
   -- FIX ROUND 2, ITEM 4: a duplicate wallet id in the submitted array, where
@@ -609,7 +701,8 @@ begin;
   declare v_ok boolean := false;
   begin
     begin
-      perform set_budget('groceries', '2026-11-01', 50000,
+      perform set_budget((select id from public.categories where kind = 'expense' and name = 'Groceries' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')),
+        '2026-11-01', 50000,
         array['cccccccc-0000-0000-0000-0000000000b1', 'cccccccc-0000-0000-0000-0000000000b1']::uuid[]);
       v_ok := true;
     exception when others then
@@ -626,9 +719,11 @@ begin;
   do $$
   declare v_id1 uuid; v_id2 uuid; v_rows int; v_amount bigint;
   begin
-    v_id1 := set_budget('dining', '2026-12-01', 30000,
+    v_id1 := set_budget((select id from public.categories where kind = 'expense' and name = 'Eating out' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')),
+      '2026-12-01', 30000,
       array['cccccccc-0000-0000-0000-0000000000b1', 'cccccccc-0000-0000-0000-0000000000b2']::uuid[]);
-    v_id2 := set_budget('dining', '2026-12-01', 45000,
+    v_id2 := set_budget((select id from public.categories where kind = 'expense' and name = 'Eating out' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')),
+      '2026-12-01', 45000,
       array['cccccccc-0000-0000-0000-0000000000b1', 'cccccccc-0000-0000-0000-0000000000b2']::uuid[]);
 
     assert v_id1 = v_id2,
@@ -642,7 +737,7 @@ begin;
     -- actually distinguishes "updated in place" (1 row) from "inserted a
     -- second budget" (2 rows).
     select count(*) into v_rows from public.budgets
-      where category_key = 'dining' and period_start = '2026-12-01';
+      where category_id = (select id from public.categories where kind = 'expense' and name = 'Eating out' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')) and period_start = '2026-12-01';
     assert v_rows = 1,
       format('IDEMPOTENCY BROKEN: expected exactly 1 row for the repeated set/category/month, found %s', v_rows);
 
@@ -657,16 +752,18 @@ begin;
   do $$
   declare v_id1 uuid; v_id2 uuid; v_rows int;
   begin
-    v_id1 := set_budget('transport', '2026-12-01', 10000,
+    v_id1 := set_budget((select id from public.categories where kind = 'expense' and name = 'Transport' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')),
+      '2026-12-01', 10000,
       array['cccccccc-0000-0000-0000-0000000000b1']::uuid[]);
-    v_id2 := set_budget('transport', '2026-12-01', 20000,
+    v_id2 := set_budget((select id from public.categories where kind = 'expense' and name = 'Transport' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')),
+      '2026-12-01', 20000,
       array['cccccccc-0000-0000-0000-0000000000b2']::uuid[]);
 
     assert v_id1 <> v_id2,
       'OVERLAP BROKEN: same category/month over a DIFFERENT wallet set collapsed onto the same budget id';
 
     select count(*) into v_rows from public.budgets
-      where category_key = 'transport' and period_start = '2026-12-01';
+      where category_id = (select id from public.categories where kind = 'expense' and name = 'Transport' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')) and period_start = '2026-12-01';
     assert v_rows = 2,
       format('OVERLAP BROKEN: expected 2 distinct budgets for the same category/month over different sets, found %s', v_rows);
   end $$;
@@ -682,9 +779,10 @@ insert into auth.users (id, email) values
 insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
   values ('ffffffff-0000-0000-0000-000000000002',
           'ffffffff-0000-0000-0000-000000000001', 'Frank Bank', 'bank', 'USD', 1, 'landmark');
-insert into categories (id, wallet_id, name, kind, color_slot, icon)
+insert into categories (id, space_id, name, kind, color_slot, icon)
   values ('ffffffff-0000-0000-0000-000000000003',
-          'ffffffff-0000-0000-0000-000000000002', 'Recurring Test Category', 'expense', 3, 'repeat');
+          (select space_id from wallets where id='ffffffff-0000-0000-0000-000000000002'),
+          'Recurring Test Category', 'expense', 3, 'repeat');
 
 \echo '--- recurring_rules: sign must follow kind ---'
 do $$
@@ -783,11 +881,22 @@ end $$;
 insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
   values ('ffffffff-0000-0000-0000-000000000004',
           'ffffffff-0000-0000-0000-000000000001', 'Frank Second Wallet', 'bank', 'USD', 2, 'wallet');
-insert into categories (id, wallet_id, name, kind, color_slot, icon)
-  values ('ffffffff-0000-0000-0000-000000000005',
-          'ffffffff-0000-0000-0000-000000000004', 'Second Wallet Category', 'expense', 4, 'basket');
 
-\echo '--- Fix 2: recurring_rules_category_same_wallet rejects a cross-wallet category ---'
+-- A SECOND HOUSEHOLD, not merely a second wallet. Frank's two wallets share
+-- an owner and therefore a space (0022), so a category from one is legal in
+-- the other -- which is the change, not a bug. What must still be refused is
+-- a category from someone else's household entirely, and that needs a
+-- different owner to be a real distinction at all.
+insert into auth.users (id, email) values ('ffffffff-0000-0000-0000-000000000011', 'fiona@x.io');
+insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+  values ('ffffffff-0000-0000-0000-000000000014',
+          'ffffffff-0000-0000-0000-000000000011', 'Fiona Wallet', 'bank', 'USD', 2, 'wallet');
+insert into categories (id, space_id, name, kind, color_slot, icon)
+  values ('ffffffff-0000-0000-0000-000000000005',
+          (select space_id from wallets where id='ffffffff-0000-0000-0000-000000000014'),
+          'Other Household Category', 'expense', 4, 'basket');
+
+\echo '--- Fix 2: recurring_rules_category_same_space rejects another household''s category ---'
 do $$
 declare v_sqlstate text; v_constraint text;
 begin
@@ -795,13 +904,32 @@ begin
                                category_id, interval_unit, anchor_on)
   values ('ffffffff-0000-0000-0000-000000000002', 'Bad', 'expense', -500, 'USD',
           'ffffffff-0000-0000-0000-000000000005', 'monthly', current_date);
-  raise exception 'CONSTRAINT BROKEN: recurring_rules_category_same_wallet accepted a cross-wallet category';
+  raise exception 'CONSTRAINT BROKEN: recurring_rules_category_same_space accepted another household''s category';
 exception
   when foreign_key_violation then
     get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
-    assert v_sqlstate = '23503' and v_constraint = 'recurring_rules_category_same_wallet',
-      format('expected foreign_key_violation (23503) from recurring_rules_category_same_wallet, got SQLSTATE %s (constraint %s): %s',
+    assert v_sqlstate = '23503' and v_constraint = 'recurring_rules_category_same_space',
+      format('expected foreign_key_violation (23503) from recurring_rules_category_same_space, got SQLSTATE %s (constraint %s): %s',
              v_sqlstate, v_constraint, sqlerrm);
+end $$;
+
+\echo '--- 0022: a rule MAY use a category reached through a sibling wallet ---'
+do $$
+declare v_cat uuid; n int;
+begin
+  select c.id into v_cat from categories c
+    join wallets w on w.space_id = c.space_id
+   where w.id = 'ffffffff-0000-0000-0000-000000000004' and c.kind = 'expense' limit 1;
+  assert v_cat is not null, 'test setup broken: Frank''s second wallet reaches no expense category';
+
+  insert into recurring_rules (wallet_id, name, kind, amount_minor, currency_code,
+                               category_id, interval_unit, anchor_on)
+  values ('ffffffff-0000-0000-0000-000000000002', 'Sibling OK', 'expense', -500, 'USD',
+          v_cat, 'monthly', current_date);
+
+  select count(*) into n from recurring_rules where name = 'Sibling OK';
+  assert n = 1,
+    format('0022 BROKEN: a rule was refused a category reached through a sibling wallet of its own household (%s row(s) landed)', n);
 end $$;
 
 \echo '--- Fix 3: transactions_recurring_same_wallet rejects cross-wallet occurrence squatting ---'
@@ -974,7 +1102,8 @@ begin
   insert into wallets (owner_id, name, kind, currency_code, color_slot, icon)
     values (v_owner, 'Cascade Check Wallet', 'bank', 'USD', 3, 'landmark')
     returning id into v_wallet;
-  select id into v_cat from categories where wallet_id = v_wallet and kind = 'expense' limit 1;
+  select c.id into v_cat from categories c join wallets w on w.space_id = c.space_id
+   where w.id = v_wallet and c.kind = 'expense' limit 1;
   insert into transactions (wallet_id, kind, amount_minor, currency_code, category_id, occurred_on)
     values (v_wallet, 'expense', -500, 'USD', v_cat, current_date);
 
@@ -994,9 +1123,10 @@ insert into auth.users (id, email) values
 insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
   values ('90909090-0000-0000-0000-000000000002',
           '90909090-0000-0000-0000-000000000001', 'Ivy Bank', 'bank', 'USD', 1, 'landmark');
-insert into categories (id, wallet_id, name, kind, color_slot, icon)
+insert into categories (id, space_id, name, kind, color_slot, icon)
   values ('90909090-0000-0000-0000-000000000003',
-          '90909090-0000-0000-0000-000000000002', 'Editable Txn Test Category', 'expense', 1, 'shopping-cart');
+          (select space_id from wallets where id='90909090-0000-0000-0000-000000000002'),
+          'Editable Txn Test Category', 'expense', 1, 'shopping-cart');
 
 \echo '--- 0016: transactions_merchant_check rejects a merchant over 120 characters ---'
 do $$

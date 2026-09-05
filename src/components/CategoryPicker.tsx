@@ -22,11 +22,12 @@ export type Category = {
   kind: "expense" | "income";
   color_slot: number;
   icon: string;
-  /** Categories belong to a wallet, not a user (0008). TransactionForm
-   *  filters the full categories list down to the selected wallet's own
-   *  before this component ever sees it — see that component's
-   *  `walletCategories`. */
-  wallet_id: string;
+  /** Categories belong to a SPACE — a household — not to a wallet and not
+   *  to a user (0022). Every wallet in the household draws on one list, so
+   *  TransactionForm no longer narrows this by wallet before passing it on;
+   *  the only narrowing left is by household, for the uncommon case of a
+   *  user who belongs to two. */
+  space_id: string;
 };
 
 /**
@@ -48,13 +49,13 @@ export function CategoryPicker({
   kind,
   value,
   onChange,
-  walletId,
+  spaceId,
 }: {
   categories: Category[];
   kind: "expense" | "income";
   value: string | null;
   onChange: (c: Category) => void;
-  walletId: string;
+  spaceId: string;
 }) {
   const [query, setQuery] = useState("");
   // Categories created inline during this mount, kept separately from the
@@ -83,21 +84,19 @@ export function CategoryPicker({
     // just-created category never renders twice once the prop does catch
     // up, and filtered by `kind` so a category created while a different
     // kind was selected doesn't leak into this kind's list.
-    // `walletId` is checked as well as `kind`: TransactionForm's Wallet
-    // chip changes `walletId` on this SAME mounted picker, and `created`
-    // survives that change (there is no `key` remounting it). Without this
-    // filter a category inline-created under wallet A stayed listed after
-    // switching to wallet B, where selecting it produced a transaction
-    // 0008's composite FK `transactions_category_same_wallet` refuses —
-    // reaching the user only as "Could not save transaction. Please try
-    // again.", with no way out. Filtered rather than cleared, so switching
-    // back to the original wallet still shows it before the parent's
-    // `categories` prop has revalidated.
+    // `spaceId` is checked as well as `kind`. Under 0008 this filter was on
+    // the WALLET and fired constantly: a category created inline under wallet
+    // A stayed listed after switching to wallet B, where selecting it
+    // produced a transaction the composite FK refused. Space scoping removes
+    // that case entirely — switching wallets inside one household no longer
+    // changes which categories are legal. The filter survives only for the
+    // uncommon case it is still real for: a user who belongs to two
+    // households and switches to a wallet in the other one.
     const extra = created.filter(
-      (c) => c.kind === kind && c.wallet_id === walletId && !byKind.some((x) => x.id === c.id),
+      (c) => c.kind === kind && c.space_id === spaceId && !byKind.some((x) => x.id === c.id),
     );
     return [...byKind, ...extra];
-  }, [categories, kind, created, walletId]);
+  }, [categories, kind, created, spaceId]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -111,7 +110,7 @@ export function CategoryPicker({
   function create() {
     setError(null);
     start(async () => {
-      const res = await createCategory({ name: trimmedQuery, kind, icon: "circle", wallet_id: walletId });
+      const res = await createCategory({ name: trimmedQuery, kind, icon: "circle", space_id: spaceId });
       if ("error" in res) {
         setError(res.error);
         return;

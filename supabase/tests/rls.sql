@@ -41,9 +41,9 @@ begin;
   -- and gave cccccccc-003 16 default categories including one named
   -- 'Groceries' ('expense' kind); reusing that name here would collide
   -- with categories_unique_active_name instead of proving RLS visibility.
-  insert into categories (id, wallet_id, name, kind, color_slot, icon)
+  insert into categories (id, space_id, name, kind, color_slot, icon)
     values ('dddddddd-0000-0000-0000-000000000004',
-            'cccccccc-0000-0000-0000-000000000003', 'Custom Category', 'expense', 2, 'basket');
+            (select space_id from wallets where id = 'cccccccc-0000-0000-0000-000000000003'), 'Custom Category', 'expense', 2, 'basket');
   insert into transactions (id, wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on)
     values ('eeeeeeee-0000-0000-0000-000000000005',
             'cccccccc-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001',
@@ -57,7 +57,7 @@ begin;
     -- would misdirect debugging toward RLS. is_default = true isolates the
     -- 16 seeded rows (proven correct in detail by supabase/tests/seed.sql);
     -- the id lookup isolates the row alice just created above.
-    assert (select count(*) from categories where wallet_id = 'cccccccc-0000-0000-0000-000000000003' and is_default) = 16,
+    assert (select count(*) from categories where space_id = (select space_id from wallets where id = 'cccccccc-0000-0000-0000-000000000003') and is_default) = 16,
       'PERMISSION BROKEN or SEED BROKEN: alice does not have her wallet''s 16 seeded default categories';
     assert (select count(*) from categories where id = 'dddddddd-0000-0000-0000-000000000004') = 1,
       'PERMISSION BROKEN: alice cannot see her own category';
@@ -357,18 +357,29 @@ begin;
     assert (select count(*) from wallet_members) = 0, 'LEAK: bob can see alice''s wallet_members row';
     -- 0, not 16: migration 0008 moved seeding from the user trigger to a
     -- wallet trigger (seed_wallet_categories, fired AFTER INSERT ON
-    -- wallets), so bob -- who has not created or been added to any wallet
-    -- yet at this point in the file (his first wallet is created in
-    -- section 5, below) -- has zero categories of his own. An unscoped
-    -- total of 0 is therefore the right expectation, and on its own it
-    -- already proves alice's wallet's 16 seeded categories are invisible
-    -- to him (any of them becoming visible would push the total above 0).
-    -- The wallet-scoped assertion below proves the same thing more
-    -- directly, targeting alice's specific wallet rather than leaning on
-    -- bob's own count happening to be zero.
-    assert (select count(*) from categories)     = 0, 'LEAK: bob can see alice''s category';
-    assert (select count(*) from categories where wallet_id = 'cccccccc-0000-0000-0000-000000000003') = 0,
-      'LEAK: bob can see alice''s categories';
+    -- wallets), so under 0008 bob had zero categories of his own and an
+    -- unscoped total of 0 was the right expectation. Under 0022 he has
+    -- SIXTEEN before he owns anything: handle_new_user gives every account a
+    -- household at signup and seed_space_categories fills it, which is what
+    -- lets the category list exist before the first wallet does. So the
+    -- unscoped total no longer discriminates, and the assertions below name
+    -- alice's rows directly instead.
+    --
+    -- Alice's specific category id, NOT `space_id = (select space_id from
+    -- wallets where id = <alice's wallet>)`: bob cannot see alice's wallet
+    -- either, so that subselect returns NULL for him, the comparison is never
+    -- true, and the count is 0 no matter what RLS does. That assertion would
+    -- pass against a completely open categories policy -- it cannot fail, so
+    -- it proves nothing.
+    assert (select count(*) from categories where id = 'dddddddd-0000-0000-0000-000000000004') = 0,
+      'LEAK: bob can see alice''s category';
+    assert (select count(*) from categories where is_default) = 16,
+      'PERMISSION BROKEN: bob cannot see his OWN household''s 16 seeded categories';
+    assert (select count(*) from categories c
+             where exists (select 1 from public.space_members sm
+                            where sm.space_id = c.space_id
+                              and sm.user_id = 'aaaaaaaa-0000-0000-0000-000000000001')) = 0,
+      'LEAK: bob can see categories belonging to a household of alice''s';
     assert (select count(*) from transactions)   = 0, 'LEAK: bob can see alice''s transaction';
   end $$;
 commit;
@@ -680,18 +691,29 @@ begin;
     -- Category" alice created by hand in section 1, all wallet_id =
     -- cccccccc-003. This is the behaviour 0008 shipped to produce (see its
     -- header comment), not a leak.
-    assert (select count(*) from categories where wallet_id = 'cccccccc-0000-0000-0000-000000000003') = 17,
+    assert (select count(*) from categories where space_id = (select space_id from wallets where id = 'cccccccc-0000-0000-0000-000000000003')) = 17,
       'PERMISSION BROKEN: member bob cannot see the shared wallet''s categories';
     assert (select count(*) from categories
-              where wallet_id = 'cccccccc-0000-0000-0000-000000000003'
-                and id = 'dddddddd-0000-0000-0000-000000000004') = 1,
+              where id = 'dddddddd-0000-0000-0000-000000000004') = 1,
       'PERMISSION BROKEN: member bob cannot see alice''s custom category on the shared wallet';
-    -- Negative: membership in cccccccc-003 does not extend to alice's OTHER
-    -- wallet, 77777777-007 (established not-a-member of it in the Task 9
-    -- (cont'd) block above) -- category visibility still tracks wallet
-    -- membership per-wallet, not "any wallet this user happens to own".
-    assert (select count(*) from categories where wallet_id = '77777777-0000-0000-0000-000000000007') = 0,
-      'LEAK: bob (member of a different wallet only) can see 77777777-007''s categories';
+    -- 0022's accepted widening, stated rather than hidden (design §3.2).
+    -- Under 0008 this asserted the opposite: category visibility tracked
+    -- wallet membership, so bob -- a member of cccccccc-003 but NOT of
+    -- alice's other wallet 77777777-007 -- could not see 007's categories.
+    -- Both wallets are alice's and therefore share one household, and bob
+    -- joined it when he joined 003, so he can now read its category NAMES,
+    -- including any used only in 007. That is the price of one shared list
+    -- and it was accepted deliberately.
+    --
+    -- What must NOT widen is the money, and that is what the assertion below
+    -- actually pins. It is written against transactions rather than
+    -- categories on purpose: a `categories where space_id = (select space_id
+    -- from wallets where id = '777...')` test would be worthless here, since
+    -- bob cannot see wallet 007 either, so the subselect returns NULL, the
+    -- comparison is never true, and the count is 0 however broken RLS is.
+    assert (select count(*) from transactions
+              where wallet_id = '77777777-0000-0000-0000-000000000007') = 0,
+      'LEAK: bob (member of a different wallet only) can see 77777777-007''s transactions';
   end $$;
 
   -- Negative: bob (member, not owner) cannot change the wallet.
@@ -714,6 +736,18 @@ begin;
       where id = 'cccccccc-0000-0000-0000-000000000003';
     get diagnostics n = row_count;
     assert n = 0, 'LEAK: member bob reassigned alice''s wallet to himself';
+  exception when insufficient_privilege then
+    -- 0022 closes this one layer EARLIER than it used to be closed, and the
+    -- test accepts either outcome rather than pinning the weaker one.
+    -- 0004 granted UPDATE table-wide on wallets, so owner_id was writable and
+    -- only wallets_owner's `using` clause (which filters bob's row out,
+    -- because he is not the current owner) stopped this -- a zero row_count.
+    -- 0022 had to revoke that table-wide grant to keep space_id unwritable,
+    -- and re-granted by column; owner_id is not in the list, so the statement
+    -- is now refused for want of a column privilege before RLS is consulted
+    -- at all. Privilege beats a policy: it cannot be satisfied by finding a
+    -- row that matches.
+    null;
   end $$;
 
   -- Negative: bob (member, not owner) cannot escalate his own role, nor
@@ -892,9 +926,9 @@ begin;
   -- transactions_category_same_wallet requires a transaction's category to
   -- belong to the SAME wallet as the transaction, and this category is used
   -- below by transactions in wallet a2a2a2a2-001.
-  insert into categories (id, wallet_id, name, kind, color_slot, icon)
+  insert into categories (id, space_id, name, kind, color_slot, icon)
     values ('a4a4a4a4-0000-0000-0000-000000000001',
-            'a2a2a2a2-0000-0000-0000-000000000001', 'Dining', 'expense', 7, 'utensils');
+            (select space_id from wallets where id = 'a2a2a2a2-0000-0000-0000-000000000001'), 'Dining', 'expense', 7, 'utensils');
 
   -- Wallet C: EXISTS SOLELY to prove the LEFT JOIN ... ON (t.wallet_id = w.id
   -- AND t.deleted_at is null) shape still preserves a wallet whose ONLY
@@ -1122,9 +1156,9 @@ begin;
   -- wallet_id = ffffffff-006, not owner_id (0008): same composite-FK
   -- reasoning as the a4a4a4a4-001 fixture above -- this category is used
   -- by the transaction below in bob's own wallet ffffffff-006.
-  insert into categories (id, wallet_id, name, kind, color_slot, icon)
+  insert into categories (id, space_id, name, kind, color_slot, icon)
     values ('a4a4a4a4-0000-0000-0000-000000000002',
-            'ffffffff-0000-0000-0000-000000000006', 'Bob Category', 'expense', 1, 'shopping-cart');
+            (select space_id from wallets where id = 'ffffffff-0000-0000-0000-000000000006'), 'Bob Category', 'expense', 1, 'shopping-cart');
   insert into transactions (wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on)
     values ('ffffffff-0000-0000-0000-000000000006', 'bbbbbbbb-0000-0000-0000-000000000002',
             'expense', -500, 'USD', 'a4a4a4a4-0000-0000-0000-000000000002', current_date);
@@ -1478,8 +1512,14 @@ begin;
   set local request.jwt.claims = '{"sub":"cccccccc-0000-0000-0000-000000000009","email":"carol@x.io"}';
   do $$ begin
     assert (select auth.uid()) = 'cccccccc-0000-0000-0000-000000000009'::uuid, 'impersonation failed';
-    assert (select count(*) from public.categories where wallet_id = '40404040-0000-0000-0000-000000000040') = 0,
-      'test setup broken: carol can already see the invite wallet''s categories before accepting';
+    -- Named by id, not counted by household: carol cannot see the invite
+    -- wallet either, so `space_id = (select space_id from wallets where id =
+    -- '404...')` would compare against NULL for her, never be true, and
+    -- return 0 however broken the policy was. Alice's own custom category is
+    -- a row that definitely exists and definitely must not be visible.
+    assert (select count(*) from public.categories
+             where id = 'dddddddd-0000-0000-0000-000000000004') = 0,
+      'test setup broken: carol can already see alice''s category before accepting';
     assert (select count(*) from public.transactions where wallet_id = '40404040-0000-0000-0000-000000000040') = 0,
       'test setup broken: carol can already see the invite wallet''s transactions before accepting';
   end $$;
@@ -1487,10 +1527,31 @@ begin;
   select public.accept_wallet_invite('50505050-0000-0000-0000-000000000050');
 
   do $$ begin
-    -- 16, the seed_wallet_categories defaults (0008) -- no custom category
-    -- was created on this wallet, so this is a clean, unambiguous count.
-    assert (select count(*) from public.categories where wallet_id = '40404040-0000-0000-0000-000000000040') = 16,
-      'PERMISSION BROKEN: an accepted member cannot read the wallet''s categories -- the Uncategorised bug';
+    -- The guard for the bug 0008 was written to fix, carried forward to the
+    -- household model: a member who can read a wallet's transactions must be
+    -- able to read the categories those transactions point at, or they render
+    -- "Uncategorised" while the dashboard's SECURITY DEFINER aggregate shows
+    -- the real name.
+    --
+    -- Asserted on alice's custom category BY ID, which is the row that makes
+    -- this discriminating -- it exists, it is hers, and before the accept
+    -- above carol could not see it.
+    assert (select count(*) from public.categories
+             where id = 'dddddddd-0000-0000-0000-000000000004') = 1,
+      'PERMISSION BROKEN: an accepted member cannot read the household''s categories -- the Uncategorised bug';
+    -- EXACTLY ONE set of seeded defaults, no matter how many wallets alice
+    -- has. This is 0022's central claim, and it is asserted on `is_default`
+    -- rather than on a total, for two reasons: a total also counts whatever
+    -- custom categories earlier sections happened to create, which makes it
+    -- brittle and says nothing; and 16 is the number that would MULTIPLY if
+    -- the duplication came back. Alice owns three wallets by this point in
+    -- the file, so under 0008's seed_wallet_categories this count was 48.
+    -- If a future change re-seeds per wallet, this fails immediately.
+    assert (select count(*) from public.categories
+              where space_id = (select space_id from wallets
+                                 where id = '40404040-0000-0000-0000-000000000040')
+                and is_default) = 16,
+      'DUPLICATION IS BACK: alice''s household holds more than one set of seeded defaults';
     assert (select count(*) from public.transactions where wallet_id = '40404040-0000-0000-0000-000000000040') = 1,
       'PERMISSION BROKEN: an accepted member cannot read the wallet''s transactions';
   end $$;
@@ -1678,19 +1739,28 @@ begin;
   values ('88880000-0000-0000-0000-000000000088','77770000-0000-0000-0000-000000000077','Gina One','bank','USD',0,1,'landmark'),
          ('99990000-0000-0000-0000-000000000099','77770000-0000-0000-0000-000000000077','Gina Two','bank','USD',0,2,'landmark');
 
-  -- -10.00 against wallet one's own 'Groceries', -25.00 against wallet
-  -- two's own 'Groceries'. Both rows come from seed_wallet_categories
-  -- (0008), which is precisely why they share a name and a color_slot.
+  -- -10.00 from wallet one and -25.00 from wallet two, both against the
+  -- household's single 'Groceries'. Under 0008 these were two DIFFERENT rows
+  -- -- seed_wallet_categories minted one per wallet, which is why they shared
+  -- a name and a colour -- and get_category_breakdown existed in part to
+  -- merge them by name. Under 0022 gina's two wallets share one household and
+  -- therefore one 'Groceries', so there is nothing left to merge. The
+  -- breakdown assertions below are unchanged and still hold; what changed is
+  -- WHY, and the setup control asserts the new reason rather than the old one.
+  --
+  -- `space_id = (select ...)` rather than a join to wallets: gina has two
+  -- wallets in this household, so joining would match the same category twice
+  -- and insert two transactions where one is intended.
   insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on)
   select '88880000-0000-0000-0000-000000000088','77770000-0000-0000-0000-000000000077','expense',-1000,'USD', c.id, current_date
   from public.categories c
-  where c.wallet_id = '88880000-0000-0000-0000-000000000088'
+  where c.space_id = (select space_id from public.wallets where id = '88880000-0000-0000-0000-000000000088')
     and c.kind = 'expense' and lower(btrim(c.name)) = 'groceries';
 
   insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on)
   select '99990000-0000-0000-0000-000000000099','77770000-0000-0000-0000-000000000077','expense',-2500,'USD', c.id, current_date
   from public.categories c
-  where c.wallet_id = '99990000-0000-0000-0000-000000000099'
+  where c.space_id = (select space_id from public.wallets where id = '99990000-0000-0000-0000-000000000099')
     and c.kind = 'expense' and lower(btrim(c.name)) = 'groceries';
 
   do $$
@@ -1700,15 +1770,20 @@ begin;
     n_total         bigint;
     n_names         int;
   begin
-    -- Setup control. Without it, "one row came back" would also be
-    -- satisfied by there only ever having been one category row in the
-    -- first place, and the merge assertion below would be vacuous.
+    -- Setup control, inverted by 0022. It used to assert TWO distinct
+    -- same-named rows (one per wallet) so that "one row came back" proved a
+    -- merge rather than there having only ever been one category. Now ONE is
+    -- the thing worth proving: two wallets of one household share a single
+    -- 'Groceries', so a second row appearing here would mean per-wallet
+    -- duplication had returned.
     select count(distinct c.id) into n_distinct_cats
     from public.categories c
-    where c.wallet_id in ('88880000-0000-0000-0000-000000000088','99990000-0000-0000-0000-000000000099')
+    where c.space_id in (select space_id from public.wallets
+                          where id in ('88880000-0000-0000-0000-000000000088',
+                                       '99990000-0000-0000-0000-000000000099'))
       and c.kind = 'expense' and lower(btrim(c.name)) = 'groceries';
-    assert n_distinct_cats = 2,
-      format('test setup broken: expected two DISTINCT same-named category rows, one per wallet, got %s', n_distinct_cats);
+    assert n_distinct_cats = 1,
+      format('0022 BROKEN: two wallets of one household must share ONE "Groceries" row, got %s', n_distinct_cats);
 
     select count(*), coalesce(sum(total_minor), 0), count(distinct name)
       into n_rows, n_total, n_names
@@ -1717,11 +1792,11 @@ begin;
       current_date - 1, current_date + 1);
 
     assert n_rows = 1,
-      format('BREAKDOWN BROKEN: two wallets'' same-named "Groceries" must collapse to ONE row, got %s', n_rows);
+      format('BREAKDOWN BROKEN: spending from two wallets against the household''''s one "Groceries" must report as ONE row, got %s', n_rows);
     assert n_names = 1,
       format('BREAKDOWN BROKEN: expected a single category name across the merged result, got %s distinct names', n_names);
     assert n_total = 3500,
-      format('BREAKDOWN BROKEN: the merged row must carry the SUMMED total 1000 + 2500 = 3500, got %s', n_total);
+      format('BREAKDOWN BROKEN: the row must carry the SUMMED total 1000 + 2500 = 3500 across both wallets, got %s', n_total);
   end $$;
 
   -- Paired control for the merge: called for ONE wallet alone, only that
@@ -1838,9 +1913,10 @@ end $$;
 -- setup for the visibility assertions that follow, not itself a
 -- permission being exercised.
 -- =====================================================================
-insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+insert into public.budgets (id, created_by, currency_code, space_id, category_id, period_start, amount_minor)
 values ('b0000000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
-        'USD', null, '2026-08-01', 100000);
+        'USD', (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003'),
+        null, '2026-08-01', 100000);
 
 -- Attaching a wallet to the budget is done here as the table-owning
 -- superuser, deliberately outside any role impersonation: I2 (below)
@@ -1868,9 +1944,10 @@ begin;
     assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'wrong impersonated user';
 
     begin
-      insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+      insert into public.budgets (id, created_by, currency_code, space_id, category_id, period_start, amount_minor)
       values ('b0000000-0000-0000-0000-000000000099', 'aaaaaaaa-0000-0000-0000-000000000001',
-              'USD', null, '2026-08-01', 1);
+              'USD', (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003'),
+              null, '2026-08-01', 1);
       raise exception 'LEAK: authenticated could INSERT into budgets directly';
     exception when insufficient_privilege then null;
     end;
@@ -1930,9 +2007,10 @@ commit;
 -- the fixture the empty-set assertions in the get_budget_status test
 -- section below (and its table-layer denial) target -- found, per that
 -- task's addendum, rather than creating a second wallet-less budget.
-insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+insert into public.budgets (id, created_by, currency_code, space_id, category_id, period_start, amount_minor)
 values ('b0000000-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001',
-        'USD', null, '2026-09-01', 50000);
+        'USD', (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003'),
+        null, '2026-09-01', 50000);
 
 begin;
   set local role authenticated;
@@ -2022,9 +2100,10 @@ commit;
 -- comment: "who can see this budget is decided entirely by its wallet set
 -- ... never by created_by") -- which is exactly why a superuser can set it
 -- to bob without bob ever having run the INSERT himself.
-insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+insert into public.budgets (id, created_by, currency_code, space_id, category_id, period_start, amount_minor)
 values ('b0000000-0000-0000-0000-000000000003', 'bbbbbbbb-0000-0000-0000-000000000002',
-        'USD', null, '2026-10-01', 75000);
+        'USD', (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003'),
+        null, '2026-10-01', 75000);
 
 -- Seed the two-wallet set as the table-owning superuser, for the same
 -- reason the C1 fixture above does: budget_wallets grants no INSERT to
@@ -2120,9 +2199,10 @@ begin;
   end $$;
 commit;
 
-insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+insert into public.budgets (id, created_by, currency_code, space_id, category_id, period_start, amount_minor)
 values ('facade00-0000-0000-0000-000000000101', 'aaaaaaaa-0000-0000-0000-000000000001',
-        'USD', null, '2026-01-01', 200000);
+        'USD', (select space_id from public.wallets where id = 'facade00-0000-0000-0000-000000000001'),
+        null, '2026-01-01', 200000);
 insert into public.budget_wallets (budget_id, wallet_id) values
   ('facade00-0000-0000-0000-000000000101', 'facade00-0000-0000-0000-000000000001');
 
@@ -2277,9 +2357,10 @@ begin;
   end $$;
 commit;
 
-insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+insert into public.budgets (id, created_by, currency_code, space_id, category_id, period_start, amount_minor)
 values ('facade00-0000-0000-0000-000000000107', 'aaaaaaaa-0000-0000-0000-000000000001',
-        'USD', null, '2026-09-01', 60000);
+        'USD', (select space_id from public.wallets where id = 'facade00-0000-0000-0000-000000000008'),
+        null, '2026-09-01', 60000);
 insert into public.budget_wallets (budget_id, wallet_id) values
   ('facade00-0000-0000-0000-000000000107', 'facade00-0000-0000-0000-000000000008');
 
@@ -2378,9 +2459,10 @@ begin;
   end $$;
 commit;
 
-insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+insert into public.budgets (id, created_by, currency_code, space_id, category_id, period_start, amount_minor)
 values ('facade00-0000-0000-0000-000000000102', 'aaaaaaaa-0000-0000-0000-000000000001',
-        'USD', null, '2026-02-01', 300000);
+        'USD', (select space_id from public.wallets where id = 'facade00-0000-0000-0000-000000000003'),
+        null, '2026-02-01', 300000);
 insert into public.budget_wallets (budget_id, wallet_id) values
   ('facade00-0000-0000-0000-000000000102', 'facade00-0000-0000-0000-000000000003');
 
@@ -2417,12 +2499,14 @@ begin;
   end $$;
 commit;
 
-insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+insert into public.budgets (id, created_by, currency_code, space_id, category_id, period_start, amount_minor)
 values ('facade00-0000-0000-0000-000000000103', 'aaaaaaaa-0000-0000-0000-000000000001',
-        'USD', null, '2026-09-01', 50000);
-insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+        'USD', (select space_id from public.wallets where id = 'facade00-0000-0000-0000-000000000005'),
+        null, '2026-09-01', 50000);
+insert into public.budgets (id, created_by, currency_code, space_id, category_id, period_start, amount_minor)
 values ('facade00-0000-0000-0000-000000000104', 'aaaaaaaa-0000-0000-0000-000000000001',
-        'USD', null, '2026-10-01', 80000);
+        'USD', (select space_id from public.wallets where id = 'facade00-0000-0000-0000-000000000005'),
+        null, '2026-10-01', 80000);
 insert into public.budget_wallets (budget_id, wallet_id) values
   ('facade00-0000-0000-0000-000000000103', 'facade00-0000-0000-0000-000000000005'),
   ('facade00-0000-0000-0000-000000000104', 'facade00-0000-0000-0000-000000000005');
@@ -2487,12 +2571,14 @@ begin;
   end $$;
 commit;
 
-insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+insert into public.budgets (id, created_by, currency_code, space_id, category_id, period_start, amount_minor)
 values ('facade00-0000-0000-0000-000000000105', 'aaaaaaaa-0000-0000-0000-000000000001',
-        'USD', null, '2026-04-01', 10000);
-insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+        'USD', (select space_id from public.wallets where id = 'facade00-0000-0000-0000-000000000007'),
+        null, '2026-04-01', 10000);
+insert into public.budgets (id, created_by, currency_code, space_id, category_id, period_start, amount_minor)
 values ('facade00-0000-0000-0000-000000000106', 'aaaaaaaa-0000-0000-0000-000000000001',
-        'USD', null, '2026-04-01', 20000);
+        'USD', (select space_id from public.wallets where id = 'facade00-0000-0000-0000-000000000007'),
+        null, '2026-04-01', 20000);
 insert into public.budget_wallets (budget_id, wallet_id) values
   ('facade00-0000-0000-0000-000000000105', 'facade00-0000-0000-0000-000000000007'),
   ('facade00-0000-0000-0000-000000000106', 'facade00-0000-0000-0000-000000000007'),
@@ -2571,17 +2657,26 @@ begin;
       values ('facade00-0000-0000-0000-000000000010', 'aaaaaaaa-0000-0000-0000-000000000001',
               'GBS Wallet Seven', 'bank', 'USD', 1, 'wallet');
 
+    -- `_w1`/`_w2` are now the SAME row: both wallets are alice's, so they
+    -- share a household and its single 'Groceries' (0022). The names are kept
+    -- because what each variable is used for -- spending in W1 versus
+    -- spending in W2 -- is still the distinction this block tests, and that
+    -- distinction now lives entirely in the transaction's wallet_id, which is
+    -- what get_budget_status joins budget_wallets on. The expected figures
+    -- below are unchanged precisely because the budget covers W1 only.
     select id into groceries_w1 from public.categories
-      where wallet_id = 'facade00-0000-0000-0000-000000000009'
+      where space_id = (select space_id from public.wallets where id = 'facade00-0000-0000-0000-000000000009')
         and kind = 'expense' and lower(btrim(name)) = 'groceries';
     select id into groceries_w2 from public.categories
-      where wallet_id = 'facade00-0000-0000-0000-000000000010'
+      where space_id = (select space_id from public.wallets where id = 'facade00-0000-0000-0000-000000000010')
         and kind = 'expense' and lower(btrim(name)) = 'groceries';
     select id into eating_out_w1 from public.categories
-      where wallet_id = 'facade00-0000-0000-0000-000000000009'
+      where space_id = (select space_id from public.wallets where id = 'facade00-0000-0000-0000-000000000009')
         and kind = 'expense' and lower(btrim(name)) = 'eating out';
     assert groceries_w1 is not null and groceries_w2 is not null and eating_out_w1 is not null,
-      'test setup broken: seed_wallet_categories did not create Groceries/Eating out for one of the block 8 wallets';
+      'test setup broken: seed_space_categories did not create Groceries/Eating out for alice''s household';
+    assert groceries_w1 = groceries_w2,
+      '0022 BROKEN: two wallets of one household resolved to DIFFERENT Groceries rows';
 
     insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on)
       values ('facade00-0000-0000-0000-000000000009', 'aaaaaaaa-0000-0000-0000-000000000001',
@@ -2601,9 +2696,11 @@ begin;
   end $$;
 commit;
 
-insert into public.budgets (id, created_by, currency_code, category_key, period_start, amount_minor)
+insert into public.budgets (id, created_by, currency_code, space_id, category_id, period_start, amount_minor)
 values ('facade00-0000-0000-0000-000000000108', 'aaaaaaaa-0000-0000-0000-000000000001',
-        'USD', 'groceries', '2026-05-01', 50000);
+        'USD', (select space_id from public.wallets where id = 'facade00-0000-0000-0000-000000000009'),
+        (select id from public.categories where kind = 'expense' and name = 'Groceries'
+           and space_id = (select space_id from public.wallets where id = 'facade00-0000-0000-0000-000000000009')), '2026-05-01', 50000);
 insert into public.budget_wallets (budget_id, wallet_id) values
   ('facade00-0000-0000-0000-000000000108', 'facade00-0000-0000-0000-000000000009');
 
@@ -2626,7 +2723,9 @@ begin;
 
     select spent_minor, category_label into uncov_spent, uncov_label
       from public.get_budget_status('2026-05-01','2026-05-31')
-      where budget_id is null and category_key = 'groceries';
+      where budget_id is null
+        and category_id = (select id from public.categories where kind = 'expense' and name = 'Groceries'
+                             and space_id = (select space_id from public.wallets where id = 'facade00-0000-0000-0000-000000000009'));
     assert found,
       'I1 BROKEN: W2''s Groceries spending (budgeted only over W1) vanished instead of appearing in uncovered';
     assert uncov_spent = 700,
@@ -2668,11 +2767,11 @@ commit;
 -- =====================================================================
 
 do $$ begin
-  assert has_function_privilege('authenticated', 'public.set_budget(text,date,bigint,uuid[])', 'EXECUTE'),
+  assert has_function_privilege('authenticated', 'public.set_budget(uuid,date,bigint,uuid[])', 'EXECUTE'),
     'GRANT BROKEN: authenticated must be able to EXECUTE set_budget';
-  assert not has_function_privilege('anon', 'public.set_budget(text,date,bigint,uuid[])', 'EXECUTE'),
+  assert not has_function_privilege('anon', 'public.set_budget(uuid,date,bigint,uuid[])', 'EXECUTE'),
     'LEAK: anon must not be able to EXECUTE set_budget';
-  assert not has_function_privilege('public', 'public.set_budget(text,date,bigint,uuid[])', 'EXECUTE'),
+  assert not has_function_privilege('public', 'public.set_budget(uuid,date,bigint,uuid[])', 'EXECUTE'),
     'LEAK: public must not be able to EXECUTE set_budget';
 end $$;
 
@@ -2726,7 +2825,9 @@ begin;
   begin
     assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
 
-    v_id := set_budget('rent', '2026-09-01', 120000,
+    v_id := set_budget((select id from public.categories where name = 'Housing' and archived_at is null
+          and space_id = (select space_id from public.wallets where id = '5e7b0000-0000-0000-0000-000000000001')),
+      '2026-09-01', 120000,
       array['5e7b0000-0000-0000-0000-000000000001', '5e7b0000-0000-0000-0000-000000000002']::uuid[]);
     assert v_id is not null,
       'PERMISSION BROKEN: alice, a member of every wallet in the set, could not create a budget';
@@ -2765,7 +2866,9 @@ begin;
     assert (select owner_id from public.wallets where id = '5e7b0000-0000-0000-0000-000000000002') <> 'bbbbbbbb-0000-0000-0000-000000000002'::uuid,
       'test setup broken: bob must NOT own SB Wallet Two, only be a member of it, or this control proves nothing';
 
-    v_id := set_budget('groceries', '2026-08-01', 15000,
+    v_id := set_budget((select id from public.categories where name = 'Groceries' and archived_at is null
+          and space_id = (select space_id from public.wallets where id = '5e7b0000-0000-0000-0000-000000000002')),
+      '2026-08-01', 15000,
       array['5e7b0000-0000-0000-0000-000000000002']::uuid[]);
     assert v_id is not null,
       'I1 REGRESSION: bob, a genuine non-owner MEMBER of SB Wallet Two, could not create a budget over it -- membership, not ownership, must be the standard';
@@ -2794,7 +2897,9 @@ begin;
       'test setup broken: bob should not be a member of SB Wallet One';
 
     begin
-      perform set_budget('rent', '2026-09-01', 999900,
+      perform set_budget((select id from public.categories where name = 'Housing' and archived_at is null
+          and space_id = (select space_id from public.wallets where id = '5e7b0000-0000-0000-0000-000000000002')),
+        '2026-09-01', 999900,
         array['5e7b0000-0000-0000-0000-000000000001', '5e7b0000-0000-0000-0000-000000000002']::uuid[]);
       v_ok := true;
     exception when others then
@@ -2844,7 +2949,9 @@ begin;
       -- hand -- the literal-string form is what a raw '{{...}}' payload
       -- over PostgREST actually deserializes to, and is the exact shape
       -- array_length(...,1) miscounted.
-      perform set_budget('rent', '2026-09-01', 999901,
+      perform set_budget((select id from public.categories where name = 'Housing' and archived_at is null
+          and space_id = (select space_id from public.wallets where id = '5e7b0000-0000-0000-0000-000000000002')),
+        '2026-09-01', 999901,
         '{{5e7b0000-0000-0000-0000-000000000002,5e7b0000-0000-0000-0000-000000000001}}'::uuid[]);
       v_ok := true;
     exception when others then
@@ -2872,7 +2979,9 @@ begin;
   declare v_ok boolean := false;
   begin
     begin
-      perform set_budget('utilities', '2026-09-01', 5000, array[]::uuid[]);
+      perform set_budget((select id from public.categories where name = 'Utilities' and archived_at is null
+          and space_id = (select space_id from public.wallets where id = '5e7b0000-0000-0000-0000-000000000001')),
+        '2026-09-01', 5000, array[]::uuid[]);
       v_ok := true;
     exception when others then
       assert sqlerrm = 'a budget must cover at least one account',
@@ -2885,7 +2994,9 @@ begin;
   declare v_ok boolean := false;
   begin
     begin
-      perform set_budget('utilities', '2026-09-01', 5000,
+      perform set_budget((select id from public.categories where name = 'Utilities' and archived_at is null
+          and space_id = (select space_id from public.wallets where id = '5e7b0000-0000-0000-0000-000000000001')),
+        '2026-09-01', 5000,
         array['5e7b0000-0000-0000-0000-000000000001', '5e7b0000-0000-0000-0000-000000000004']::uuid[]);
       v_ok := true;
     exception when others then
@@ -2901,23 +3012,31 @@ begin;
   do $$
   declare v_id1 uuid; v_id2 uuid; v_rows int;
   begin
-    v_id1 := set_budget('subscriptions', '2026-09-01', 2000,
+    v_id1 := set_budget((select id from public.categories where name = 'Subscriptions' and archived_at is null
+          and space_id = (select space_id from public.wallets where id = '5e7b0000-0000-0000-0000-000000000001')),
+        '2026-09-01', 2000,
       array['5e7b0000-0000-0000-0000-000000000001']::uuid[]);
-    v_id2 := set_budget('subscriptions', '2026-09-01', 3500,
+    v_id2 := set_budget((select id from public.categories where name = 'Subscriptions' and archived_at is null
+          and space_id = (select space_id from public.wallets where id = '5e7b0000-0000-0000-0000-000000000001')),
+        '2026-09-01', 3500,
       array['5e7b0000-0000-0000-0000-000000000001']::uuid[]);
     assert v_id1 = v_id2,
       'IDEMPOTENCY BROKEN: repeat call for the same set/category/month returned a different budget id';
-    -- REVIEW FINDING (I2): count by category_key/period_start, NOT `and id
+    -- REVIEW FINDING (I2): count by category_id/period_start, NOT `and id
     -- = v_id1` (an earlier draft did) -- filtering by primary key makes the
     -- count structurally 0 or 1 regardless of whether a duplicate landed,
     -- which is exactly the failure this count exists to catch.
     select count(*) into v_rows from public.budgets
-      where category_key = 'subscriptions' and period_start = '2026-09-01';
+      where category_id = (select id from public.categories where name = 'Subscriptions' and archived_at is null
+                             and space_id = (select space_id from public.wallets where id = '5e7b0000-0000-0000-0000-000000000001'))
+        and period_start = '2026-09-01';
     assert v_rows = 1, format('IDEMPOTENCY BROKEN: expected exactly 1 row, found %s', v_rows);
     assert (select amount_minor from public.budgets where id = v_id1) = 3500,
       'IDEMPOTENCY BROKEN: row should carry the second call''s amount';
 
-    v_id2 := set_budget('subscriptions', '2026-09-01', 4000,
+    v_id2 := set_budget((select id from public.categories where name = 'Subscriptions' and archived_at is null
+          and space_id = (select space_id from public.wallets where id = '5e7b0000-0000-0000-0000-000000000001')),
+        '2026-09-01', 4000,
       array['5e7b0000-0000-0000-0000-000000000002']::uuid[]);
     assert v_id1 <> v_id2,
       'OVERLAP BROKEN: same category/month over a DIFFERENT wallet set collapsed onto the same budget';
@@ -3786,16 +3905,25 @@ begin;
 commit;
 
 -- =====================================================================
--- 0018: a wallet member cannot move a category out of a shared wallet,
---       and cannot change its kind.
+-- 0018 / 0022: a household member cannot move a category out of a shared
+--       household, and cannot change its kind.
 --
 -- Regression test for a live escalation, reproduced against a real
 -- database before it was closed. `categories` carried Supabase's default
--- table-wide UPDATE grant while `categories_member` checks membership
+-- table-wide UPDATE grant while `categories_member` checked membership
 -- with both `using` (old row) and `with check` (new row), so a user who
--- belongs to two wallets satisfied both halves while moving a row out of
+-- belonged to two wallets satisfied both halves while moving a row out of
 -- one. See supabase/migrations/0018_category_update_grant.sql for the
 -- full writeup and the exact statements that succeeded.
+--
+-- 0022 re-scoped categories from the wallet to the household, and
+-- `categories_space` has exactly the same `using`/`with check` shape, so
+-- the same gap exists one level up for a user who belongs to two
+-- households. The defence is the same column-scoped grant carried over
+-- verbatim -- space_id is absent from it -- and this block re-proves it
+-- against the new column. Bob is in two households here without any
+-- special setup: handle_new_user gave him his own at signup, and joining
+-- alice's shared wallet (via wallet_members_set_space) put him in hers.
 --
 -- Written as "the row did not change" rather than "the statement threw":
 -- a column-level grant makes Postgres raise 42501, but RLS alone would
@@ -3816,9 +3944,22 @@ begin;
   values ('c0de0000-0000-4000-8000-00000000a001', 'bbbbbbbb-0000-0000-0000-000000000002', 'member')
   on conflict do nothing;
 
-  insert into categories (id, wallet_id, name, kind, color_slot, icon)
-  values ('c0de0000-0000-4000-8000-00000000c003', 'c0de0000-0000-4000-8000-00000000a001',
+  insert into categories (id, space_id, name, kind, color_slot, icon)
+  values ('c0de0000-0000-4000-8000-00000000c003',
+          (select space_id from wallets where id = 'c0de0000-0000-4000-8000-00000000a001'),
           'Shared groceries', 'expense', 1, 'shopping-basket');
+
+  -- The two households really are two: bob's private wallet was filed by
+  -- set_wallet_space into the household he OWNS, not the one he merely
+  -- joined. If this ever failed the escalation below would be moving a row
+  -- from a space to itself and the test would pass for nothing.
+  do $$ begin
+    assert (select space_id from wallets where id = 'c0de0000-0000-4000-8000-00000000b002')
+        <> (select space_id from wallets where id = 'c0de0000-0000-4000-8000-00000000a001'),
+      'test setup broken: bob''s private wallet landed in alice''s household';
+    assert (select count(*) from space_members where user_id = 'bbbbbbbb-0000-0000-0000-000000000002') >= 2,
+      'test setup broken: bob is not a member of two households';
+  end $$;
 
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002"}';
@@ -3829,7 +3970,8 @@ begin;
   do $$
   begin
     begin
-      update categories set wallet_id = 'c0de0000-0000-4000-8000-00000000b002'
+      update categories
+         set space_id = (select space_id from wallets where id = 'c0de0000-0000-4000-8000-00000000b002')
        where id = 'c0de0000-0000-4000-8000-00000000c003';
     exception when insufficient_privilege then null;
     end;
@@ -3850,11 +3992,11 @@ begin;
   do $$
   declare w uuid; k category_kind; d boolean; nm text;
   begin
-    select wallet_id, kind, is_default, name into w, k, d, nm
+    select space_id, kind, is_default, name into w, k, d, nm
       from categories where id = 'c0de0000-0000-4000-8000-00000000c003';
 
-    assert w = 'c0de0000-0000-4000-8000-00000000a001',
-      format('ESCALATION: a member moved a shared category into wallet %s', w);
+    assert w = (select space_id from wallets where id = 'c0de0000-0000-4000-8000-00000000a001'),
+      format('ESCALATION: a member moved a shared category into household %s', w);
     assert k = 'expense',
       format('a member changed a shared category''s kind to %s, which would make every transaction filed under it uneditable', k);
     assert d = false, 'a member changed is_default, which is seeding state and not user data';

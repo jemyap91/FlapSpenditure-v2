@@ -9,7 +9,7 @@
 // heading on the previous branch.
 //
 // Two row "kinds" arrive in the same `rows` array (controller addendum §1):
-// - a BUDGET row: `budget_id`, `category_key`/`category_label` (null only
+// - a BUDGET row: `budget_id`, `category_id`/`category_label` (null only
 //   for the overall cap), `wallet_names`, `wallet_count`, `budget_minor`,
 //   `budget_period_start` all non-null.
 // - an UNCOVERED-spending row: all five of those are null; `budget_minor`
@@ -21,12 +21,15 @@ import { BudgetList } from "./BudgetList";
 import { removeBudget, setBudget } from "@/server/actions/budgets";
 import type { BudgetStatusRow } from "@/lib/budget-status";
 
+// Every wallet now carries its household (0022); one fixture id serves all.
+const SPACE = "99999999-9999-4999-8999-999999999999";
+
 vi.mock("@/server/actions/budgets", () => ({ setBudget: vi.fn(), removeBudget: vi.fn() }));
 
 /** A BUDGETED row (overall cap or category), matching the "budget row" shape. */
 const row = (over: Partial<BudgetStatusRow> = {}): BudgetStatusRow => ({
   budget_id: "b1",
-  category_key: "groceries",
+  category_id: "groceries",
   category_label: "Groceries",
   currency_code: "SGD",
   wallet_names: ["Everyday"],
@@ -40,7 +43,7 @@ const row = (over: Partial<BudgetStatusRow> = {}): BudgetStatusRow => ({
 /** An UNCOVERED-spending row — no budget covers this category for this wallet. */
 const uncoveredRow = (over: Partial<BudgetStatusRow> = {}): BudgetStatusRow => ({
   budget_id: null,
-  category_key: "dining",
+  category_id: "dining",
   category_label: "Dining",
   currency_code: "SGD",
   wallet_names: null,
@@ -141,15 +144,15 @@ describe("BudgetList — heading semantics", () => {
         rows={[
           row({
             budget_id: "b-overall",
-            category_key: null,
+            category_id: null,
             category_label: null,
             wallet_names: ["Everyday", "Savings"],
             wallet_count: 2,
           }),
         ]}
         wallets={[
-          { id: "w1", name: "Everyday", currency_code: "SGD" },
-          { id: "w2", name: "Savings", currency_code: "SGD" },
+          { id: "w1", name: "Everyday", currency_code: "SGD", space_id: SPACE },
+          { id: "w2", name: "Savings", currency_code: "SGD", space_id: SPACE },
         ]}
       />,
     );
@@ -164,10 +167,10 @@ describe("BudgetList — grouping and order", () => {
     render(
       <BudgetList
         rows={[
-          uncoveredRow({ category_key: "dining", category_label: "Dining", spent_minor: 100 }),
-          row({ budget_id: "b-zebra", category_key: "zebra", category_label: "Zebra" }),
-          row({ budget_id: "b-overall", category_key: null, category_label: null }),
-          row({ budget_id: "b-mango", category_key: "mango", category_label: "Mango" }),
+          uncoveredRow({ category_id: "dining", category_label: "Dining", spent_minor: 100 }),
+          row({ budget_id: "b-zebra", category_id: "zebra", category_label: "Zebra" }),
+          row({ budget_id: "b-overall", category_id: null, category_label: null }),
+          row({ budget_id: "b-mango", category_id: "mango", category_label: "Mango" }),
         ]}
       />,
     );
@@ -197,8 +200,8 @@ describe("BudgetList — never sums rows into a total", () => {
     render(
       <BudgetList
         rows={[
-          row({ budget_id: "b-overall", category_key: null, category_label: null, spent_minor: 74500, budget_minor: 95000 }),
-          row({ budget_id: "b-groceries", category_key: "groceries", category_label: "Groceries", spent_minor: 41200, budget_minor: 60000 }),
+          row({ budget_id: "b-overall", category_id: null, category_label: null, spent_minor: 74500, budget_minor: 95000 }),
+          row({ budget_id: "b-groceries", category_id: "groceries", category_label: "Groceries", spent_minor: 41200, budget_minor: 60000 }),
         ]}
       />,
     );
@@ -216,7 +219,7 @@ describe("BudgetList — Remove", () => {
   });
 
   it("offers Remove, pinned by name, on the overall cap", () => {
-    render(<BudgetList rows={[row({ category_key: null, category_label: null, budget_id: "b1" })]} />);
+    render(<BudgetList rows={[row({ category_id: null, category_label: null, budget_id: "b1" })]} />);
     expect(screen.getByRole("button", { name: "Remove overall budget · Everyday" })).toBeInTheDocument();
   });
 
@@ -345,10 +348,10 @@ describe("BudgetList — save error accessibility", () => {
 
 describe("BudgetList — adding a new budget", () => {
   const wallets = [
-    { id: "w1", name: "Everyday", currency_code: "SGD" },
-    { id: "w2", name: "Savings", currency_code: "SGD" },
+    { id: "w1", name: "Everyday", currency_code: "SGD", space_id: SPACE },
+    { id: "w2", name: "Savings", currency_code: "SGD", space_id: SPACE },
   ];
-  const categories = [{ key: "groceries", label: "Groceries" }];
+  const categories = [{ id: "groceries", label: "Groceries" }];
 
   it("offers a Category picker and a wallet picker, pinned by name", () => {
     render(<BudgetList rows={[]} wallets={wallets} primaryCurrency="SGD" categories={categories} />);
@@ -397,10 +400,10 @@ describe("BudgetList — adding a new budget", () => {
 
 describe("BudgetList — select all / clear all in the wallet picker", () => {
   const wallets = [
-    { id: "w1", name: "Everyday", currency_code: "SGD" },
-    { id: "w2", name: "Savings", currency_code: "SGD" },
+    { id: "w1", name: "Everyday", currency_code: "SGD", space_id: SPACE },
+    { id: "w2", name: "Savings", currency_code: "SGD", space_id: SPACE },
   ];
-  const categories = [{ key: "groceries", label: "Groceries" }];
+  const categories = [{ id: "groceries", label: "Groceries" }];
 
   it("selects every wallet when pressed with some unchecked", async () => {
     const user = userEvent.setup();
@@ -469,8 +472,8 @@ describe("BudgetList — coverage disclosures", () => {
       <BudgetList
         rows={[row({ wallet_names: ["Everyday"], wallet_count: 1 })]}
         wallets={[
-          { id: "w1", name: "Everyday", currency_code: "SGD" },
-          { id: "w2", name: "Savings", currency_code: "SGD" },
+          { id: "w1", name: "Everyday", currency_code: "SGD", space_id: SPACE },
+          { id: "w2", name: "Savings", currency_code: "SGD", space_id: SPACE },
         ]}
         primaryCurrency="SGD"
       />,
@@ -486,8 +489,8 @@ describe("BudgetList — coverage disclosures", () => {
       <BudgetList
         rows={[row({ wallet_names: ["Everyday"], wallet_count: 1 })]}
         wallets={[
-          { id: "w1", name: "Everyday", currency_code: "SGD" },
-          { id: "w3", name: "Yen account", currency_code: "JPY" },
+          { id: "w1", name: "Everyday", currency_code: "SGD", space_id: SPACE },
+          { id: "w3", name: "Yen account", currency_code: "JPY", space_id: SPACE },
         ]}
         primaryCurrency="SGD"
       />,

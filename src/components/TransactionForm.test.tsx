@@ -45,10 +45,11 @@ const WALLET_EUR = "44444444-4444-4444-8444-444444444444";
 const ORIGIN_UUID = "22222222-2222-4222-8222-222222222222";
 const TXN_ID = "55555555-5555-4555-8555-555555555555";
 const TRANSFER_ID = "66666666-6666-4666-8666-666666666666";
+const SPACE = "99999999-9999-4999-8999-999999999999";
 
-const wallets = [{ id: WALLET_A, name: "Everyday", currency_code: "USD" }];
+const wallets = [{ id: WALLET_A, name: "Everyday", currency_code: "USD", space_id: SPACE }];
 const categories: Category[] = [
-  { id: "cat-1", name: "Groceries", kind: "expense", color_slot: 1, icon: "circle", wallet_id: WALLET_A },
+  { id: "cat-1", name: "Groceries", kind: "expense", color_slot: 1, icon: "circle", space_id: SPACE },
 ];
 
 // Task 6 (editable-transactions plan): edit-mode fixtures. A second,
@@ -56,9 +57,9 @@ const categories: Category[] = [
 // same-currency/cross-currency transfer-edit tests below share one wallets
 // array rather than each building its own.
 const editWallets = [
-  { id: WALLET_A, name: "Everyday", currency_code: "USD" },
-  { id: WALLET_B, name: "Savings", currency_code: "USD" },
-  { id: WALLET_EUR, name: "Holiday", currency_code: "EUR" },
+  { id: WALLET_A, name: "Everyday", currency_code: "USD", space_id: SPACE },
+  { id: WALLET_B, name: "Savings", currency_code: "USD", space_id: SPACE },
+  { id: WALLET_EUR, name: "Holiday", currency_code: "EUR", space_id: SPACE },
 ];
 
 /** Fills the minimum a save needs (a nonzero amount, a category) and clicks
@@ -609,12 +610,12 @@ describe("TransactionForm — moving a transaction between wallets", () => {
     merchant: "",
   };
   const bothWallets = [
-    { id: WALLET_A, name: "Everyday", currency_code: "USD" },
-    { id: WALLET_B, name: "Savings", currency_code: "USD" },
+    { id: WALLET_A, name: "Everyday", currency_code: "USD", space_id: SPACE },
+    { id: WALLET_B, name: "Savings", currency_code: "USD", space_id: SPACE },
   ];
   const cats: Category[] = [
-    { id: "cat-1", name: "Groceries", kind: "expense", color_slot: 1, icon: "circle", wallet_id: WALLET_A },
-    { id: "cat-2", name: "Rainy day", kind: "expense", color_slot: 2, icon: "circle", wallet_id: WALLET_B },
+    { id: "cat-1", name: "Groceries", kind: "expense", color_slot: 1, icon: "circle", space_id: SPACE },
+    { id: "cat-2", name: "Rainy day", kind: "expense", color_slot: 2, icon: "circle", space_id: SPACE },
   ];
 
   const renderEdit = (walletList = bothWallets) =>
@@ -666,7 +667,7 @@ describe("TransactionForm — moving a transaction between wallets", () => {
     expect(screen.getByText(/From/)).toHaveTextContent("From Everyday to Savings");
   });
 
-  it("clears the category when the wallet changes", async () => {
+  it("keeps the category when moving to another wallet in the same household", async () => {
     const user = userEvent.setup();
     renderEdit();
     // Asserted on the summary chip, not on the text "Groceries" — that
@@ -681,12 +682,18 @@ describe("TransactionForm — moving a transaction between wallets", () => {
 
     await user.selectOptions(screen.getByLabelText("Wallet"), WALLET_B);
 
-    // Categories belong to a wallet (0008) and
-    // transactions_category_same_wallet refuses one from anywhere else, so
-    // carrying "Groceries" across would be a foreign-key violation at Save
-    // reported as an unhelpful "Could not save".
-    expect(screen.getByText("Choose category")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Groceries/ })).toBeNull();
+    // The exact inverse of the 0008 contract this test was written for. Then,
+    // each wallet held its own copy of the list, transactions_category_same_
+    // wallet refused the old row, and the form cleared the selection on every
+    // move — so this asserted "Choose category" appeared and Groceries had
+    // vanished. Under 0022 the category belongs to the household, both wallets
+    // share it, and clearing would throw away an answer that is still correct.
+    // Only a move to another HOUSEHOLD clears it now.
+    expect(screen.queryByText("Choose category")).toBeNull();
+    expect(screen.getByRole("button", { name: /Groceries/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   });
 
   it("offers the destination wallet's categories after the move", async () => {

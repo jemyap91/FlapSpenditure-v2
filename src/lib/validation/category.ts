@@ -174,10 +174,11 @@ export type CategoryIcon = (typeof CATEGORY_ICONS)[number];
  * migration rather than guessed, per this task's brief.
  */
 export const categoryInput = z.object({
-  /** A category belongs to a wallet (0008), not to a user — so both members
-   *  of a shared wallet see one list. Validated here rather than trusted,
-   *  since a Server Action is reachable by direct POST. */
-  wallet_id: z.uuid(),
+  /** A category belongs to a SPACE — a household (0022) — not to a wallet
+   *  and not to a user, so every wallet in the household draws on one list
+   *  and every member of it sees the same names. Validated here rather than
+   *  trusted, since a Server Action is reachable by direct POST. */
+  space_id: z.uuid(),
   name: z.string().trim().min(1, "Name is required").max(40, "Name is too long"),
   kind: z.enum(Constants.public.Enums.category_kind),
   color_slot: z.coerce.number().int().min(1).max(SLOT_COUNT).optional(),
@@ -196,10 +197,12 @@ export type CategoryInput = z.infer<typeof categoryInput>;
  * refused twice — here by the schema stripping them, and at the database by
  * a missing column privilege:
  *
- *   `wallet_id` — `categories_member` checks `is_wallet_member` with both
- *     `using` and `with check`, so a member of two wallets satisfies both
- *     while moving a row OUT of a shared wallet into a private one. Proven
- *     live before it was closed; regression-tested in supabase/tests/rls.sql.
+ *   `space_id` — `categories_space` checks `is_space_member` with both
+ *     `using` and `with check`, so a member of two spaces satisfies both
+ *     while moving a row OUT of one household into another. This is the
+ *     same shape as the wallet-scoped hole proven live and closed by 0018;
+ *     0022 carries the defence forward by keeping `space_id` out of the
+ *     column-scoped UPDATE grant. Regression-tested in supabase/tests/rls.sql.
  *   `kind` — flipping an expense category to income leaves every transaction
  *     already filed under it holding a category whose kind disagrees, and
  *     `updateTransaction` refuses that pairing — so one member's edit would

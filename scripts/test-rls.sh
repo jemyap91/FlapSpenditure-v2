@@ -6,7 +6,7 @@
 # transactions, so it exercises RLS for real instead of running as the
 # table-owning superuser (see supabase/tests/rls.sql for details).
 set -euo pipefail
-DB_URL="${DB_URL:-postgresql://postgres:postgres@127.0.0.1:54322/postgres}"
+DB_URL="${DB_URL:-postgresql://postgres:postgres@127.0.0.1:54332/postgres}"
 
 # This suite plays the attacker: it runs unfiltered bulk UPDATE/DELETE
 # statements expecting RLS to reduce them to zero affected rows. DB_URL is
@@ -23,5 +23,14 @@ DB_URL="${DB_URL:-postgresql://postgres:postgres@127.0.0.1:54322/postgres}"
 require_loopback "$DB_URL" DB_URL
 
 npx supabase db reset --no-seed >/dev/null
+
+# `db reset` restarts containers after migrating, and the database can still
+# be coming back when the very next psql connects -- observed as "server
+# closed the connection unexpectedly" and, once, a half-initialised schema.
+# Wait for it rather than racing it.
+for _ in $(seq 1 60); do
+  psql "$DB_URL" -tAc 'select 1' >/dev/null 2>&1 && break
+  sleep 1
+done
 psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/rls.sql
 echo "RLS tests passed"

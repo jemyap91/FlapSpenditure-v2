@@ -15,7 +15,12 @@ import { appendDigit, clampAmountInput, minorUnitFor, parseAmountInput } from "@
 import { parseOrigin } from "@/lib/origin";
 import { todayLocalDate } from "@/lib/today";
 
-type Wallet = { id: string; name: string; currency_code: string };
+// `space_id` is what decides which categories are legal for this wallet
+// (0022). Under 0008 that was the wallet id itself; a household with nine
+// wallets therefore had nine category lists, which is the duplication 0022
+// removed. Carried on the wallet rather than passed separately so the
+// category filter stays correct when the wallet chip changes after mount.
+type Wallet = { id: string; name: string; currency_code: string; space_id: string };
 type Kind = "expense" | "income" | "transfer";
 
 /**
@@ -25,7 +30,7 @@ type Kind = "expense" | "income" | "transfer";
  * (src/lib/validation/transaction.ts) has no `wallet_id`/`kind` fields at
  * all — neither is editable, so neither is carried here either. `walletId`
  * IS carried, but only to resolve this row's fixed wallet/currency for
- * display and to filter `categories` down to the right wallet+kind — it is
+ * display and to resolve its household for the category list — it is
  * never sent back to `updateTransaction`, which derives the real one from
  * the database row itself.
  */
@@ -335,9 +340,13 @@ export function TransactionForm(
   // type-safety net, not a reachable branch.
   const wallet = wallets.find((w) => w.id === walletId) ?? wallets[0]!;
   const toWallet = wallets.find((w) => w.id === toWalletId);
-  // Categories belong to a wallet (0008), and the wallet chip can change
-  // after mount — so filter on every render rather than snapshotting.
-  const walletCategories = categories.filter((c) => c.wallet_id === walletId);
+  // Categories belong to a household (0022), and the wallet chip can change
+  // after mount — so filter on every render rather than snapshotting. For a
+  // user with one household this keeps every category, which is the point:
+  // switching wallets no longer changes what the picker offers, and a
+  // category created on one wallet's screen is immediately usable on
+  // another's. It narrows only for a user who belongs to two households.
+  const spaceCategories = categories.filter((c) => c.space_id === wallet.space_id);
   const canTransfer = wallets.length >= 2;
   const crossCurrency =
     kind === "transfer" && !!toWallet && toWallet.currency_code !== wallet.currency_code;
@@ -400,28 +409,31 @@ export function TransactionForm(
    * amount, while an edit's candidate wallets are all the SAME currency by
    * construction, so the amount is still meaningful and must survive.
    *
-   * The category cannot. Categories belong to a wallet (0008), and
-   * `transactions_category_same_wallet` refuses a category from anywhere
-   * else — so carrying the old one across would produce a foreign-key
-   * violation at Save, reported as an unhelpful "Could not save". Clearing
-   * it makes the form state honest about what the user now has to re-pick.
+   * The category usually can too, now. Under 0008 it could not: each wallet
+   * held its own copy of the list, so the destination's "Groceries" was a
+   * different row with a different id and `transactions_category_same_wallet`
+   * refused the old one — this function therefore cleared it on EVERY move.
+   * Under 0022 a category belongs to the household, so a move between two of
+   * its wallets keeps it valid, and clearing would throw away a correct answer
+   * and make the user re-pick it for no reason. Only a move to another
+   * household still invalidates it, which is the one case left here.
    */
   function handleEditWalletChange(nextWalletId: string) {
+    const nextWallet = wallets.find((w) => w.id === nextWalletId);
     setWalletId(nextWalletId);
-    setCategory(null);
+    if (!nextWallet || nextWallet.space_id !== wallet.space_id) setCategory(null);
   }
 
   function handleWalletChange(next: string) {
     const nextWallet = wallets.find((w) => w.id === next);
     setWalletId(next);
     setError(null);
-    // A category belongs to the wallet it was created in (0008), and the
-    // composite FK `transactions_category_same_wallet` means a transaction
-    // can never reference a category from a different wallet — the
-    // database would reject it. Clearing here is what stops the user from
-    // ever getting that far: a category chosen under the OLD wallet must
-    // not silently carry over to the new one.
-    setCategory(null);
+    // A category belongs to the HOUSEHOLD (0022), so switching between two of
+    // its wallets leaves the chosen one perfectly valid and it is kept. Only
+    // a switch to a wallet in another household invalidates it — there
+    // `transactions_category_same_space` would refuse the save, and clearing
+    // here is what stops the user from ever getting that far.
+    if (!nextWallet || nextWallet.space_id !== wallet.space_id) setCategory(null);
     // The wallet just changed currency (possibly to a different
     // `minorUnit`) — an amount already typed under the OLD currency's
     // precision can be over-precise for the new one (e.g. "1.505" typed
@@ -880,11 +892,11 @@ export function TransactionForm(
 
       {kind !== "transfer" && (
         <CategoryPicker
-          categories={walletCategories}
+          categories={spaceCategories}
           kind={kind}
           value={category?.id ?? null}
           onChange={handleCategoryChange}
-          walletId={walletId}
+          spaceId={wallet.space_id}
         />
       )}
 

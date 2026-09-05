@@ -88,11 +88,28 @@ async function insertWallet(formData: FormData): Promise<WalletState | { ok: tru
     return { error: "Starting balance is not a valid amount", field: "starting_balance" };
   }
 
-  // add_owner_as_member() (supabase/migrations/0002_wallets_categories.sql)
-  // fires on this INSERT and creates the wallet_members(owner) row itself —
-  // do not insert it here.
+  // The caller's own household (0022). Sent because wallets.space_id is NOT
+  // NULL, but NOT trusted: set_wallet_space is a BEFORE INSERT trigger that
+  // overwrites this with the space derived from owner_id regardless of what
+  // arrives, so a direct POST naming another household's id cannot file a
+  // wallet there. Reading it here keeps the insert type-correct and the
+  // failure mode honest — an account with no household at all is a broken
+  // signup, not something to paper over.
+  const { data: ownSpace } = await supabase
+    .from("space_members")
+    .select("space_id")
+    .eq("user_id", user.id)
+    .limit(1)
+    .maybeSingle();
+  if (!ownSpace) return { error: "Your account has no household yet. Please sign in again." };
+
+  // add_owner_as_member() (supabase/migrations/0002_wallets_categories.sql,
+  // rewritten by 0022) fires on this INSERT and creates the
+  // wallet_members(owner) row — and its space_members row — itself; do not
+  // insert either here.
   const { error } = await supabase.from("wallets").insert({
     owner_id: user.id,
+    space_id: ownSpace.space_id,
     name,
     kind,
     currency_code,

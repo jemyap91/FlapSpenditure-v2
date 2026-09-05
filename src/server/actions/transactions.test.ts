@@ -23,6 +23,7 @@ import { createTransaction, updateTransaction, updateTransfer } from "./transact
 
 const TXN_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const OWNER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const SPACE_ID = "88888888-8888-4888-8888-888888888888";
 const WALLET_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const CATEGORY_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const TRANSFER_ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
@@ -118,7 +119,7 @@ const {
     } | null,
   },
   walletLookupResult: {
-    data: null as { archived_at: string | null; currency_code: string } | null,
+    data: null as { archived_at: string | null; currency_code: string; space_id?: string } | null,
   },
   categoryResult: { data: null as { kind: string; archived_at: string | null } | null },
   // updateTransfer's pre-flight lookup — the transfer's own legs, keyed by
@@ -286,7 +287,7 @@ beforeEach(() => {
   // a category" path, and a test wanting the "KEEPS its own" path has to say
   // so explicitly.
   txnLookupResult.data = { wallet_id: WALLET_ID, kind: "expense", category_id: ROW_CATEGORY_ID };
-  walletLookupResult.data = { archived_at: null, currency_code: "SGD" };
+  walletLookupResult.data = { archived_at: null, currency_code: "SGD", space_id: SPACE_ID };
   categoryResult.data = { kind: "expense", archived_at: null };
   legsLookupResult.data = [
     { wallet_id: WALLET_ID, amount_minor: -4250, currency_code: "SGD" },
@@ -599,15 +600,19 @@ describe("updateTransaction", () => {
    * identical filter explains what's actually at stake: without it, a
    * category id from a DIFFERENT wallet that happens to satisfy the kind
    * check reaches the UPDATE and dies on the composite FK
-   * `transactions_category_same_wallet`, surfacing as the generic "Could
+   * `transactions_category_same_space`, surfacing as the generic "Could
    * not save transaction. Please try again." instead of this readable
    * validation error. Mirrors recurring.test.ts's "scopes the category
-   * lookup to the rule's own wallet_id" test.
+   * lookup to the rule's own household" test.
+   *
+   * The scope is the HOUSEHOLD since 0022, not the wallet: a category is no
+   * longer per-wallet, so filtering by wallet_id here would find nothing at
+   * all and reject every legitimate edit.
    */
-  it("scopes the category lookup to the transaction's own wallet_id", async () => {
+  it("scopes the category lookup to the transaction's own household", async () => {
     await updateTransaction(edit());
 
-    expect(eqSpy).toHaveBeenCalledWith("categories", "wallet_id", WALLET_ID);
+    expect(eqSpy).toHaveBeenCalledWith("categories", "space_id", SPACE_ID);
   });
 
   /**
@@ -817,7 +822,7 @@ describe("updateTransaction", () => {
   });
 
   it("rejects a fraction the currency cannot hold, rather than truncating it", async () => {
-    walletLookupResult.data = { archived_at: null, currency_code: "JPY" };
+    walletLookupResult.data = { archived_at: null, currency_code: "JPY", space_id: SPACE_ID };
 
     const result = await updateTransaction(edit({ amount: "12.999" }));
 
@@ -1252,7 +1257,7 @@ describe("updateTransaction — moving between wallets", () => {
       currency_code: "USD",
       recurring_id: null,
     };
-    walletLookupResult.data = { archived_at: null, currency_code: "USD" };
+    walletLookupResult.data = { archived_at: null, currency_code: "USD", space_id: SPACE_ID };
     categoryResult.data = { kind: "expense", archived_at: null };
     updateResult.data = [{ id: TXN_ID }];
     updateResult.error = null;
@@ -1274,7 +1279,7 @@ describe("updateTransaction — moving between wallets", () => {
   });
 
   it("refuses a move to a wallet in a different currency", async () => {
-    walletLookupResult.data = { archived_at: null, currency_code: "JPY" };
+    walletLookupResult.data = { archived_at: null, currency_code: "JPY", space_id: SPACE_ID };
     const result = await updateTransaction(
       edit({ wallet_id: OTHER_WALLET, category_id: OTHER_CATEGORY }),
     );
@@ -1304,11 +1309,20 @@ describe("updateTransaction — moving between wallets", () => {
     });
   });
 
-  it("refuses a move that keeps the old wallet's category", async () => {
+  it("keeps the category on a move between wallets of one household", async () => {
+    // The exact inverse of what 0008 required. Each wallet then held its own
+    // copy of the list, so the destination's "Groceries" was a different row
+    // and carrying the old id across violated
+    // transactions_category_same_wallet — this action refused it by hand with
+    // "Choose a category from the wallet you're moving this to". Under 0022
+    // the category belongs to the household and survives the move, so that
+    // refusal would now reject a legitimate edit. What still refuses a
+    // genuinely invalid pairing is the category lookup itself, scoped to the
+    // destination's space, plus transactions_category_same_space beneath it.
     const result = await updateTransaction(
       edit({ wallet_id: OTHER_WALLET, category_id: CATEGORY_ID }),
     );
-    expect(result).toEqual({ error: "Choose a category from the wallet you're moving this to" });
+    expect(result).toEqual({ ok: true });
   });
 
   it("allows a move that clears the category entirely", async () => {

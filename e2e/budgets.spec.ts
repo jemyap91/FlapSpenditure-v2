@@ -324,7 +324,7 @@ test("a budget counts expenses only, in its own wallet set, and ignores income a
   // transfer, which is false for the transfer half:
   //   - the ALL-WALLETS OVERALL CAP figure catches INCOME (and only
   //     income): income is blocked from Groceries by category matching,
-  //     but the overall cap's `e.category_key IS NULL` branch sums
+  //     but the overall cap's `e.category_id IS NULL` branch sums
   //     spending regardless of category, so only the kind filter (spend
   //     CTE) stands between a $500 Salary deposit and this row's sum. It
   //     CANNOT catch the transfer: `create_transfer` writes `-amount_out`

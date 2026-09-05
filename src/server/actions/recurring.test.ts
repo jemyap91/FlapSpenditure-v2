@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createRule, updateRule, archiveRule, recordOccurrence, skipOccurrence, unskipOccurrence } from "./recurring";
 
 const OWNER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const SPACE_ID = "88888888-8888-4888-8888-888888888888";
 const WALLET_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const OTHER_WALLET_ID = "cccccccc-cccc-4ccc-8ccc-ccccccccc999";
 const CATEGORY_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
@@ -96,7 +97,7 @@ const {
   // lookup itself failing (a distinct scenario from "found but archived" —
   // fix round 1, Minor finding: the production code used to conflate them).
   walletLookupResult: {
-    data: null as { archived_at: string | null; currency_code: string } | null,
+    data: null as { archived_at: string | null; currency_code: string; space_id?: string } | null,
   },
   categoryResult: { data: null as { kind: string; archived_at: string | null } | null },
   fromSpy: vi.fn(),
@@ -236,7 +237,7 @@ beforeEach(() => {
     ends_on: null,
     archived_at: null,
   };
-  walletLookupResult.data = { archived_at: null, currency_code: "SGD" };
+  walletLookupResult.data = { archived_at: null, currency_code: "SGD", space_id: SPACE_ID };
   // Matches `form()`'s default `kind: "expense"` below, so every test that
   // doesn't care about the category check can ignore it entirely.
   categoryResult.data = { kind: "expense", archived_at: null };
@@ -315,7 +316,7 @@ describe("createRule", () => {
     // reach the precision check at all — otherwise `checkWalletCurrency`
     // (checked first) would refuse the mismatch before the amount is even
     // parsed.
-    walletLookupResult.data = { archived_at: null, currency_code: "JPY" };
+    walletLookupResult.data = { archived_at: null, currency_code: "JPY", space_id: SPACE_ID };
 
     const result = await createRule({}, form({ currency_code: "JPY", amount: "12.999" }));
 
@@ -366,7 +367,7 @@ describe("createRule", () => {
    * wallet's own code. Caught here, at Create, rather than only at Record.
    */
   it("rejects a rule whose currency doesn't match the wallet's currency", async () => {
-    walletLookupResult.data = { archived_at: null, currency_code: "USD" };
+    walletLookupResult.data = { archived_at: null, currency_code: "USD", space_id: SPACE_ID };
 
     const result = await createRule({}, form({ currency_code: "SGD" }));
 
@@ -496,7 +497,7 @@ describe("updateRule", () => {
    * reasoning.
    */
   it("rejects an edit whose currency doesn't match the wallet's currency", async () => {
-    walletLookupResult.data = { archived_at: null, currency_code: "USD" };
+    walletLookupResult.data = { archived_at: null, currency_code: "USD", space_id: SPACE_ID };
 
     const result = await updateRule(RULE_ID, {}, form({ currency_code: "SGD" }));
 
@@ -556,13 +557,19 @@ describe("updateRule", () => {
    * Fix round 1: now asserted via the general `eqSpy(table, col, val)`
    * rather than a `categories`-only spy — see this file's module comment.
    */
-  it("scopes the category lookup to the rule's own wallet_id, not the posted one", async () => {
+  it("scopes the category lookup to the rule's own wallet, not the posted one", async () => {
     ruleLookupResult.data = { wallet_id: OTHER_WALLET_ID };
 
     await updateRule(RULE_ID, {}, form({ wallet_id: WALLET_ID }));
 
-    expect(eqSpy).toHaveBeenCalledWith("categories", "wallet_id", OTHER_WALLET_ID);
-    expect(eqSpy).not.toHaveBeenCalledWith("categories", "wallet_id", WALLET_ID);
+    // Since 0022 a category belongs to the HOUSEHOLD, so checkCategory
+    // resolves the wallet's space first and filters categories by that. The
+    // property this test exists for is unchanged and is now observable one
+    // step earlier: the wallet it resolves must be the rule's own, never the
+    // one the caller posted.
+    expect(eqSpy).toHaveBeenCalledWith("wallets", "id", OTHER_WALLET_ID);
+    expect(eqSpy).not.toHaveBeenCalledWith("wallets", "id", WALLET_ID);
+    expect(eqSpy).toHaveBeenCalledWith("categories", "space_id", SPACE_ID);
   });
 
   /**
@@ -729,13 +736,14 @@ describe("recordOccurrence", () => {
    * 48/48, because every other test's rule happens to live on `WALLET_ID`
    * anyway. Mirrors `updateRule`'s identical test.
    */
-  it("scopes the category lookup to the rule's own wallet_id, not a hardcoded one", async () => {
+  it("scopes the category lookup to the rule's own wallet, not a hardcoded one", async () => {
     ruleLookupResult.data = { ...ruleLookupResult.data!, wallet_id: OTHER_WALLET_ID };
 
     await recordOccurrence(RULE_ID, "2026-07-01");
 
-    expect(eqSpy).toHaveBeenCalledWith("categories", "wallet_id", OTHER_WALLET_ID);
-    expect(eqSpy).not.toHaveBeenCalledWith("categories", "wallet_id", WALLET_ID);
+    expect(eqSpy).toHaveBeenCalledWith("wallets", "id", OTHER_WALLET_ID);
+    expect(eqSpy).not.toHaveBeenCalledWith("wallets", "id", WALLET_ID);
+    expect(eqSpy).toHaveBeenCalledWith("categories", "space_id", SPACE_ID);
   });
 
   it("rejects a shape-invalid occurrence date", async () => {
@@ -829,7 +837,7 @@ describe("recordOccurrence", () => {
    * would re-denominate the amount and misprice it by orders of magnitude.
    */
   it("refuses to record when the wallet's currency no longer matches the rule's", async () => {
-    walletLookupResult.data = { archived_at: null, currency_code: "USD" };
+    walletLookupResult.data = { archived_at: null, currency_code: "USD", space_id: SPACE_ID };
 
     const res = await recordOccurrence(RULE_ID, "2026-07-01");
 

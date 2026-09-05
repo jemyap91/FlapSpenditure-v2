@@ -155,7 +155,7 @@ export function RecurringList({
   editActions,
 }: {
   rules: RecurringRuleRow[];
-  wallets?: { id: string; name: string; currency_code: string }[];
+  wallets?: { id: string; name: string; currency_code: string; space_id: string }[];
   categories?: Category[];
   editActions?: Record<string, (prev: RecurringState, formData: FormData) => Promise<RecurringState>>;
 }) {

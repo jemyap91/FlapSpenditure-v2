@@ -16,42 +16,45 @@ vi.mock("@/server/actions/categories", () => ({
   createCategory: vi.fn(),
 }));
 
-const WALLET_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const WALLET_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const SPACE_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const SPACE_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
-const cat = (over: Partial<Category> & Pick<Category, "id" | "name" | "wallet_id">): Category => ({
+const cat = (over: Partial<Category> & Pick<Category, "id" | "name" | "space_id">): Category => ({
   kind: "expense",
   color_slot: 1,
   icon: "circle",
   ...over,
 });
 
-const groceriesA = cat({ id: "cat-a", name: "Groceries", wallet_id: WALLET_A });
-const groceriesB = cat({ id: "cat-b", name: "Groceries", wallet_id: WALLET_B });
+const groceriesA = cat({ id: "cat-a", name: "Groceries", space_id: SPACE_A });
+const groceriesB = cat({ id: "cat-b", name: "Groceries", space_id: SPACE_B });
 
-/** What the fixed `createCategory` returns for an inline "Vet" created
- *  under wallet A: `wallet_id` is part of the row (it is selected by the
- *  action), which is what lets the picker tell the two wallets apart. */
-const vetInWalletA = {
+/** What `createCategory` returns for an inline "Vet" created in household A:
+ *  `space_id` is part of the row (it is selected by the action), which is what
+ *  lets the picker tell two households apart. Under 0008 this same test was
+ *  about telling two WALLETS apart, which is the distinction space scoping
+ *  removed — switching wallets inside one household must NOT filter anything
+ *  out now, and does not, because every wallet there shares this id. */
+const vetInSpaceA = {
   id: "vet-a",
   name: "Vet",
   kind: "expense" as const,
   color_slot: 3,
   icon: "circle",
-  wallet_id: WALLET_A,
+  space_id: SPACE_A,
 };
 
 beforeEach(() => {
   vi.mocked(createCategory).mockReset();
-  vi.mocked(createCategory).mockResolvedValue({ category: vetInWalletA });
+  vi.mocked(createCategory).mockResolvedValue({ category: vetInSpaceA });
 });
 
 describe("CategoryPicker — inline-created categories are wallet-scoped", () => {
   /**
    * Regression test for the cross-wallet leak that produced an UNSAVABLE
-   * transaction: inline-create "Vet" under wallet A, switch the Wallet
-   * chip to wallet B (TransactionForm re-renders this same mounted picker
-   * with a new `walletId` and B's own category list), and "Vet" was still
+   * transaction: inline-create "Vet" in household A, switch the Wallet
+   * chip to household B (TransactionForm re-renders this same mounted picker
+   * with a new `spaceId` and B's own category list), and "Vet" was still
    * offered. Selecting it and saving got as far as the INSERT, where
    * 0008's composite FK `transactions_category_same_wallet` rejected it —
    * surfacing only as "Could not save transaction. Please try again.",
@@ -72,26 +75,26 @@ describe("CategoryPicker — inline-created categories are wallet-scoped", () =>
         kind="expense"
         value={null}
         onChange={onChange}
-        walletId={WALLET_A}
+        spaceId={SPACE_A}
       />,
     );
 
     await user.type(screen.getByLabelText(/search categories/i), "Vet");
     await user.click(screen.getByRole("button", { name: /^Create/ }));
 
-    // Positive control: it IS offered (and selected) under wallet A.
+    // Positive control: it IS offered (and selected) in household A.
     expect(await screen.findByRole("button", { name: "Vet" })).toBeInTheDocument();
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ id: "vet-a" }));
 
     // TransactionForm's Wallet chip changed: same mounted picker, new
-    // walletId, and only wallet B's own categories in the prop.
+    // spaceId, and only household B's own categories in the prop.
     rerender(
       <CategoryPicker
         categories={[groceriesB]}
         kind="expense"
         value={null}
         onChange={onChange}
-        walletId={WALLET_B}
+        spaceId={SPACE_B}
       />,
     );
 
@@ -109,7 +112,7 @@ describe("CategoryPicker — inline-created categories are wallet-scoped", () =>
         kind="expense"
         value={null}
         onChange={onChange}
-        walletId={WALLET_A}
+        spaceId={SPACE_A}
       />,
     );
 
@@ -123,7 +126,7 @@ describe("CategoryPicker — inline-created categories are wallet-scoped", () =>
         kind="expense"
         value={null}
         onChange={onChange}
-        walletId={WALLET_B}
+        spaceId={SPACE_B}
       />,
     );
     rerender(
@@ -132,7 +135,7 @@ describe("CategoryPicker — inline-created categories are wallet-scoped", () =>
         kind="expense"
         value={null}
         onChange={onChange}
-        walletId={WALLET_A}
+        spaceId={SPACE_A}
       />,
     );
 

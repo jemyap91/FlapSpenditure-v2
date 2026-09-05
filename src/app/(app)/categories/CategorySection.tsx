@@ -37,12 +37,12 @@ export function CategorySection({
   kind,
   label,
   initial,
-  walletId,
+  spaceId,
 }: {
   kind: "expense" | "income";
   label: string;
   initial: Category[];
-  walletId: string;
+  spaceId: string;
 }) {
   const [items, setItems] = useState(initial);
   const [name, setName] = useState("");
@@ -108,7 +108,7 @@ export function CategorySection({
     }
     setError(null);
     startCreate(async () => {
-      const res = await createCategory({ name: trimmed, kind, color_slot: colorSlot, icon, wallet_id: walletId });
+      const res = await createCategory({ name: trimmed, kind, color_slot: colorSlot, icon, space_id: spaceId });
       if ("error" in res) {
         setError(res.error);
         return;

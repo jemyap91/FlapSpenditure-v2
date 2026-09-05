@@ -223,7 +223,7 @@ export default async function EditTransactionPage({
       // `archived_at` (task 8, item 2): `updateTransfer` requires BOTH legs'
       // wallets to be active, so both are checked here rather than only the
       // leg the user happened to tap.
-      .select("id, name, currency_code, archived_at")
+      .select("id, name, currency_code, archived_at, space_id")
       .in("id", [outLeg.wallet_id, inLeg.wallet_id]);
     if (legWalletsError) throw new Error("Failed to load wallets");
 
@@ -285,7 +285,7 @@ export default async function EditTransactionPage({
     // `archived_at` (task 8, item 2) — see this file's doc comment. Without
     // it this page rendered a fully interactive form whose Save
     // `updateTransaction` was always going to refuse.
-    .select("id, name, currency_code, archived_at")
+    .select("id, name, currency_code, archived_at, space_id")
     .eq("id", row.wallet_id)
     .maybeSingle();
   if (walletError) throw new Error("Failed to load wallet");
@@ -320,7 +320,7 @@ export default async function EditTransactionPage({
     ? { data: [wallet], error: null }
     : await supabase
         .from("wallets")
-        .select("id, name, currency_code, archived_at")
+        .select("id, name, currency_code, archived_at, space_id")
         .eq("currency_code", row.currency_code)
         .is("archived_at", null);
   if (candidatesError) throw new Error("Failed to load wallets");
@@ -334,16 +334,16 @@ export default async function EditTransactionPage({
 
   const { data: activeCategories, error: categoriesError } = await supabase
     .from("categories")
-    .select("id, name, kind, color_slot, icon, wallet_id")
-    // Every candidate wallet's categories, not just the current one's:
-    // changing the wallet re-files the transaction, and categories belong to
-    // a wallet (0008), so the picker has to be able to offer the
-    // destination's. TransactionForm filters this list by the selected
-    // wallet on every render.
-    .in(
-      "wallet_id",
-      candidates.map((c) => c.id),
-    )
+    .select("id, name, kind, color_slot, icon, space_id")
+    // Every candidate wallet's HOUSEHOLD, not each wallet's own copy of a
+    // list. Under 0008 this had to enumerate wallet ids because each wallet
+    // carried its own sixteen rows; under 0022 the candidates almost always
+    // share one space, so this collapses to a single id and the picker
+    // offers the same categories no matter which wallet is selected — which
+    // is the whole point of the change. It stays an `.in` rather than an
+    // `.eq` because a user who belongs to two households can hold
+    // same-currency wallets in both.
+    .in("space_id", [...new Set(candidates.map((c) => c.space_id))])
     .is("archived_at", null);
   if (categoriesError) throw new Error("Failed to load categories");
 
@@ -357,7 +357,7 @@ export default async function EditTransactionPage({
   if (row.category_id && !categories.some((c) => c.id === row.category_id)) {
     const { data: currentCategory, error: currentCategoryError } = await supabase
       .from("categories")
-      .select("id, name, kind, color_slot, icon, wallet_id")
+      .select("id, name, kind, color_slot, icon, space_id")
       .eq("id", row.category_id)
       .maybeSingle();
     if (currentCategoryError) throw new Error("Failed to load category");
