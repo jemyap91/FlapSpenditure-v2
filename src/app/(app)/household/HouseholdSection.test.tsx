@@ -44,6 +44,15 @@ describe("HouseholdSection as the owner", () => {
     expect(screen.getByRole("button", { name: "Remove bob from the household" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Remove alice from the household" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Leave household" })).not.toBeInTheDocument();
+
+    // A list named "members" must contain only members — the pending
+    // invitee lives in its own list right after it.
+    expect(
+      within(screen.getByRole("list", { name: "alice household members" })).getAllByRole("listitem"),
+    ).toHaveLength(2);
+    const invitations = within(screen.getByRole("list", { name: "alice household invitations" }));
+    expect(invitations.getAllByRole("listitem")).toHaveLength(1);
+    expect(invitations.getByText("pat@x.io")).toBeInTheDocument();
   });
 
   it("asks before removing, and says what goes with them", async () => {

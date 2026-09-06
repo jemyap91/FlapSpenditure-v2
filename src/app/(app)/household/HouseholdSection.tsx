@@ -103,21 +103,26 @@ export function HouseholdSection({
             </span>
           </li>
         ))}
-        {isOwner && pendingInvites.map((inv) => (
-          <li key={inv.id} className="flex items-center justify-between rounded-lg border px-3 py-2 text-sm"
-              style={{ borderColor: "var(--grid)", color: "var(--ink-2)" }}>
-            <span>{inv.invited_email}</span>
-            <span className="flex items-center gap-3 text-xs">
-              Pending
-              <button type="button" disabled={busy} onClick={() => revoke(inv.id)}
-                      aria-label={`Revoke invitation to ${inv.invited_email}`}
-                      className={`underline disabled:opacity-60 ${FOCUS_RING}`}>
-                Revoke
-              </button>
-            </span>
-          </li>
-        ))}
       </ul>
+
+      {isOwner && pendingInvites.length > 0 && (
+        <ul className="mb-4 flex flex-col gap-2" aria-label={`${space.name} invitations`}>
+          {pendingInvites.map((inv) => (
+            <li key={inv.id} className="flex items-center justify-between rounded-lg border px-3 py-2 text-sm"
+                style={{ borderColor: "var(--grid)", color: "var(--ink-2)" }}>
+              <span>{inv.invited_email}</span>
+              <span className="flex items-center gap-3 text-xs">
+                Pending
+                <button type="button" disabled={busy} onClick={() => revoke(inv.id)}
+                        aria-label={`Revoke invitation to ${inv.invited_email}`}
+                        className={`underline disabled:opacity-60 ${FOCUS_RING}`}>
+                  Revoke
+                </button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
 
       {isOwner ? (
         <div className="mb-6"><InviteByEmailForm action={inviteToHousehold.bind(null, space.id)} /></div>

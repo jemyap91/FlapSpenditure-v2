@@ -98,18 +98,23 @@ export default async function HouseholdPage() {
       </p>
 
       <div className="flex flex-col gap-8">
-        {spaces.map((space) => (
-          <HouseholdSection
-            key={space.id}
-            space={space}
-            currentUserId={profile.id}
-            members={membersBySpace.get(space.id) ?? []}
-            wallets={walletsBySpace.get(space.id) ?? []}
-            access={(access ?? []) as Access[]}
-            pendingInvites={invitesBySpace.get(space.id) ?? []}
-            single={single}
-          />
-        ))}
+        {spaces.map((space) => {
+          const spaceWallets = walletsBySpace.get(space.id) ?? [];
+          const walletIds = new Set(spaceWallets.map((w) => w.id));
+          const spaceAccess = ((access ?? []) as Access[]).filter((a) => walletIds.has(a.wallet_id));
+          return (
+            <HouseholdSection
+              key={space.id}
+              space={space}
+              currentUserId={profile.id}
+              members={membersBySpace.get(space.id) ?? []}
+              wallets={spaceWallets}
+              access={spaceAccess}
+              pendingInvites={invitesBySpace.get(space.id) ?? []}
+              single={single}
+            />
+          );
+        })}
       </div>
     </div>
   );

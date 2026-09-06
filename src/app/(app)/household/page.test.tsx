@@ -132,4 +132,37 @@ describe("HouseholdPage", () => {
     expect(carolMembers[0]).toHaveTextContent("carol");
     expect(carolMembers[1]).toHaveTextContent("(you)");
   });
+
+  it("scopes each section's sharing grid to that household's own wallets", async () => {
+    spacesData.push({ id: "s1", name: "alice household" }, { id: "s2", name: "carol household" });
+    membersData.push(
+      { space_id: "s1", user_id: "u-alice", display_name: "alice", role: "owner" },
+      { space_id: "s1", user_id: "u-bob", display_name: "bob", role: "member" },
+      { space_id: "s2", user_id: "u-carol", display_name: "carol", role: "owner" },
+      { space_id: "s2", user_id: "u-alice", display_name: "alice", role: "member" },
+    );
+    walletsData.push(
+      { id: "w1", name: "Everyday", owner_id: "u-alice", shared_with_household: true, archived_at: null, space_id: "s1" },
+      { id: "w9", name: "Carol shared", owner_id: "u-carol", shared_with_household: true, archived_at: null, space_id: "s2" },
+    );
+    // get_wallet_sharing() returns rows for every wallet the caller can see
+    // across ALL of their households in one call — the page must filter
+    // each section's slice down to that household's own wallet ids before
+    // handing it to HouseholdSection.
+    sharingData.push(
+      { wallet_id: "w1", user_id: "u-bob", via: "direct" },
+      { wallet_id: "w9", user_id: "u-alice", via: "direct" },
+    );
+
+    render(await HouseholdPage());
+
+    const aliceSection = screen.getByRole("heading", { level: 2, name: "alice household" }).closest("section")!;
+    const carolSection = screen.getByRole("heading", { level: 2, name: "carol household" }).closest("section")!;
+
+    expect(within(aliceSection).getByText("bob · direct")).toBeInTheDocument();
+    expect(within(aliceSection).queryByText("alice · direct")).not.toBeInTheDocument();
+
+    expect(within(carolSection).getByText("alice · direct")).toBeInTheDocument();
+    expect(within(carolSection).queryByText("bob · direct")).not.toBeInTheDocument();
+  });
 });
