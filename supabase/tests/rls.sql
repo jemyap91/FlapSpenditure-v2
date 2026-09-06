@@ -4629,8 +4629,12 @@ begin;
       'LEAK: a removed member can still see the household-shared wallet';
     assert (select count(*) from public.transactions where wallet_id = 'b5b50000-0000-4000-8000-00000000000a') = 0,
       'LEAK: a removed member can still read the household''s transactions';
-    assert (select count(*) from public.categories where space_id =
-             (select space_id from public.space_members where user_id = 'b5b50000-0000-4000-8000-000000000001' limit 1)) = 0,
+    -- Every household seeds a 'Groceries'. hh-new now belongs to exactly
+    -- one household (their own), so exactly one is visible; a leak of the
+    -- old household's category names would show a second. Written this way
+    -- because a `space_id = (select … from space_members where user_id =
+    -- <owner>)` comparison is NULL under RLS for hh-new and can never fail.
+    assert (select count(*) from public.categories where name = 'Groceries' and kind = 'expense') = 1,
       'LEAK: a removed member can still read the old household''s category names';
     assert (select count(*) from public.get_space_members() where user_id = 'b5b50000-0000-4000-8000-000000000003') = 1,
       'LEAVE BROKEN: the removed member does not own a household of their own';
