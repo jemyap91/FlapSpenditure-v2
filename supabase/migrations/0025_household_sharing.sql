@@ -191,3 +191,131 @@ begin
   new.space_id := v_space;
   return new;
 end $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- H. Household invitations
+-- ─────────────────────────────────────────────────────────────────────────
+-- Mirrors wallet_invites (0009) one level up. wallet_invites is untouched:
+-- an emailed wallet invite still means "join this wallet's household, and
+-- get this one wallet directly", which is exactly what acceptance does.
+create table space_invites (
+  id            uuid primary key default gen_random_uuid(),
+  space_id      uuid not null references spaces(id) on delete cascade,
+  invited_email text not null check (length(btrim(invited_email)) between 3 and 320),
+  invited_by    uuid not null references auth.users(id) on delete cascade,
+  status        invite_status not null default 'pending',
+  created_at    timestamptz not null default now(),
+  responded_at  timestamptz
+);
+create unique index space_invites_one_pending
+  on space_invites (space_id, lower(btrim(invited_email))) where status = 'pending';
+
+alter table space_invites enable row level security;
+revoke all on space_invites from anon, authenticated;
+grant select on space_invites to authenticated;
+-- Reads only; every write is a function below.
+create policy space_invites_owner_select on space_invites
+  for select to authenticated
+  using (exists (select 1 from space_members sm
+                  where sm.space_id = space_invites.space_id
+                    and sm.user_id = auth.uid() and sm.role = 'owner'));
+create policy space_invites_invitee_select on space_invites
+  for select to authenticated
+  using (lower(btrim(invited_email)) = lower(btrim(auth.jwt() ->> 'email')));
+
+create function is_space_owner(s uuid) returns boolean
+  language sql stable security definer set search_path = '' as $$
+  select exists (select 1 from public.space_members
+                  where space_id = s and user_id = auth.uid() and role = 'owner')
+$$;
+
+create function invite_to_space(p_space uuid, p_email text) returns uuid
+  language plpgsql security definer set search_path = '' as $$
+declare
+  v_email text := lower(btrim(p_email));
+  v_id uuid;
+begin
+  if not public.is_space_owner(p_space) then
+    raise exception 'only the household owner can invite people';
+  end if;
+  if exists (select 1 from public.space_members sm
+               join auth.users u on u.id = sm.user_id
+              where sm.space_id = p_space and lower(u.email) = v_email) then
+    raise exception 'that person is already in this household';
+  end if;
+  insert into public.space_invites (space_id, invited_email, invited_by)
+  values (p_space, v_email, auth.uid())
+  returning id into v_id;
+  return v_id;
+end $$;
+
+create function revoke_space_invite(p_invite uuid) returns void
+  language plpgsql security definer set search_path = '' as $$
+declare v_space uuid;
+begin
+  select space_id into v_space from public.space_invites where id = p_invite and status = 'pending';
+  if v_space is null or not public.is_space_owner(v_space) then
+    raise exception 'that invitation is not yours to withdraw';
+  end if;
+  delete from public.space_invites where id = p_invite;
+end $$;
+
+create function accept_space_invite(p_invite uuid) returns void
+  language plpgsql security definer set search_path = '' as $$
+declare
+  inv public.space_invites;
+  caller_email text := lower(btrim(auth.jwt() ->> 'email'));
+begin
+  select * into inv from public.space_invites where id = p_invite for update;
+  if inv is null or inv.status <> 'pending' then
+    raise exception 'invite is not open';
+  end if;
+  if caller_email is null or lower(btrim(inv.invited_email)) <> caller_email then
+    raise exception 'invite is addressed to someone else';
+  end if;
+  -- The join trigger (section E) grants every household-shared wallet.
+  insert into public.space_members (space_id, user_id, role)
+  values (inv.space_id, auth.uid(), 'member')
+  on conflict (space_id, user_id) do nothing;
+  update public.space_invites set status = 'accepted', responded_at = now() where id = p_invite;
+end $$;
+
+create function decline_space_invite(p_invite uuid) returns void
+  language plpgsql security definer set search_path = '' as $$
+declare
+  inv public.space_invites;
+  caller_email text := lower(btrim(auth.jwt() ->> 'email'));
+begin
+  select * into inv from public.space_invites where id = p_invite for update;
+  if inv is null or inv.status <> 'pending' then
+    raise exception 'invite is not open';
+  end if;
+  if caller_email is null or lower(btrim(inv.invited_email)) <> caller_email then
+    raise exception 'invite is addressed to someone else';
+  end if;
+  update public.space_invites set status = 'declined', responded_at = now() where id = p_invite;
+end $$;
+
+create function get_pending_space_invites()
+  returns table(id uuid, space_id uuid, space_name text, invited_by_name text, created_at timestamptz)
+  language sql stable security definer set search_path = '' as $$
+  select si.id, si.space_id, s.name, p.display_name, si.created_at
+    from public.space_invites si
+    join public.spaces s on s.id = si.space_id
+    left join public.profiles p on p.id = si.invited_by
+   where si.status = 'pending'
+     and lower(btrim(si.invited_email)) = lower(btrim(auth.jwt() ->> 'email'))
+$$;
+
+revoke all on function is_space_owner(uuid)              from public, anon;
+revoke all on function invite_to_space(uuid, text)       from public, anon;
+revoke all on function revoke_space_invite(uuid)         from public, anon;
+revoke all on function accept_space_invite(uuid)         from public, anon;
+revoke all on function decline_space_invite(uuid)        from public, anon;
+revoke all on function get_pending_space_invites()       from public, anon;
+grant execute on function is_space_owner(uuid)           to authenticated;
+grant execute on function invite_to_space(uuid, text)    to authenticated;
+grant execute on function revoke_space_invite(uuid)      to authenticated;
+grant execute on function accept_space_invite(uuid)      to authenticated;
+grant execute on function decline_space_invite(uuid)     to authenticated;
+grant execute on function get_pending_space_invites()    to authenticated;

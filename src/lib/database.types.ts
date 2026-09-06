@@ -351,6 +351,44 @@ export type Database = {
           },
         ]
       }
+      space_invites: {
+        Row: {
+          created_at: string
+          id: string
+          invited_by: string
+          invited_email: string
+          responded_at: string | null
+          space_id: string
+          status: Database["public"]["Enums"]["invite_status"]
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          invited_by: string
+          invited_email: string
+          responded_at?: string | null
+          space_id: string
+          status?: Database["public"]["Enums"]["invite_status"]
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          invited_by?: string
+          invited_email?: string
+          responded_at?: string | null
+          space_id?: string
+          status?: Database["public"]["Enums"]["invite_status"]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "space_invites_space_id_fkey"
+            columns: ["space_id"]
+            isOneToOne: false
+            referencedRelation: "spaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       space_members: {
         Row: {
           joined_at: string
@@ -730,6 +768,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      accept_space_invite: { Args: { p_invite: string }; Returns: undefined }
       accept_wallet_invite: { Args: { invite: string }; Returns: undefined }
       budget_visible: { Args: { b: string }; Returns: boolean }
       create_transfer: {
@@ -743,6 +782,7 @@ export type Database = {
         }
         Returns: string
       }
+      decline_space_invite: { Args: { p_invite: string }; Returns: undefined }
       decline_wallet_invite: { Args: { invite: string }; Returns: undefined }
       get_budget_status: {
         Args: { from_date: string; to_date: string }
@@ -790,6 +830,16 @@ export type Database = {
           wallet_name: string
         }[]
       }
+      get_pending_space_invites: {
+        Args: never
+        Returns: {
+          created_at: string
+          id: string
+          invited_by_name: string
+          space_id: string
+          space_name: string
+        }[]
+      }
       get_space_members: {
         Args: never
         Returns: {
@@ -817,7 +867,12 @@ export type Database = {
           wallet_id: string
         }[]
       }
+      invite_to_space: {
+        Args: { p_email: string; p_space: string }
+        Returns: string
+      }
       is_space_member: { Args: { s: string }; Returns: boolean }
+      is_space_owner: { Args: { s: string }; Returns: boolean }
       is_wallet_member: { Args: { w: string }; Returns: boolean }
       move_transaction: {
         Args: {
@@ -831,6 +886,7 @@ export type Database = {
         }
         Returns: undefined
       }
+      revoke_space_invite: { Args: { p_invite: string }; Returns: undefined }
       set_budget: {
         Args: {
           p_amount_minor: number

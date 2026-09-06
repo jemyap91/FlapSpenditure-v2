@@ -4534,3 +4534,78 @@ begin;
     assert not v_ok, 'ESCALATION: the household owner changed the sharing of a wallet they do not own';
   end $$;
 commit;
+
+-- =====================================================================
+-- 0025: household invitations. Owner-only to send and revoke; invitee
+-- matched on JWT email to accept; accepting grants every household-shared
+-- wallet through the join trigger.
+-- =====================================================================
+insert into auth.users (id, email) values ('b5b50000-0000-4000-8000-000000000003', 'hh-new@x.io');
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"b5b50000-0000-4000-8000-000000000001","email":"hh-owner@x.io"}';
+  select set_wallet_sharing('b5b50000-0000-4000-8000-00000000000a', true, array[]::uuid[]);
+  do $$
+  declare v_id uuid;
+  begin
+    v_id := invite_to_space((select space_id from public.wallets where id = 'b5b50000-0000-4000-8000-00000000000a'), 'HH-New@x.io ');
+    assert v_id is not null, 'PERMISSION BROKEN: the household owner could not send an invitation';
+    assert (select invited_email from public.space_invites where id = v_id) = 'hh-new@x.io',
+      'invite_to_space did not normalise the address';
+    assert (select count(*) from public.space_invites where id = v_id) = 1,
+      'PERMISSION BROKEN: the owner cannot read the invitation they sent';
+  end $$;
+commit;
+
+-- A non-owner member cannot invite.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"b5b50000-0000-4000-8000-000000000002","email":"hh-mate@x.io"}';
+  do $$
+  declare v_ok boolean := false;
+  begin
+    begin
+      perform invite_to_space((select space_id from public.wallets where id = 'b5b50000-0000-4000-8000-00000000000c'), 'x@x.io');
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'only the household owner can invite people', format('wrong error: %s', sqlerrm);
+    end;
+    assert not v_ok, 'ESCALATION: a non-owner member sent a household invitation';
+    assert (select count(*) from public.space_invites) = 0,
+      'LEAK: a member who is not the owner and not the invitee can read household invitations';
+  end $$;
+commit;
+
+-- The invitee sees it, a stranger to the address cannot accept it, the
+-- invitee can, and then holds the household-shared wallet.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"b5b50000-0000-4000-8000-000000000003","email":"hh-new@x.io"}';
+  do $$
+  declare v_id uuid;
+  begin
+    select id into v_id from public.get_pending_space_invites();
+    assert v_id is not null, 'PERMISSION BROKEN: the invitee cannot see a household invitation addressed to them';
+    assert (select space_name from public.get_pending_space_invites() where id = v_id) like '%household%',
+      'get_pending_space_invites did not carry the household name';
+    perform set_config('request.jwt.claims', '{"sub":"b5b50000-0000-4000-8000-000000000002","email":"hh-mate@x.io"}', true);
+    begin
+      perform accept_space_invite(v_id);
+      raise exception 'LEAK: someone other than the invitee accepted a household invitation';
+    exception when others then
+      assert sqlerrm = 'invite is addressed to someone else', format('wrong error: %s', sqlerrm);
+    end;
+    perform set_config('request.jwt.claims', '{"sub":"b5b50000-0000-4000-8000-000000000003","email":"hh-new@x.io"}', true);
+    perform accept_space_invite(v_id);
+    assert (select status from public.space_invites where id = v_id) = 'accepted', 'accept did not mark the invite';
+    assert (select count(*) from public.transactions where wallet_id = 'b5b50000-0000-4000-8000-00000000000a') = 1,
+      'PERMISSION BROKEN: accepting a household invitation did not grant the household-shared wallet';
+    assert (select count(*) from public.get_pending_space_invites()) = 0, 'an accepted invite is still pending';
+  end $$;
+commit;
+
+do $$ begin
+  assert has_function_privilege('authenticated', 'public.invite_to_space(uuid,text)', 'EXECUTE')
+     and not has_function_privilege('anon', 'public.accept_space_invite(uuid)', 'EXECUTE'),
+    'GRANT BROKEN: household invite functions are not scoped to authenticated';
+end $$;
