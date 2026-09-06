@@ -272,17 +272,110 @@ test("a household shares one ledger between two real people", async ({ browser }
     "axe violations on /transactions with attribution visible",
   ).toEqual([]);
 
-  // --- 7. A removes B from Household. B's access is revoked immediately —
-  // not just A's original transaction, but B's own contribution too, since
-  // both live in a wallet B is no longer a member of.
+  // --- 7. A removes B from Household. Per-person Remove no longer exists
+  // on /wallets (household sharing, 0025): B accepted a WALLET invite, so
+  // their access is 'direct' (accept_wallet_invite's default), and the way
+  // to withdraw a direct share is WalletSharingRow's own checkbox + Save —
+  // the same control /household's sharing grid uses. B stays a candidate
+  // in that checklist (still able to be re-shared with), so the roster
+  // check below is EXACT: only the plain member row renders bName alone
+  // — the sharing checklist's row renders it with a trailing "· no access".
   await a.goto("/wallets");
   await openMembers(a, "Household");
-  await householdSection.getByRole("button", { name: `Remove ${bName}` }).click();
-  await expect(householdSection.getByText(bName)).toHaveCount(0);
+  await householdSection.getByRole("checkbox", { name: `Share Household directly with ${bName}` }).uncheck();
+  await householdSection.getByRole("button", { name: "Save sharing for Household" }).click();
+  await expect(householdSection.getByText("Sharing updated.")).toBeVisible();
+  await expect(householdSection.getByText(bName, { exact: true })).toHaveCount(0);
 
   await b.goto("/transactions");
   await expect(b.getByText("Market")).toHaveCount(0);
   await expect(b.getByText("Bus pass")).toHaveCount(0);
+
+  await ctxA.close();
+  await ctxB.close();
+});
+
+test("a household owner invites, shares, and a member leaves", async ({ browser }) => {
+  const ctxA: BrowserContext = await browser.newContext();
+  const ctxB: BrowserContext = await browser.newContext();
+  const a = await ctxA.newPage();
+  const b = await ctxB.newPage();
+
+  // --- 1. A onboards into "Shared", then adds a second, still-private
+  // wallet "Private" — the two rows this test tells apart by sharing rule.
+  await signUpAndOnboard(a, "Shared");
+  await addWallet(a, "Private");
+
+  // B signs up into their OWN wallet, in their own household, before any
+  // invite exists — same reasoning as the milestone test above: this is
+  // what lets "B's own household" and "A's household" be told apart later.
+  const bEmail = await signUpAndOnboard(b, "Bs own");
+  const bName = displayNameOf(bEmail);
+
+  // --- 2. A invites B into the HOUSEHOLD (not a single wallet) from
+  // /household.
+  await a.goto("/household");
+  await a.getByLabel("Invite by email").fill(bEmail);
+  await a.getByRole("button", { name: "Send invitation" }).click();
+  await expect(a.getByText(`Invitation sent to ${bEmail}.`)).toBeVisible();
+
+  // --- 3. B sees the household invite on /wallets (not a wallet invite)
+  // and accepts it.
+  await b.goto("/wallets");
+  await expect(
+    b.getByLabel("Pending invitations").getByText(/Join .* household/),
+  ).toBeVisible();
+  await b.getByRole("button", { name: "Accept" }).click();
+  await expect(b.getByRole("button", { name: "Accept" })).toHaveCount(0);
+
+  // --- 4. A shares "Shared" with the whole household. Scoped to that
+  // wallet's row so the later "Sharing updated." status check (each row
+  // keeps its own, once set) can't be confused with "Private"'s row.
+  await a.goto("/household");
+  const sharedRow = a.getByRole("row", { name: /Shared/ });
+  await sharedRow.getByRole("switch", { name: "Share Shared with the whole household" }).click();
+  await sharedRow.getByRole("button", { name: "Save sharing for Shared" }).click();
+  await expect(sharedRow.getByText("Sharing updated.")).toBeVisible();
+
+  // --- 5. B now sees "Shared" on /wallets, but NOT "Private" — a
+  // household share only reaches wallets marked shared, not every wallet
+  // its owner has.
+  await b.goto("/wallets");
+  await expect(b.getByText("Shared")).toBeVisible();
+  await expect(b.getByText("Private")).toHaveCount(0);
+
+  // --- 6. A shares "Private" DIRECTLY with B, leaving the household switch
+  // off. Reloaded first so the checkbox for B (a household member as of
+  // step 3) is actually on the page — A hasn't navigated since before B
+  // joined.
+  await a.goto("/household");
+  const privateRow = a.getByRole("row", { name: /Private/ });
+  await privateRow.getByRole("checkbox", { name: `Share Private directly with ${bName}` }).check();
+  await privateRow.getByRole("button", { name: "Save sharing for Private" }).click();
+  await expect(privateRow.getByText("Sharing updated.")).toBeVisible();
+
+  await b.goto("/wallets");
+  await expect(b.getByText("Private")).toBeVisible();
+
+  // --- 7. B leaves A's household. Their own wallet ("Bs own") was never
+  // in that household, so it is untouched; the two wallets they could only
+  // see THROUGH the household ("Shared" via the switch, "Private" via the
+  // direct share) both disappear the instant space_members no longer lists
+  // them — the wallet_members_in_space cascade removes those rows, no
+  // separate delete trigger needed (0025 §G/§D). A, who owns both wallets,
+  // keeps seeing them regardless of who else is in the household.
+  await b.goto("/household");
+  await b.getByRole("button", { name: "Leave household" }).click();
+  await b.getByRole("dialog").getByRole("button", { name: "Leave", exact: true }).click();
+  await expect(b.getByText("You left the household.")).toBeVisible();
+
+  await b.goto("/wallets");
+  await expect(b.getByText("Shared")).toHaveCount(0);
+  await expect(b.getByText("Bs own")).toBeVisible();
+
+  await a.goto("/wallets");
+  await expect(a.getByText("Shared")).toBeVisible();
+  await expect(a.getByText("Private")).toBeVisible();
 
   await ctxA.close();
   await ctxB.close();

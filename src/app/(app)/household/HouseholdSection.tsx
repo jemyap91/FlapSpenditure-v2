@@ -20,17 +20,7 @@ export type HouseholdWallet = {
 export type HouseholdInvite = { id: string; invited_email: string };
 type Access = { wallet_id: string; user_id: string; via: "owner" | "household" | "direct" };
 
-/**
- * One household: members, invitations, leave/remove, and the sharing grid.
- * Membership is managed by the household OWNER; each wallet's sharing by
- * that wallet's OWNER (WalletSharingRow's `canEdit`). Leave and Remove both
- * open an in-page confirm (role="dialog", not window.confirm: the app's own
- * dialogs are what its tests and screen-reader users already handle) that
- * states what moves with the person before anything is sent.
- */
-export function HouseholdSection({
-  space, currentUserId, members, wallets, access, pendingInvites, single,
-}: {
+export type HouseholdSectionProps = {
   space: { id: string; name: string };
   currentUserId: string;
   members: HouseholdMember[];
@@ -38,7 +28,29 @@ export function HouseholdSection({
   access: Access[];
   pendingInvites: HouseholdInvite[];
   single: boolean;
-}) {
+};
+
+/**
+ * One household: members, invitations, leave/remove, and the sharing grid.
+ * Membership is managed by the household OWNER; each wallet's sharing by
+ * that wallet's OWNER (WalletSharingRow's `canEdit`). Leave and Remove both
+ * open an in-page confirm (role="dialog", not window.confirm: the app's own
+ * dialogs are what its tests and screen-reader users already handle) that
+ * states what moves with the person before anything is sent.
+ *
+ * `onLeft`, when given, is called instead of setting this section's own
+ * status on a SUCCESSFUL leave. Leaving is the one action here that makes
+ * THIS SPACE disappear from the next page load — the very re-render that
+ * would show "you left" also removes this component (keyed by space.id)
+ * from the tree, so a notice held in this component's own state never
+ * gets to paint. `HouseholdSections` passes a setter that lives one level
+ * up, outside any single space's key, so the message survives. Removing a
+ * MEMBER has no such problem (the acting owner's own section persists),
+ * so that path is untouched.
+ */
+export function HouseholdSection({
+  space, currentUserId, members, wallets, access, pendingInvites, single, onLeft,
+}: HouseholdSectionProps & { onLeft?: (notice: string) => void }) {
   const isOwner = members.some((m) => m.user_id === currentUserId && m.role === "owner");
   const headingId = useId();
   const [confirm, setConfirm] = useState<{ kind: "leave" } | { kind: "remove"; member: HouseholdMember } | null>(null);
@@ -51,10 +63,17 @@ export function HouseholdSection({
     setConfirm(null);
     setStatus({});
     start(async () => {
-      const res = target.kind === "leave"
-        ? await leaveHousehold(space.id)
-        : await removeHouseholdMember(space.id, target.member.user_id);
-      setStatus(res);
+      if (target.kind === "leave") {
+        const res = await leaveHousehold(space.id);
+        // A successful leave is handed to `onLeft` (see this component's
+        // doc comment) rather than `setStatus` — this section is about to
+        // disappear. An error leaves the person right where they were, so
+        // it is shown locally same as every other error here.
+        if (res.error) setStatus(res);
+        else if (res.notice) onLeft?.(res.notice);
+      } else {
+        setStatus(await removeHouseholdMember(space.id, target.member.user_id));
+      }
     });
   }
 

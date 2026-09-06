@@ -1,7 +1,7 @@
 # Household Sharing — Design
 
 **Date:** 2026-09-06
-**Status:** Awaiting review
+**Status:** Implemented on feat/household-sharing (2026-09-07)
 **Builds on:** `2026-09-05-space-scoped-categories-design.md` (migrations 0022–0024)
 
 ## 1. Problem
@@ -268,3 +268,16 @@ during the build, accept the minute of overlap.
 | Revoking `members_write` could strand a code path that still writes `wallet_members` directly. | `removeMember` is rewritten onto `set_wallet_sharing`; grep for `.from("wallet_members")` writes is part of the plan, and the constraints suite proves the revoke. |
 | Demoting a co-owner is a real change for the two people in the hosted household. | Confirmed by hand before push; the migration reports it. |
 | Deferrable keys change error timing inside any future function. | Only `leave_space` defers; the default remains immediate, and the suites run unchanged. |
+
+## 11. Implementation notes
+
+Departures from this design, all ruled by the controller during execution.
+
+| # | Departure | Why | Task |
+|---|---|---|---|
+| 1 | `set_wallet_space` prefers the household the creator joined most recently, not the one they own. | With one owner per household (§3.3), "owns" is always the creator's signup household, so a member could never create a wallet inside a household they only joined. Preferring most-recently-joined lets a member's new wallet land where they actually are. | Task 2 |
+| 2 | `leave_space` / `remove_space_member` return three counts (`wallets_moved, budgets_moved, budgets_trimmed`), not four. | A mixed budget (some wallets moving, some staying) always keeps at least one staying wallet — `budget_wallets` rows on moving wallets are trimmed, never all of them — so a budget's "deleted" outcome is unreachable and was dropped from the return shape. | Task 4 |
+| 3 | `leave_space` reuses a household the person already owns (their signup household) rather than minting a new one, creating one only if none exists; wallets that move arrive private. | Signup (0022) already gives everyone a dormant owned household. Minting a fresh one on every leave-and-rejoin would pile up empty owned households with no purpose. Moved wallets land unshared so the person re-shares deliberately in the new household rather than inheriting stale sharing state. | Task 4 |
+| 4 | The leave/remove confirm dialog states the rule (what moves with the person) rather than predicted counts; the actual counts arrive in the status line after the action completes. | The counts depend on server-side matching (categories, budgets) that isn't known until the mutation runs; stating the rule up front is honest, and the after-the-fact status line reports what actually happened. | Task 7 |
+| 5 | Pending household invitations render in their own list, `<household> invitations`, separate from the members list. | Members and not-yet-members are different kinds of rows (one has a role, the other only an email and a Revoke control); a shared list would have needed a variant-typed row instead of two small, single-purpose lists. | Task 7 |
+| 6 | There is no delete trigger on `space_members`. | `wallet_members_in_space` (0022) is already `ON DELETE CASCADE`, so deleting a `space_members` row removes the departing member's `wallet_members` rows on every wallet in that household for free. `leave_space` moves wallets the person owns out first, so the cascade only ever removes rows on wallets that stay behind. A trigger would have duplicated that cascade. | Task 2 |

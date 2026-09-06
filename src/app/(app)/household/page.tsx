@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentUserProfile } from "@/lib/supabase/current-user";
-import { HouseholdSection, type HouseholdInvite, type HouseholdMember, type HouseholdWallet } from "./HouseholdSection";
+import type { HouseholdInvite, HouseholdMember, HouseholdWallet, HouseholdSectionProps } from "./HouseholdSection";
+import { HouseholdSections } from "./HouseholdSections";
 
 type Member = HouseholdMember & { space_id: string };
 type Wallet = HouseholdWallet & { space_id: string };
@@ -97,25 +98,22 @@ export default async function HouseholdPage() {
         here; each wallet&apos;s owner chooses who sees it.
       </p>
 
-      <div className="flex flex-col gap-8">
-        {spaces.map((space) => {
+      <HouseholdSections
+        sections={spaces.map((space): HouseholdSectionProps => {
           const spaceWallets = walletsBySpace.get(space.id) ?? [];
           const walletIds = new Set(spaceWallets.map((w) => w.id));
           const spaceAccess = ((access ?? []) as Access[]).filter((a) => walletIds.has(a.wallet_id));
-          return (
-            <HouseholdSection
-              key={space.id}
-              space={space}
-              currentUserId={profile.id}
-              members={membersBySpace.get(space.id) ?? []}
-              wallets={spaceWallets}
-              access={spaceAccess}
-              pendingInvites={invitesBySpace.get(space.id) ?? []}
-              single={single}
-            />
-          );
+          return {
+            space,
+            currentUserId: profile.id,
+            members: membersBySpace.get(space.id) ?? [],
+            wallets: spaceWallets,
+            access: spaceAccess,
+            pendingInvites: invitesBySpace.get(space.id) ?? [],
+            single,
+          };
         })}
-      </div>
+      />
     </div>
   );
 }
