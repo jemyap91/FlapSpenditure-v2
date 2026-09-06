@@ -1,7 +1,8 @@
 "use client";
 
-import { useActionState, useState, useTransition } from "react";
-import { inviteToWallet, removeMember, revokeInvite, type InviteState } from "@/server/actions/invites";
+import { useState, useTransition } from "react";
+import { inviteToWallet, removeMember, revokeInvite } from "@/server/actions/invites";
+import { InviteByEmailForm } from "@/components/InviteByEmailForm";
 
 const FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
@@ -51,11 +52,6 @@ export function MembersSection({
       setPendingId(null);
     });
   }
-
-  const [inviteState, inviteAction] = useActionState<InviteState, FormData>(
-    inviteToWallet.bind(null, walletId),
-    {},
-  );
 
   function remove(userId: string) {
     setError(null);
@@ -147,43 +143,7 @@ export function MembersSection({
         })}
       </ul>
 
-      {isOwner && (
-        <form action={inviteAction} className="flex items-end gap-2">
-          <label className="flex flex-1 flex-col gap-1">
-            <span className="text-xs" style={{ color: "var(--ink-2)" }}>
-              Invite by email
-            </span>
-            <input
-              type="email"
-              name="email"
-              required
-              placeholder="name@example.com"
-              autoComplete="off"
-              className={`rounded-md border px-3 py-2 text-sm ${FOCUS_RING}`}
-              style={{ borderColor: "var(--ink-2)" }}
-            />
-          </label>
-          <button
-            type="submit"
-            className={`shrink-0 rounded-md px-3 py-2 text-sm font-medium ${FOCUS_RING}`}
-            style={{ background: "var(--cat-1)", color: "var(--surface)" }}
-          >
-            Send invitation
-          </button>
-        </form>
-      )}
-
-      {isOwner && (
-        // `role="status"` here, not `role="alert"`, so this stays distinct
-        // from the Remove-error alert above: both are always-mounted, and
-        // two simultaneous `role="alert"` nodes make `getByRole("alert")`
-        // ambiguous for anything (tests included) that queries by role
-        // alone. `status` (implicit aria-live="polite") still gets the
-        // invite result announced.
-        <p role="status" className="text-sm" style={{ color: inviteState.error ? "var(--neg)" : "var(--ink-2)" }}>
-          {inviteState.error ?? inviteState.notice}
-        </p>
-      )}
+      {isOwner && <InviteByEmailForm action={inviteToWallet.bind(null, walletId)} />}
     </div>
   );
 }
