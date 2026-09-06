@@ -8,7 +8,7 @@ import {
   revokeHouseholdInvite,
 } from "@/server/actions/household";
 import { InviteByEmailForm } from "@/components/InviteByEmailForm";
-import { WalletSharingRow, sharingKey, type SharingMember } from "@/components/WalletSharingRow";
+import { WalletSharingRow, type SharingMember } from "@/components/WalletSharingRow";
 
 const FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
@@ -235,14 +235,7 @@ export function HouseholdSection({
                     </span>
                   </th>
                   <td className="py-2">
-                    {/* Keyed on the sharing state it is given, not just the
-                        wallet id: WalletSharingRow copies its props into
-                        local state on mount (an unsaved edit must survive a
-                        re-render), so a revalidation carrying NEW server
-                        data would otherwise be ignored. A changed key
-                        remounts the row on that new data. */}
-                    <WalletSharingRow key={sharingKey(w, others)}
-                                      walletId={w.id} walletName={w.name} householdShared={w.shared_with_household}
+                    <WalletSharingRow walletId={w.id} walletName={w.name} householdShared={w.shared_with_household}
                                       members={others} canEdit={w.owner_id === currentUserId} />
                   </td>
                 </tr>

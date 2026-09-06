@@ -39,6 +39,39 @@ describe("WalletSharingRow", () => {
     expect(await screen.findByText("Sharing updated.")).toBeInTheDocument();
   });
 
+  /**
+   * A save revalidates, so the row is re-rendered with the sharing it just
+   * wrote. It must follow that new data (the controls are local copies made
+   * at mount) AND keep the notice it just set — the notice exists precisely
+   * because the props changed, so anything that discards state on new props
+   * (a `key` in the parent, say) wipes the message the save produced. Both
+   * halves are asserted here because each one is a way to get this wrong.
+   */
+  it("follows new props after a save and keeps its own notice", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <WalletSharingRow walletId="w1" walletName="Everyday" householdShared members={members} canEdit />,
+    );
+    await user.click(screen.getByRole("switch", { name: "Share Everyday with the whole household" }));
+    await user.click(screen.getByRole("button", { name: "Save sharing for Everyday" }));
+    expect(await screen.findByText("Sharing updated.")).toBeInTheDocument();
+
+    // What the server now reports: unshared, and bob's household row gone.
+    rerender(
+      <WalletSharingRow
+        walletId="w1"
+        walletName="Everyday"
+        householdShared={false}
+        members={members.map((m) => (m.user_id === "u-bob" ? { ...m, via: null } : m))}
+        canEdit
+      />,
+    );
+
+    expect(screen.getByRole("switch", { name: "Share Everyday with the whole household" })).not.toBeChecked();
+    expect(screen.getByText("bob · no access")).toBeInTheDocument();
+    expect(screen.getByText("Sharing updated.")).toBeInTheDocument();
+  });
+
   it("is read-only when the viewer does not own the wallet", () => {
     render(<WalletSharingRow walletId="w1" walletName="Everyday" householdShared={false} members={members} canEdit={false} />);
     expect(screen.queryByRole("switch")).not.toBeInTheDocument();

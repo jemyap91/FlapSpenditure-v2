@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { inviteToWallet, revokeInvite } from "@/server/actions/invites";
 import { InviteByEmailForm } from "@/components/InviteByEmailForm";
-import { WalletSharingRow, sharingKey, type SharingMember } from "@/components/WalletSharingRow";
+import { WalletSharingRow, type SharingMember } from "@/components/WalletSharingRow";
 
 const FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
@@ -95,11 +95,7 @@ export function MembersSection({
         ))}
       </ul>
 
-      {/* Keyed on the sharing state it is given: the row copies its props
-          into local state on mount, so without a changing key a
-          revalidation that brings new server data would be ignored. */}
       <WalletSharingRow
-        key={sharingKey({ id: walletId, shared_with_household: householdShared }, householdMembers)}
         walletId={walletId}
         walletName={walletName}
         householdShared={householdShared}

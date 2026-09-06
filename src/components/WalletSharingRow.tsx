@@ -13,13 +13,12 @@ export type SharingMember = {
 };
 
 /**
- * A React `key` for one of these rows, spelling out every prop it copies
- * into local state on mount. Both parents key the row with this, so a
- * revalidation that brings NEW sharing data remounts the row on it instead
- * of leaving the stale copy in place — a member removed from the household
- * must stop being offered a checkbox here. (The local copy exists so an
- * unsaved edit survives an unrelated re-render; a key is the smallest fix
- * that keeps that and still follows the server.)
+ * A signature of everything this row copies into local state: the wallet's
+ * household flag and each candidate's `via`. When it changes, the server
+ * has sent different sharing and the local copy must follow.
+ *
+ * Exported so a caller can compare two prop sets the same way; the row
+ * itself uses it below.
  */
 export function sharingKey(
   wallet: { id: string; shared_with_household: boolean },
@@ -57,6 +56,25 @@ export function WalletSharingRow({
   const [status, setStatus] = useState<{ error?: string; notice?: string }>({});
   const [saving, start] = useTransition();
   const statusId = useId();
+
+  // These controls are local state so an unsaved edit survives an unrelated
+  // re-render -- which also made them deaf to NEW server data: after a save
+  // (here or elsewhere) the revalidation re-renders this row with different
+  // sharing, and the copy made at mount stayed on screen. Resync when the
+  // props' signature changes, React's "adjusting state when props change"
+  // pattern.
+  //
+  // Deliberately NOT a `key` on the row in each parent: remounting would
+  // also throw away `status`, and this row's own "Sharing updated." notice
+  // appears exactly when its props change -- it would be wiped by the very
+  // save that produced it (two e2e specs assert that notice).
+  const signature = sharingKey({ id: walletId, shared_with_household: householdShared }, members);
+  const [seenSignature, setSeenSignature] = useState(signature);
+  if (seenSignature !== signature) {
+    setSeenSignature(signature);
+    setHousehold(householdShared);
+    setDirect(new Set(members.filter((m) => m.via === "direct").map((m) => m.user_id)));
+  }
 
   function label(m: SharingMember) {
     if (m.via === "household") return `${m.display_name} · via household`;
