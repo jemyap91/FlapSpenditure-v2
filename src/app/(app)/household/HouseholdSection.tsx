@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState, useTransition } from "react";
+import { useEffect, useId, useRef, useState, useTransition } from "react";
 import {
   inviteToHousehold,
   leaveHousehold,
@@ -8,7 +8,7 @@ import {
   revokeHouseholdInvite,
 } from "@/server/actions/household";
 import { InviteByEmailForm } from "@/components/InviteByEmailForm";
-import { WalletSharingRow, type SharingMember } from "@/components/WalletSharingRow";
+import { WalletSharingRow, sharingKey, type SharingMember } from "@/components/WalletSharingRow";
 
 const FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
@@ -57,10 +57,40 @@ export function HouseholdSection({
   const [status, setStatus] = useState<{ error?: string; notice?: string }>({});
   const [busy, start] = useTransition();
 
+  // The confirm panel is a dialog, so it behaves like one: focus lands on
+  // its primary button when it opens, Escape closes it, and dismissing it
+  // hands focus back to the control that opened it. Without this a keyboard
+  // user's focus stays on a button behind a panel they cannot see and
+  // cannot leave.
+  const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (confirm) confirmButtonRef.current?.focus();
+  }, [confirm]);
+
+  function openConfirm(
+    target: { kind: "leave" } | { kind: "remove"; member: HouseholdMember },
+    opener: HTMLElement,
+  ) {
+    openerRef.current = opener;
+    setConfirm(target);
+  }
+
+  function dismissConfirm() {
+    setConfirm(null);
+    // The opener is still mounted on a cancel — nothing has changed yet.
+    openerRef.current?.focus();
+    openerRef.current = null;
+  }
+
   function runConfirm() {
     if (!confirm) return;
     const target = confirm;
     setConfirm(null);
+    // Not returned: the button that opened this is about to be replaced
+    // (a removed member's row goes; a leave unmounts the whole section).
+    openerRef.current = null;
     setStatus({});
     start(async () => {
       if (target.kind === "leave") {
@@ -113,7 +143,8 @@ export function HouseholdSection({
             <span className="flex items-center gap-3 text-xs" style={{ color: "var(--ink-2)" }}>
               {m.role === "owner" ? "Owner" : "Member"}
               {isOwner && m.user_id !== currentUserId && (
-                <button type="button" disabled={busy} onClick={() => setConfirm({ kind: "remove", member: m })}
+                <button type="button" disabled={busy}
+                        onClick={(e) => openConfirm({ kind: "remove", member: m }, e.currentTarget)}
                         aria-label={`Remove ${m.display_name} from the household`}
                         className={`underline disabled:opacity-60 ${FOCUS_RING}`}>
                   Remove
@@ -146,7 +177,7 @@ export function HouseholdSection({
       {isOwner ? (
         <div className="mb-6"><InviteByEmailForm action={inviteToHousehold.bind(null, space.id)} /></div>
       ) : (
-        <button type="button" disabled={busy} onClick={() => setConfirm({ kind: "leave" })}
+        <button type="button" disabled={busy} onClick={(e) => openConfirm({ kind: "leave" }, e.currentTarget)}
                 className={`mb-6 rounded-md border px-3 py-1.5 text-sm ${FOCUS_RING}`}
                 style={{ borderColor: "var(--ink-2)", color: "var(--ink)" }}>
           Leave household
@@ -156,18 +187,24 @@ export function HouseholdSection({
       {confirm && (
         <div role="dialog" aria-modal="true"
              aria-label={confirm.kind === "leave" ? `Leave ${space.name}?` : `Remove ${confirm.member.display_name}?`}
+             onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); dismissConfirm(); } }}
              className="mb-6 rounded-lg border p-4" style={{ borderColor: "var(--neg)", background: "var(--surface)" }}>
+          {/* "a household of your own", not "a new household": leave_space
+              reuses the household you already own from signup (spec §11,
+              departure 3) rather than minting one, so it may already have
+              other people in it — who then see the copied category NAMES. */}
           <p className="mb-3 text-sm" style={{ color: "var(--ink)" }}>
             {confirm.kind === "leave"
-              ? "Wallets you own go with you into a new household, with the categories they use. Budgets over your wallets alone go too; budgets shared with others lose your wallets. Transactions you recorded in shared wallets stay here."
-              : `Wallets ${confirm.member.display_name} owns go with them into a new household, with the categories they use. Budgets over their wallets alone go too; budgets shared with others lose their wallets. Transactions they recorded in shared wallets stay here.`}
+              ? "Wallets you own go with you into a household of your own, with the categories they use. Budgets over your wallets alone go too; budgets shared with others lose your wallets. Transactions you recorded in shared wallets stay here."
+              : `Wallets ${confirm.member.display_name} owns go with them into a household of their own, with the categories they use. Budgets over their wallets alone go too; budgets shared with others lose their wallets. Transactions they recorded in shared wallets stay here.`}
           </p>
           <div className="flex gap-2">
-            <button type="button" onClick={runConfirm} className={`rounded-md px-3 py-1.5 text-sm font-medium ${FOCUS_RING}`}
+            <button type="button" ref={confirmButtonRef} onClick={runConfirm}
+                    className={`rounded-md px-3 py-1.5 text-sm font-medium ${FOCUS_RING}`}
                     style={{ background: "var(--neg)", color: "var(--surface)" }}>
               {confirm.kind === "leave" ? "Leave" : "Remove"}
             </button>
-            <button type="button" onClick={() => setConfirm(null)} className={`text-sm underline ${FOCUS_RING}`} style={{ color: "var(--ink-2)" }}>
+            <button type="button" onClick={dismissConfirm} className={`text-sm underline ${FOCUS_RING}`} style={{ color: "var(--ink-2)" }}>
               Cancel
             </button>
           </div>
@@ -198,7 +235,14 @@ export function HouseholdSection({
                     </span>
                   </th>
                   <td className="py-2">
-                    <WalletSharingRow walletId={w.id} walletName={w.name} householdShared={w.shared_with_household}
+                    {/* Keyed on the sharing state it is given, not just the
+                        wallet id: WalletSharingRow copies its props into
+                        local state on mount (an unsaved edit must survive a
+                        re-render), so a revalidation carrying NEW server
+                        data would otherwise be ignored. A changed key
+                        remounts the row on that new data. */}
+                    <WalletSharingRow key={sharingKey(w, others)}
+                                      walletId={w.id} walletName={w.name} householdShared={w.shared_with_household}
                                       members={others} canEdit={w.owner_id === currentUserId} />
                   </td>
                 </tr>

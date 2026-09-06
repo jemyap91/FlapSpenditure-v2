@@ -74,62 +74,6 @@ export async function respondToInvite(id: string, accept: boolean): Promise<Invi
   return {};
 }
 
-export async function removeMember(walletId: string, userId: string): Promise<InviteState> {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: "Not signed in" };
-
-  // The owner's own membership row is what makes them a member; removing it
-  // would lock them out of a wallet they still own.
-  const { data: wallet } = await supabase
-    .from("wallets").select("owner_id").eq("id", walletId).maybeSingle();
-  if (!wallet || wallet.owner_id !== user.id) return { error: "Only the wallet owner can do that." };
-  // Postgres returns owner_id already lower-cased, but userId arrives from
-  // the client and is never normalised on the way in — a bare `===` here
-  // would let an uppercased copy of the owner's own id slip past this
-  // check (`AAAA... !== aaaa...` in JS) while Postgres's `uuid` type
-  // equality is case-INSENSITIVE, so the DELETE below would still match
-  // and remove the owner's row anyway. Normalise both sides before
-  // comparing, the same way every other id comparison in this codebase
-  // pushes case handling to a place that can't get it wrong (see
-  // src/server/actions/wallets.ts's .eq("owner_id", ...) filters, which
-  // let Postgres — not JS — decide equality).
-  if (userId.trim().toLowerCase() === wallet.owner_id.toLowerCase()) {
-    return { error: "The owner cannot be removed." };
-  }
-
-  // wallet_members is no longer writable directly (0025). Removing one
-  // person is "the same sharing, minus them": read the wallet's current
-  // direct list and household flag, and submit the row without them. A
-  // member who is here via the household cannot be removed one at a time
-  // -- that is what "shared with the household" means -- so say so.
-  const [{ data: rows, error: rowsError }, { data: w, error: wError }] = await Promise.all([
-    supabase.from("wallet_members").select("user_id, via").eq("wallet_id", walletId),
-    supabase.from("wallets").select("shared_with_household").eq("id", walletId).maybeSingle(),
-  ]);
-  // Both reads must succeed before anything is written. In particular, a
-  // failed `shared_with_household` read must NOT silently default to
-  // `false` -- that would submit a row that turns OFF household sharing as
-  // a side effect of removing one direct member, with no error surfaced.
-  if (rowsError || wError) return { error: "Could not remove that person. Please try again." };
-  const target = (rows ?? []).find((r) => r.user_id === userId);
-  if (!target) return { error: "That person is not in this wallet." };
-  if (target.via === "household") {
-    return { error: "They see this wallet because it is shared with the household. Turn that off to remove them." };
-  }
-  const direct = (rows ?? []).filter((r) => r.via === "direct" && r.user_id !== userId).map((r) => r.user_id);
-  const { error } = await supabase.rpc("set_wallet_sharing", {
-    p_wallet: walletId,
-    p_household: w?.shared_with_household ?? false,
-    p_direct: direct,
-  });
-  if (error) return { error: "Could not remove that person. Please try again." };
-  revalidatePath("/", "layout");
-  revalidatePath("/wallets");
-  revalidatePath("/household");
-  return {};
-}
-
 /**
  * Withdraws an invitation the owner sent but the recipient has not answered.
  *

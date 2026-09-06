@@ -60,7 +60,9 @@ describe("HouseholdSection as the owner", () => {
     render(<HouseholdSection {...props} />);
     await user.click(screen.getByRole("button", { name: "Remove bob from the household" }));
     const dialog = screen.getByRole("dialog", { name: "Remove bob?" });
-    expect(dialog).toHaveTextContent("Wallets bob owns go with them into a new household");
+    // "a household of their own", not "a new household": leave_space reuses
+    // the household they already own from signup (spec §11, departure 3).
+    expect(dialog).toHaveTextContent("Wallets bob owns go with them into a household of their own");
     expect(removeHouseholdMember).not.toHaveBeenCalled();
     await user.click(within(dialog).getByRole("button", { name: "Remove" }));
     expect(removeHouseholdMember).toHaveBeenCalledWith("s1", "u-bob");
@@ -74,6 +76,88 @@ describe("HouseholdSection as the owner", () => {
     expect(within(grid).queryByRole("switch", { name: "Share Bob private with the whole household" })).not.toBeInTheDocument();
     expect(within(grid).getByText("bob · via household")).toBeInTheDocument();
   });
+
+  /**
+   * The confirm panel is a dialog, so it must behave like one for a
+   * keyboard: focus moves into it on open, Escape dismisses it, and the
+   * control that opened it gets focus back. Before this, focus stayed on
+   * the Remove button behind a panel the user could neither reach nor
+   * dismiss without a mouse.
+   */
+  it("focuses the confirm button on open, closes on Escape without acting, and restores focus", async () => {
+    const user = userEvent.setup();
+    render(<HouseholdSection {...props} />);
+    const opener = screen.getByRole("button", { name: "Remove bob from the household" });
+
+    await user.click(opener);
+    const dialog = screen.getByRole("dialog", { name: "Remove bob?" });
+    expect(within(dialog).getByRole("button", { name: "Remove" })).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(removeHouseholdMember).not.toHaveBeenCalled();
+    expect(opener).toHaveFocus();
+  });
+
+  it("returns focus to the opener when the confirm is cancelled", async () => {
+    const user = userEvent.setup();
+    render(<HouseholdSection {...props} />);
+    const opener = screen.getByRole("button", { name: "Remove bob from the household" });
+
+    await user.click(opener);
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(removeHouseholdMember).not.toHaveBeenCalled();
+    expect(opener).toHaveFocus();
+  });
+
+  /**
+   * WalletSharingRow copies `householdShared` and the direct-share set into
+   * local state on mount, so an unsaved edit survives an unrelated
+   * re-render. That made it deaf to NEW server data: after a successful
+   * save elsewhere, a revalidation re-renders this section with different
+   * sharing and the row went on showing the copy it made at mount. The row
+   * is keyed on the sharing it is handed, so new data remounts it.
+   *
+   * This is the discriminating half: the switch and the per-person checkbox
+   * are the two controls fed from local state, so only they can go stale.
+   */
+  it("follows new sharing state on rerender instead of the copy made at mount", () => {
+    const { rerender } = render(<HouseholdSection {...props} />);
+    expect(screen.getByRole("switch", { name: "Share Everyday with the whole household" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Share Everyday directly with bob" })).not.toBeChecked();
+
+    rerender(
+      <HouseholdSection
+        {...props}
+        wallets={wallets.map((w) => (w.id === "w1" ? { ...w, shared_with_household: false } : w))}
+        access={access.map((a) =>
+          a.wallet_id === "w1" && a.user_id === "u-bob" ? { ...a, via: "direct" as const } : a,
+        )}
+      />,
+    );
+
+    expect(screen.getByRole("switch", { name: "Share Everyday with the whole household" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Share Everyday directly with bob" })).toBeChecked();
+  });
+
+  it("stops offering a removed member's checkbox when the section rerenders without them", () => {
+    const { rerender } = render(<HouseholdSection {...props} />);
+    expect(screen.getByRole("checkbox", { name: "Share Everyday directly with bob" })).toBeInTheDocument();
+
+    rerender(
+      <HouseholdSection
+        {...props}
+        members={members.filter((m) => m.user_id !== "u-bob")}
+        wallets={wallets.filter((w) => w.owner_id !== "u-bob")}
+        access={access.filter((a) => a.user_id !== "u-bob")}
+      />,
+    );
+
+    expect(screen.queryByRole("checkbox", { name: "Share Everyday directly with bob" })).not.toBeInTheDocument();
+    expect(screen.queryByText("bob · via household")).not.toBeInTheDocument();
+  });
 });
 
 describe("HouseholdSection as a member", () => {
@@ -86,7 +170,7 @@ describe("HouseholdSection as a member", () => {
     expect(screen.queryByRole("button", { name: /Remove .* from the household/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Leave household" }));
     const dialog = screen.getByRole("dialog", { name: "Leave alice household?" });
-    expect(dialog).toHaveTextContent("Wallets you own go with you into a new household");
+    expect(dialog).toHaveTextContent("Wallets you own go with you into a household of your own");
     await user.click(within(dialog).getByRole("button", { name: "Leave" }));
     expect(leaveHousehold).toHaveBeenCalledWith("s1");
   });

@@ -13,6 +13,24 @@ export type SharingMember = {
 };
 
 /**
+ * A React `key` for one of these rows, spelling out every prop it copies
+ * into local state on mount. Both parents key the row with this, so a
+ * revalidation that brings NEW sharing data remounts the row on it instead
+ * of leaving the stale copy in place — a member removed from the household
+ * must stop being offered a checkbox here. (The local copy exists so an
+ * unsaved edit survives an unrelated re-render; a key is the smallest fix
+ * that keeps that and still follows the server.)
+ */
+export function sharingKey(
+  wallet: { id: string; shared_with_household: boolean },
+  members: SharingMember[],
+) {
+  return `${wallet.id}:${wallet.shared_with_household}:${members
+    .map((m) => `${m.user_id}=${m.via ?? "-"}`)
+    .join(",")}`;
+}
+
+/**
  * One wallet's sharing, rendered the same way on /household (one row of the
  * grid) and /wallets (under the wallet). The switch shares with everyone in
  * the household; a checkbox is a DIRECT share that survives turning the
