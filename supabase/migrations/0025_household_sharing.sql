@@ -13,8 +13,8 @@ create type member_via as enum ('owner', 'household', 'direct');
 
 -- Default 'direct': accept_wallet_invite (0022) inserts without naming via
 -- and an accepted invite IS a direct share. add_owner_as_member names
--- 'owner' explicitly below; only set_wallet_sharing and the space_members
--- trigger ever write 'household'.
+-- 'owner' explicitly below; only set_wallet_sharing and
+-- accept_space_invite ever write 'household'.
 alter table wallet_members add column via member_via not null default 'direct';
 update wallet_members m set via = 'owner'
   from wallets w where w.id = m.wallet_id and w.owner_id = m.user_id;
@@ -76,36 +76,46 @@ alter table budget_wallets  alter constraint budget_wallets_budget_same_space   
 -- D. No direct writes to wallet_members
 -- ─────────────────────────────────────────────────────────────────────────
 -- Every insert and delete now goes through set_wallet_sharing,
--- accept_wallet_invite, add_owner_as_member and the space_members trigger
--- (section E). That is what makes "a household row exists iff the wallet
--- is shared and you are in the household" a property nothing can break by
--- hand. Postgres grants are additive, so the 0004 grant is REVOKED, not
+-- accept_wallet_invite, add_owner_as_member and accept_space_invite
+-- (section E). That is what makes "a household row exists only where its
+-- owner or the household's invitation put it" a property nothing can break
+-- by hand. Postgres grants are additive, so the 0004 grant is REVOKED, not
 -- merely left un-granted (0018 and 0022 make the same point).
-drop policy members_write on wallet_members;
-revoke insert, update, delete on wallet_members from authenticated;
+-- `if exists` and the anon half are hosted-drift insurance: the hosted
+-- database was restored from a dump that re-granted anon, and a policy
+-- dropped there by hand would fail a bare DROP POLICY here.
+drop policy if exists members_write on wallet_members;
+revoke insert, update, delete on wallet_members from anon, authenticated;
 
 -- ─────────────────────────────────────────────────────────────────────────
--- E. Joining a household grants its shared wallets
+-- E. Joining a household grants its shared wallets -- but only on a
+--    household invitation, and deliberately NOT by trigger
 -- ─────────────────────────────────────────────────────────────────────────
--- Leaving needs no trigger: wallet_members_in_space (0022) is ON DELETE
--- CASCADE, so deleting a space_members row already removes that user's
--- rows on every wallet in the household. leave_space (section G) moves the
--- wallets they own out first, so the cascade never reaches an owner row.
-create function grant_household_shares() returns trigger
-  language plpgsql security definer set search_path = '' as $$
-begin
-  insert into public.wallet_members (wallet_id, user_id, role, via)
-  select w.id, new.user_id, 'member', 'household'
-    from public.wallets w
-   where w.space_id = new.space_id
-     and w.shared_with_household
-     and w.owner_id <> new.user_id
-  on conflict (wallet_id, user_id) do nothing;
-  return new;
-end $$;
-
-create trigger space_members_grant_shares after insert on space_members
-  for each row execute function grant_household_shares();
+-- The grant lives inside accept_space_invite (section H), not in an insert
+-- trigger on space_members, because space_members rows are also created by
+-- paths that are nobody's decision to hand over other people's wallets:
+--
+--   * sync_wallet_member_space (0022) adds a space_members row whenever
+--     accept_wallet_invite grants a wallet. ANY wallet owner can send that
+--     invite -- a member of a household, not just its owner -- and 0022
+--     designed that join to carry category NAMES only, so the invitee's
+--     transactions can be filed. A trigger here would turn one member's
+--     wallet invite into a grant of every household-shared wallet in the
+--     household, the household owner's included.
+--   * set_wallet_space (section G0) and handle_new_user (0022) create a
+--     household with its first member in one step.
+--
+-- So: joining through a household invitation grants the household-shared
+-- wallets (the owner invited you into the household); joining any other
+-- way grants exactly what that path grants. A wallet shared with the
+-- household AFTER you joined reaches you through set_wallet_sharing, which
+-- its owner runs with the member list in front of them.
+--
+-- Leaving needs no trigger either: wallet_members_in_space (0022) is ON
+-- DELETE CASCADE, so deleting a space_members row already removes that
+-- user's rows on every wallet in the household. leave_space (section G)
+-- moves the wallets they own out first, so the cascade never reaches an
+-- owner row.
 
 -- ─────────────────────────────────────────────────────────────────────────
 -- F. set_wallet_sharing: the one way to change who sees a wallet
@@ -126,7 +136,10 @@ begin
   if v_owner is null or v_owner <> auth.uid() then
     raise exception 'only the wallet owner can change who it is shared with';
   end if;
-  p_direct := coalesce(p_direct, array[]::uuid[]);
+  -- Deduped up front: the INSERT below would otherwise raise "ON CONFLICT
+  -- DO UPDATE cannot affect row a second time" on a repeated id, and the
+  -- UI can post the same person twice from a stale form.
+  p_direct := array(select distinct u from unnest(coalesce(p_direct, array[]::uuid[])) u);
   if v_owner = any(p_direct) then
     raise exception 'the owner is always a member';
   end if;
@@ -210,6 +223,11 @@ create table space_invites (
 create unique index space_invites_one_pending
   on space_invites (space_id, lower(btrim(invited_email))) where status = 'pending';
 
+-- get_pending_space_invites looks every invitee up by address; 0009 gives
+-- wallet_invites the same partial index for the same read.
+create index space_invites_invitee
+  on space_invites (lower(btrim(invited_email))) where status = 'pending';
+
 alter table space_invites enable row level security;
 revoke all on space_invites from anon, authenticated;
 grant select on space_invites to authenticated;
@@ -273,10 +291,18 @@ begin
   if caller_email is null or lower(btrim(inv.invited_email)) <> caller_email then
     raise exception 'invite is addressed to someone else';
   end if;
-  -- The join trigger (section E) grants every household-shared wallet.
   insert into public.space_members (space_id, user_id, role)
   values (inv.space_id, auth.uid(), 'member')
   on conflict (space_id, user_id) do nothing;
+  -- The household's shared wallets come with the invitation (section E
+  -- says why this is here and not a trigger on space_members).
+  insert into public.wallet_members (wallet_id, user_id, role, via)
+  select w.id, auth.uid(), 'member', 'household'
+    from public.wallets w
+   where w.space_id = inv.space_id
+     and w.shared_with_household
+     and w.owner_id <> auth.uid()
+  on conflict (wallet_id, user_id) do nothing;
   update public.space_invites set status = 'accepted', responded_at = now() where id = p_invite;
 end $$;
 
@@ -340,6 +366,13 @@ declare
   v_moved_budgets uuid[];
   v_trimmed       int;
 begin
+  -- Transaction-scoped and never reset: SET CONSTRAINTS has no "back to
+  -- immediate for the rest of this statement" and PostgreSQL gives no way
+  -- to restore only the constraints this function deferred. Harmless under
+  -- the one-RPC-per-transaction shape PostgREST gives every caller here.
+  -- If this is ever called from inside a larger transaction, every key on
+  -- that transaction's later statements is checked at COMMIT instead of at
+  -- statement end -- same outcome, later and less locatable error.
   set constraints all deferred;
 
   select sm.role into v_role from public.space_members sm where sm.space_id = p_space and sm.user_id = p_user;
@@ -377,7 +410,12 @@ begin
                       where bw.budget_id = b.id and not (bw.wallet_id = any(v_wallets)));
 
   -- Categories the moving rows need, created in the new household where no
-  -- active same-named one exists (the seed trigger already made 16).
+  -- active same-named one exists (the seed trigger already made 16). A
+  -- category that exists in the destination only ARCHIVED is recreated
+  -- active on purpose: the repoint joins below require `n.archived_at is
+  -- null`, so an archived-only match would leave the moving rows pointing
+  -- at the old household and the deferred key would fail at commit. The
+  -- person can archive it again afterwards.
   insert into public.categories (space_id, name, kind, color_slot, icon, sort_order, is_default)
   select distinct on (c.kind, lower(btrim(c.name)))
          v_new, c.name, c.kind, c.color_slot, c.icon, 900, false
@@ -424,9 +462,14 @@ begin
    where id = any(v_moved_budgets) and category_id is null;
   update public.budget_wallets set space_id = v_new where budget_id = any(v_moved_budgets);
 
-  delete from public.budget_wallets bw
-   where bw.wallet_id = any(v_wallets) and not (bw.budget_id = any(v_moved_budgets));
-  get diagnostics v_trimmed = row_count;
+  -- Budgets trimmed, not links trimmed: a mixed budget can lose several
+  -- wallets at once and the caller reports "n budgets kept their staying
+  -- wallets", so count the budgets the deletion touched.
+  with d as (
+    delete from public.budget_wallets bw
+     where bw.wallet_id = any(v_wallets) and not (bw.budget_id = any(v_moved_budgets))
+    returning bw.budget_id)
+  select count(distinct budget_id) into v_trimmed from d;
 
   update public.wallets set space_id = v_new, shared_with_household = false where id = any(v_wallets);
   delete from public.wallet_members where wallet_id = any(v_wallets) and user_id <> p_user;

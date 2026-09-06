@@ -4474,13 +4474,21 @@ begin;
     ('b5b50000-0000-4000-8000-00000000000b', 'b5b50000-0000-4000-8000-000000000001', 'HH Private', 'bank', 'USD', 2, 'wallet');
   insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, occurred_on)
     values ('b5b50000-0000-4000-8000-00000000000a', 'b5b50000-0000-4000-8000-000000000001', 'expense', -100, 'USD', '2026-09-01');
-  select set_wallet_sharing('b5b50000-0000-4000-8000-00000000000a', true, array[]::uuid[]);
 commit;
 -- hh-mate joins the household (superuser scope: this is the fixture, not
--- the thing under test; Task 3's accept_space_invite is the real path).
+-- the thing under test; the household-invitation block below drives
+-- accept_space_invite, which is the real path).
 insert into public.space_members (space_id, user_id, role)
 values ((select space_id from public.wallets where id = 'b5b50000-0000-4000-8000-00000000000a'),
         'b5b50000-0000-4000-8000-000000000002', 'member');
+-- Shared AFTER hh-mate joined: a bare space_members row grants nothing on
+-- its own (see the wallet-invite escalation block at the end of this file),
+-- so set_wallet_sharing is what reaches an existing member.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"b5b50000-0000-4000-8000-000000000001","email":"hh-owner@x.io"}';
+  select set_wallet_sharing('b5b50000-0000-4000-8000-00000000000a', true, array[]::uuid[]);
+commit;
 
 begin;
   set local role authenticated;
@@ -4538,7 +4546,8 @@ commit;
 -- =====================================================================
 -- 0025: household invitations. Owner-only to send and revoke; invitee
 -- matched on JWT email to accept; accepting grants every household-shared
--- wallet through the join trigger.
+-- wallet (the grant lives inside accept_space_invite, not in a trigger --
+-- see the wallet-invite escalation block at the end of this file).
 -- =====================================================================
 insert into auth.users (id, email) values ('b5b50000-0000-4000-8000-000000000003', 'hh-new@x.io');
 begin;
@@ -4655,5 +4664,151 @@ begin;
     exception when others then null;
     end;
     assert not v_ok, 'ESCALATION: a member removed the household owner';
+  end $$;
+commit;
+
+-- =====================================================================
+-- 0025: a MEMBER's wallet invite must not hand an outsider the
+-- household's shared wallets. Only accept_space_invite -- the household
+-- owner's own invitation -- grants those; a wallet invite from any wallet
+-- owner joins the outsider to the household for category names, as 0022
+-- designed, and grants exactly the one wallet it names.
+-- =====================================================================
+insert into auth.users (id, email) values
+  ('b6b60000-0000-4000-8000-000000000001', 'ci-owner@x.io'),
+  ('b6b60000-0000-4000-8000-000000000002', 'ci-mate@x.io'),
+  ('b6b60000-0000-4000-8000-000000000003', 'ci-out@x.io'),
+  ('b6b60000-0000-4000-8000-000000000004', 'ci-other@x.io');
+
+-- The household owner shares a wallet with the household, then invites
+-- ci-mate into the household.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"b6b60000-0000-4000-8000-000000000001","email":"ci-owner@x.io"}';
+  insert into public.wallets (id, owner_id, name, kind, currency_code, color_slot, icon) values
+    ('b6b60000-0000-4000-8000-00000000000a', 'b6b60000-0000-4000-8000-000000000001', 'CI Shared', 'bank', 'USD', 1, 'landmark');
+  insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, occurred_on)
+    values ('b6b60000-0000-4000-8000-00000000000a', 'b6b60000-0000-4000-8000-000000000001', 'expense', -700, 'USD', '2026-09-02');
+  select set_wallet_sharing('b6b60000-0000-4000-8000-00000000000a', true, array[]::uuid[]);
+  do $$
+  declare v_id uuid;
+  begin
+    v_id := public.invite_to_space(
+      (select space_id from public.wallets where id = 'b6b60000-0000-4000-8000-00000000000a'), 'ci-mate@x.io');
+    perform set_config('request.jwt.claims', '{"sub":"b6b60000-0000-4000-8000-000000000002","email":"ci-mate@x.io"}', true);
+    perform public.accept_space_invite(v_id);
+  end $$;
+commit;
+
+-- ci-mate is a member, NOT the household owner. Their new wallet lands in
+-- the shared household (set_wallet_space, section G0) and they may invite
+-- whoever they like to it -- invites_owner_insert is per wallet.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"b6b60000-0000-4000-8000-000000000002","email":"ci-mate@x.io"}';
+  insert into public.wallets (id, owner_id, name, kind, currency_code, color_slot, icon) values
+    ('b6b60000-0000-4000-8000-00000000000b', 'b6b60000-0000-4000-8000-000000000002', 'CI Mate', 'bank', 'USD', 2, 'wallet');
+  insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, occurred_on)
+    values ('b6b60000-0000-4000-8000-00000000000b', 'b6b60000-0000-4000-8000-000000000002', 'expense', -800, 'USD', '2026-09-02');
+  insert into public.wallet_invites (id, wallet_id, invited_email, invited_by)
+    values ('b6b60000-0000-4000-8000-0000000000e1', 'b6b60000-0000-4000-8000-00000000000b',
+            'ci-out@x.io', 'b6b60000-0000-4000-8000-000000000002');
+commit;
+do $$ begin
+  assert (select space_id from wallets where id = 'b6b60000-0000-4000-8000-00000000000b')
+       = (select space_id from wallets where id = 'b6b60000-0000-4000-8000-00000000000a'),
+    'test setup broken: the member''s wallet is not in the shared household';
+  assert (select shared_with_household from wallets where id = 'b6b60000-0000-4000-8000-00000000000a'),
+    'test setup broken: the owner''s wallet is not household-shared';
+end $$;
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"b6b60000-0000-4000-8000-000000000003","email":"ci-out@x.io"}';
+  select accept_wallet_invite('b6b60000-0000-4000-8000-0000000000e1');
+  do $$ begin
+    assert (select count(*) from public.transactions where wallet_id = 'b6b60000-0000-4000-8000-00000000000b') = 1,
+      'PERMISSION BROKEN: the invitee cannot read the wallet they were invited to';
+    assert (select count(*) from public.wallets where id = 'b6b60000-0000-4000-8000-00000000000a') = 0,
+      'ESCALATION: a member''s wallet invite handed an outsider the household owner''s shared wallet';
+    assert (select count(*) from public.transactions where wallet_id = 'b6b60000-0000-4000-8000-00000000000a') = 0,
+      'ESCALATION: an outsider invited to one wallet can read the household-shared wallet''s transactions';
+    -- They ARE in the household, and see its category NAMES -- that is what
+    -- 0022's join is for, and all of it.
+    assert (select count(*) from public.categories
+             where space_id = (select space_id from public.wallets where id = 'b6b60000-0000-4000-8000-00000000000b')
+               and name = 'Groceries' and kind = 'expense') = 1,
+      '0022 BROKEN: a wallet invitee cannot read their new household''s category names';
+  end $$;
+commit;
+
+-- The owner cannot invite them into the household -- they are already in
+-- it. The deliberate way to hand them the shared wallet is re-running
+-- set_wallet_sharing, which the owner does with the member list in view.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"b6b60000-0000-4000-8000-000000000001","email":"ci-owner@x.io"}';
+  do $$
+  declare v_ok boolean := false;
+  begin
+    begin
+      perform public.invite_to_space(
+        (select space_id from public.wallets where id = 'b6b60000-0000-4000-8000-00000000000a'), 'ci-out@x.io');
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'that person is already in this household', format('wrong error: %s', sqlerrm);
+    end;
+    assert not v_ok, 'invite_to_space sent an invitation to someone already in the household';
+  end $$;
+  select set_wallet_sharing('b6b60000-0000-4000-8000-00000000000a', true, array[]::uuid[]);
+commit;
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"b6b60000-0000-4000-8000-000000000003","email":"ci-out@x.io"}';
+  do $$ begin
+    assert (select count(*) from public.transactions where wallet_id = 'b6b60000-0000-4000-8000-00000000000a') = 1,
+      'SHARE BROKEN: re-running set_wallet_sharing did not grant the newest household member';
+  end $$;
+commit;
+
+-- =====================================================================
+-- 0025: revoke_space_invite belongs to the household owner alone.
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"b6b60000-0000-4000-8000-000000000001","email":"ci-owner@x.io"}';
+  do $$
+  declare v_id uuid; v_ok boolean;
+  begin
+    v_id := public.invite_to_space(
+      (select space_id from public.wallets where id = 'b6b60000-0000-4000-8000-00000000000a'), 'ci-pend@x.io');
+
+    -- A member of the household, but not its owner.
+    perform set_config('request.jwt.claims', '{"sub":"b6b60000-0000-4000-8000-000000000002","email":"ci-mate@x.io"}', true);
+    v_ok := false;
+    begin
+      perform public.revoke_space_invite(v_id);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'that invitation is not yours to withdraw', format('wrong error: %s', sqlerrm);
+    end;
+    assert not v_ok, 'ESCALATION: a non-owner member withdrew the household''s invitation';
+
+    -- Another household's owner.
+    perform set_config('request.jwt.claims', '{"sub":"b6b60000-0000-4000-8000-000000000004","email":"ci-other@x.io"}', true);
+    v_ok := false;
+    begin
+      perform public.revoke_space_invite(v_id);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'that invitation is not yours to withdraw', format('wrong error: %s', sqlerrm);
+    end;
+    assert not v_ok, 'ESCALATION: another household''s owner withdrew this household''s invitation';
+
+    -- The owner can, and the row is gone.
+    perform set_config('request.jwt.claims', '{"sub":"b6b60000-0000-4000-8000-000000000001","email":"ci-owner@x.io"}', true);
+    perform public.revoke_space_invite(v_id);
+    assert not exists (select 1 from public.space_invites where id = v_id),
+      'revoke_space_invite left the invitation behind';
   end $$;
 commit;

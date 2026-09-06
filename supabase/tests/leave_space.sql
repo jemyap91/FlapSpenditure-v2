@@ -6,12 +6,14 @@
 --   mate   is in the household; owns M1 and M2 (both in the household)
 --   M1 has: a txn on 'Groceries', a txn on a custom 'Bikes', a rule on 'Bikes'
 --   M2 has: a txn with no category
---   budgets: B_mate over {M1, M2} on 'Bikes'; B_mixed over {W_shared, M1} (cap)
+--   budgets: B_mate over {M1, M2} on 'Bikes'; B_mixed over {W_shared, M1, M2}
 --   mate recorded one txn in W_shared
 -- mate leaves. Then: mate's new household has the 16 defaults plus 'Bikes';
 -- every moved row points at a category in the new household; B_mate moved
 -- with its category repointed; B_mixed kept W_shared only; owner's data
 -- untouched; mate can no longer read W_shared; mate's W_shared txn stays.
+-- B_mixed holds TWO moving wallets so the returned budgets_trimmed proves
+-- it counts budgets (1) and not budget_wallets rows (2).
 \set ON_ERROR_STOP on
 
 insert into auth.users (id, email) values
@@ -57,14 +59,27 @@ begin;
   select set_budget('c5c50000-0000-4000-8000-0000000000c1', date_trunc('month', current_date)::date, 10000,
     array['c5c50000-0000-4000-8000-0000000000b1','c5c50000-0000-4000-8000-0000000000b2']::uuid[]);
   select set_budget(null, date_trunc('month', current_date)::date, 90000,
-    array['c5c50000-0000-4000-8000-0000000000aa','c5c50000-0000-4000-8000-0000000000b1']::uuid[]);
+    array['c5c50000-0000-4000-8000-0000000000aa','c5c50000-0000-4000-8000-0000000000b1',
+          'c5c50000-0000-4000-8000-0000000000b2']::uuid[]);
 commit;
 
 -- >>> LEAVE
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"c5c50000-0000-4000-8000-000000000002","email":"ls-mate@x.io"}';
-  select * from leave_space((select space_id from public.wallets where id = 'c5c50000-0000-4000-8000-0000000000b1'));
+  do $$
+  declare v_wallets int; v_moved int; v_trimmed int;
+  begin
+    select r.wallets_moved, r.budgets_moved, r.budgets_trimmed
+      into v_wallets, v_moved, v_trimmed
+      from public.leave_space(
+        (select space_id from public.wallets where id = 'c5c50000-0000-4000-8000-0000000000b1')) r;
+    assert v_wallets = 2, format('LEAVE BROKEN: wallets_moved = %s, expected 2 (M1, M2)', v_wallets);
+    assert v_moved = 1, format('LEAVE BROKEN: budgets_moved = %s, expected 1 (B_mate)', v_moved);
+    -- B_mixed loses two links but is one budget.
+    assert v_trimmed = 1,
+      format('LEAVE BROKEN: budgets_trimmed = %s, expected 1 -- it is counting budget_wallets rows, not budgets', v_trimmed);
+  end $$;
 commit;
 
 do $$

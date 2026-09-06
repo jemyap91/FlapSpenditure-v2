@@ -66,12 +66,24 @@ is now deterministic for the ordinary case.
 Enforced in the database, never left to the app:
 
 1. **Household-row invariant.** For every wallet W and user U:
-   a `wallet_members` row with `via = 'household'` exists ⇔
-   `W.shared_with_household` and U is a member of W's household and U is not W's owner.
-   Held by two triggers on `space_members` (after insert: add `household`
-   rows on every shared wallet in that household; after delete: remove that
-   user's `household` and `direct` rows on wallets in that household) and by
-   `set_wallet_sharing` for the wallet-side half.
+   a `wallet_members` row with `via = 'household'` exists ⇒
+   `W.shared_with_household` and U is a member of W's household and U is not
+   W's owner — and the converse holds for anyone who **joined the household
+   through `accept_space_invite`, or was already a member when W's owner
+   last called `set_wallet_sharing`**.
+   The converse is deliberately *not* universal: someone who joined the
+   household by accepting a **wallet** invite (0022's
+   `sync_wallet_member_space`) gets that one wallet and the household's
+   category names, and no `household` rows at all. Any wallet owner can send
+   a wallet invite — including a member who is not the household's owner —
+   so a blanket "in the household ⇒ holds every shared wallet" rule would let
+   one member hand an outsider the household owner's wallets. The grant
+   therefore lives inside `accept_space_invite` (the household owner's own
+   invitation) and `set_wallet_sharing` (the wallet owner's own decision,
+   made with the member list in view), and in no trigger on `space_members`.
+   The removal half is a cascade, not a trigger: `wallet_members_in_space`
+   (0022) is `ON DELETE CASCADE`, so leaving the household drops that user's
+   `household` and `direct` rows on every wallet still in it.
 2. **A `direct` row is only ever granted by the wallet's owner** and is never
    touched by a household share or unshare.
 3. **0022's chain is untouched.** `wallet_members_in_space`,
@@ -95,7 +107,7 @@ comment explains: RLS is bypassed, so nothing else catches a bad caller.
 | `set_wallet_sharing(p_wallet uuid, p_household boolean, p_direct uuid[])` | wallet owner | Sets `shared_with_household`; reconciles `household` rows to every current household member (or none); reconciles `direct` rows to exactly `p_direct`. Refuses: caller not owner; any `p_direct` id not in the wallet's household; owner's own id in `p_direct`. |
 | `invite_to_space(p_space uuid, p_email text)` | household owner | Inserts a pending `space_invites` row. Refuses an address already a member. |
 | `revoke_space_invite(p_invite uuid)` | household owner | Deletes a pending invite of their household. |
-| `accept_space_invite(p_invite uuid)` | invitee, matched on `auth.jwt() ->> 'email'` exactly as `accept_wallet_invite` does | Inserts `space_members (role 'member')`; the insert trigger grants every household-shared wallet. Marks the invite accepted. |
+| `accept_space_invite(p_invite uuid)` | invitee, matched on `auth.jwt() ->> 'email'` exactly as `accept_wallet_invite` does | Inserts `space_members (role 'member')`, then grants every household-shared wallet in that household (§3.3(1) — the grant is here, not in a trigger). Marks the invite accepted. |
 | `decline_space_invite(p_invite uuid)` | invitee | Marks declined. |
 | `get_pending_space_invites()` | invitee | `(id, space_id, space_name, invited_by_name, created_at)` for the caller's email, same shape as `get_pending_invites`. |
 | `leave_space(p_space uuid)` | any non-owner member | §6. |
@@ -109,8 +121,8 @@ comment explains: RLS is bypassed, so nothing else catches a bad caller.
 
 - `wallet_members`: `members_write` (0004, owner-scoped `for all`) is
   **revoked to select only** for `authenticated`. Every insert and delete now
-  goes through `set_wallet_sharing`, `accept_wallet_invite`, the two
-  `space_members` triggers, and `add_owner_as_member`. This is what makes
+  goes through `set_wallet_sharing`, `accept_wallet_invite`,
+  `accept_space_invite`, and `add_owner_as_member`. This is what makes
   invariant 3.3(1) hold: no path can create a `household` row by hand or an
   `owner` row for the wrong user.
 - `space_invites`: `select` to `authenticated` under two policies mirroring
@@ -213,9 +225,11 @@ household invitation is present.
 ## 8. Testing
 
 - **`supabase/tests/constraints.sql`**
-  - The insert trigger adds `household` rows on every shared wallet for a
-    new member and nothing on unshared ones.
-  - The delete trigger removes a departing member's rows and no one else's.
+  - `accept_space_invite` adds `household` rows on every shared wallet for
+    the new member and nothing on unshared ones; a bare `space_members`
+    insert (0022's wallet-invite path) adds nothing at all.
+  - The `ON DELETE CASCADE` removes a departing member's rows and no one
+    else's.
   - `set_wallet_sharing` refuses a non-owner, a non-housemate id, and the
     owner's own id; an unshare leaves `direct` rows in place; a re-share is
     idempotent.
@@ -281,3 +295,5 @@ Departures from this design, all ruled by the controller during execution.
 | 4 | The leave/remove confirm dialog states the rule (what moves with the person) rather than predicted counts; the actual counts arrive in the status line after the action completes. | The counts depend on server-side matching (categories, budgets) that isn't known until the mutation runs; stating the rule up front is honest, and the after-the-fact status line reports what actually happened. | Task 7 |
 | 5 | Pending household invitations render in their own list, `<household> invitations`, separate from the members list. | Members and not-yet-members are different kinds of rows (one has a role, the other only an email and a Revoke control); a shared list would have needed a variant-typed row instead of two small, single-purpose lists. | Task 7 |
 | 6 | There is no delete trigger on `space_members`. | `wallet_members_in_space` (0022) is already `ON DELETE CASCADE`, so deleting a `space_members` row removes the departing member's `wallet_members` rows on every wallet in that household for free. `leave_space` moves wallets the person owns out first, so the cascade only ever removes rows on wallets that stay behind. A trigger would have duplicated that cascade. | Task 2 |
+| 7 | There is no insert trigger on `space_members` either: the household-share grant lives inside `accept_space_invite`. | A trigger fires on every path that inserts a membership row, and one of them is 0022's `sync_wallet_member_space` — reached whenever *any* wallet owner's emailed wallet invite is accepted, a member's as much as the household owner's. With the grant in a trigger, a member could invite an outsider to their own wallet and the outsider would be handed a `household` row on every household-shared wallet in the household, the owner's included. In `accept_space_invite` the grant follows the one join the household owner actually authorised. A wallet shared after someone joins still reaches them through `set_wallet_sharing`, which its owner runs deliberately. | Final fix wave |
+| 8 | The household `leave_space` moves a person into may already have other members, who can then read the category **names** copied out of the household they left. | Departure 3 reuses the person's own signup household, and that household can have had members added to it. Only category names travel — the moved wallets arrive `shared_with_household = false` with every non-owner `wallet_members` row dropped, so no transaction, balance or budget is visible. Names of the person's own categories are the same thing any housemate could already see. | Final fix wave |

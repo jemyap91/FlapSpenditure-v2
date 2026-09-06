@@ -1657,22 +1657,89 @@ begin;
     assert (select count(*) from public.wallet_members where wallet_id = 'a5a50000-0000-4000-8000-00000000000b') = 1,
       'a withdrawn direct share left its row behind';
   end $$;
+
+  -- REJECT: naming the owner as a direct share. Their row is the 'owner'
+  -- one add_owner_as_member made; a 'direct' row would displace it.
+  do $$
+  declare v_ok boolean := false;
+  begin
+    begin
+      perform set_wallet_sharing('a5a50000-0000-4000-8000-00000000000b', false,
+        array['a5a50000-0000-4000-8000-000000000001']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'the owner is always a member', format('wrong error: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: the wallet owner was accepted as a direct share';
+  end $$;
+
+  -- ACCEPT: the same person named twice is one row, not an ON CONFLICT
+  -- "cannot affect row a second time" failure.
+  do $$ begin
+    perform set_wallet_sharing('a5a50000-0000-4000-8000-00000000000b', false,
+      array['a5a50000-0000-4000-8000-000000000002',
+            'a5a50000-0000-4000-8000-000000000002']::uuid[]);
+    assert (select count(*) from public.wallet_members
+             where wallet_id = 'a5a50000-0000-4000-8000-00000000000b'
+               and user_id = 'a5a50000-0000-4000-8000-000000000002') = 1,
+      'a duplicated direct share did not collapse to one row';
+    perform set_wallet_sharing('a5a50000-0000-4000-8000-00000000000b', false, array[]::uuid[]);
+  end $$;
+
+  -- ACCEPT: reconciles, so running it twice changes nothing the second time.
+  do $$
+  declare v_first text[]; v_second text[];
+  begin
+    perform set_wallet_sharing('a5a50000-0000-4000-8000-00000000000b', true, array[]::uuid[]);
+    select array_agg(user_id::text || ':' || via::text order by user_id::text) into v_first
+      from public.wallet_members where wallet_id = 'a5a50000-0000-4000-8000-00000000000b';
+    perform set_wallet_sharing('a5a50000-0000-4000-8000-00000000000b', true, array[]::uuid[]);
+    select array_agg(user_id::text || ':' || via::text order by user_id::text) into v_second
+      from public.wallet_members where wallet_id = 'a5a50000-0000-4000-8000-00000000000b';
+    assert v_first = v_second,
+      format('set_wallet_sharing is not idempotent: %s then %s', v_first, v_second);
+    perform set_wallet_sharing('a5a50000-0000-4000-8000-00000000000b', false, array[]::uuid[]);
+  end $$;
 commit;
 
--- The join trigger: a new household member is granted every shared wallet.
+-- Accepting a HOUSEHOLD invitation grants every household-shared wallet --
+-- and nothing else grants them. A bare space_members row (which 0022's
+-- sync_wallet_member_space also writes, off any wallet owner's invite)
+-- grants nothing: that is what keeps one member's wallet invite from
+-- handing an outsider the household owner's shared wallets.
 begin;
   set local request.jwt.claims = '{"sub":"a5a50000-0000-4000-8000-000000000001","email":"hs-owner@x.io"}';
   select set_wallet_sharing('a5a50000-0000-4000-8000-00000000000b', true, array[]::uuid[]);
 commit;
-insert into auth.users (id, email) values ('a5a50000-0000-4000-8000-000000000004', 'hs-fourth@x.io');
+insert into auth.users (id, email) values
+  ('a5a50000-0000-4000-8000-000000000004', 'hs-fourth@x.io'),
+  ('a5a50000-0000-4000-8000-000000000005', 'hs-fifth@x.io');
+begin;
+  set local request.jwt.claims = '{"sub":"a5a50000-0000-4000-8000-000000000001","email":"hs-owner@x.io"}';
+  do $$
+  declare v_id uuid;
+  begin
+    v_id := public.invite_to_space(
+      (select space_id from public.wallets where id = 'a5a50000-0000-4000-8000-00000000000a'),
+      'hs-fourth@x.io');
+    perform set_config('request.jwt.claims',
+      '{"sub":"a5a50000-0000-4000-8000-000000000004","email":"hs-fourth@x.io"}', true);
+    perform public.accept_space_invite(v_id);
+  end $$;
+commit;
+-- The fifth arrives as a bare membership row, the way accept_wallet_invite
+-- would put them there.
 insert into space_members (space_id, user_id, role)
 values ((select space_id from wallets where id = 'a5a50000-0000-4000-8000-00000000000a'),
-        'a5a50000-0000-4000-8000-000000000004', 'member');
+        'a5a50000-0000-4000-8000-000000000005', 'member');
 do $$ begin
   assert (select via from wallet_members where wallet_id = 'a5a50000-0000-4000-8000-00000000000b'
            and user_id = 'a5a50000-0000-4000-8000-000000000004') = 'household',
-    'TRIGGER BROKEN: a new household member was not granted the shared wallet';
+    'JOIN BROKEN: accepting a household invitation did not grant the shared wallet';
   assert not exists (select 1 from wallet_members where wallet_id = 'a5a50000-0000-4000-8000-00000000000a'
            and user_id = 'a5a50000-0000-4000-8000-000000000004'),
-    'TRIGGER BROKEN: a new household member was granted a PRIVATE wallet';
+    'JOIN BROKEN: a new household member was granted a PRIVATE wallet';
+  assert not exists (select 1 from wallet_members
+           where user_id = 'a5a50000-0000-4000-8000-000000000005'),
+    'ESCALATION: a bare space_members row granted the household''s shared wallets';
 end $$;
