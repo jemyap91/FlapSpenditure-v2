@@ -103,10 +103,15 @@ export async function removeMember(walletId: string, userId: string): Promise<In
   // direct list and household flag, and submit the row without them. A
   // member who is here via the household cannot be removed one at a time
   // -- that is what "shared with the household" means -- so say so.
-  const [{ data: rows }, { data: w }] = await Promise.all([
+  const [{ data: rows, error: rowsError }, { data: w, error: wError }] = await Promise.all([
     supabase.from("wallet_members").select("user_id, via").eq("wallet_id", walletId),
     supabase.from("wallets").select("shared_with_household").eq("id", walletId).maybeSingle(),
   ]);
+  // Both reads must succeed before anything is written. In particular, a
+  // failed `shared_with_household` read must NOT silently default to
+  // `false` -- that would submit a row that turns OFF household sharing as
+  // a side effect of removing one direct member, with no error surfaced.
+  if (rowsError || wError) return { error: "Could not remove that person. Please try again." };
   const target = (rows ?? []).find((r) => r.user_id === userId);
   if (!target) return { error: "That person is not in this wallet." };
   if (target.via === "household") {

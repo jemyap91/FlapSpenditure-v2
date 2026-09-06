@@ -472,4 +472,48 @@ describe("removeMember", () => {
 
     expect(result).toEqual({ error: "Could not remove that person. Please try again." });
   });
+
+  /**
+   * Regression: the two reads that feed `set_wallet_sharing` (the current
+   * membership list, and the wallet's `shared_with_household` flag) used to
+   * be destructured for `data` only. A failed `shared_with_household` read
+   * left `w` undefined, and `w?.shared_with_household ?? false` silently
+   * substituted `false` — so a transient error on THIS read alone turned
+   * OFF household-wide sharing as a side effect of removing one direct
+   * member, with no error ever surfacing to the caller. Both reads' errors
+   * must be checked, and the flag must never be defaulted.
+   *
+   * The mock's `maybeSingle` returns the whole `walletLookup` fixture
+   * (both `data` and `error`) on every call to the `wallets` table. The
+   * FIRST call (the owner-id lookup earlier in `removeMember`) destructures
+   * only `data` and never inspects `error`, so setting `error` here does
+   * not disturb that owner check — it is only the second call, made
+   * alongside the `wallet_members` read, whose destructured `error` this
+   * test exercises.
+   */
+  it("returns a generic error, before any RPC, when the shared_with_household read fails", async () => {
+    getUser.mockResolvedValue({ data: { user: { id: OWNER_ID } } });
+    membersRows.data = [
+      { user_id: OWNER_ID, via: "owner" },
+      { user_id: MEMBER_ID, via: "direct" },
+    ];
+    walletLookup.data = { owner_id: OWNER_ID, shared_with_household: true };
+    walletLookup.error = { message: "connection reset", code: "08006" };
+
+    const result = await removeMember(WALLET_ID, MEMBER_ID);
+
+    expect(result).toEqual({ error: "Could not remove that person. Please try again." });
+    expect(rpcCalls).toEqual([]);
+  });
+
+  it("returns a generic error, before any RPC, when the membership read fails", async () => {
+    getUser.mockResolvedValue({ data: { user: { id: OWNER_ID } } });
+    membersRows.data = null;
+    membersRows.error = { message: "connection reset", code: "08006" };
+
+    const result = await removeMember(WALLET_ID, MEMBER_ID);
+
+    expect(result).toEqual({ error: "Could not remove that person. Please try again." });
+    expect(rpcCalls).toEqual([]);
+  });
 });
