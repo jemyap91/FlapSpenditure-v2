@@ -5,6 +5,7 @@ import { WalletForm } from "@/components/WalletForm";
 import { WalletList } from "./WalletList";
 import { MembersSection, type Member, type PendingInvite as SectionInvite } from "./MembersSection";
 import { PendingInvites, type PendingInvite } from "./PendingInvites";
+import type { SharingMember } from "@/components/WalletSharingRow";
 import { walletSortInput } from "@/lib/validation/wallet-group";
 import { mergeWalletBalances, arrangeWallets, defaultCurrencyFor, type BalanceRow, type WalletRow } from "./wallet-rows";
 
@@ -63,10 +64,15 @@ export default async function WalletsPage() {
     { data: sentInvites, error: sentInvitesError },
     { data: groups, error: groupsError },
     { data: prefs, error: prefsError },
+    { data: householdInvites, error: householdInvitesError },
+    { data: sharing, error: sharingError },
+    { data: spaceMembers, error: spaceMembersError },
   ] = await Promise.all([
     supabase
       .from("wallets")
-      .select("id, name, kind, currency_code, color_slot, icon, owner_id, starting_balance_minor, created_at")
+      .select(
+        "id, name, kind, currency_code, color_slot, icon, owner_id, starting_balance_minor, created_at, space_id, shared_with_household",
+      )
       .is("archived_at", null)
       .order("created_at"),
     supabase.rpc("get_wallet_balances"),
@@ -87,6 +93,18 @@ export default async function WalletsPage() {
     // arrangement of the same wallets, which is the point of them existing.
     supabase.from("wallet_groups").select("id, name, sort_order").order("sort_order"),
     supabase.from("wallet_prefs").select("wallet_id, group_id, sort_order"),
+    // Household invitations addressed to this person — surfaced in the same
+    // PendingInvites banner as wallet invites (Task 8), rather than only
+    // discoverable on /household.
+    supabase.rpc("get_pending_space_invites"),
+    // Who can currently see which wallet, and how (owner / household /
+    // direct) — feeds each wallet's WalletSharingRow the same way
+    // /household's does.
+    supabase.rpc("get_wallet_sharing"),
+    // Every household this person belongs to, and who else is in each —
+    // used below to build, per wallet, "everyone in its household except
+    // its owner" for WalletSharingRow's checkbox list.
+    supabase.rpc("get_space_members"),
   ]);
 
   // A query error is not an empty result — `data` comes back null for all
@@ -100,6 +118,9 @@ export default async function WalletsPage() {
   if (invitesError) throw new Error("Failed to load invitations");
   if (groupsError) throw new Error("Failed to load wallet groups");
   if (prefsError) throw new Error("Failed to load wallet preferences");
+  if (householdInvitesError) throw new Error("Failed to load household invitations");
+  if (sharingError) throw new Error("Failed to load wallet sharing");
+  if (spaceMembersError) throw new Error("Failed to load household members");
 
   const rows = mergeWalletBalances(
     (wallets ?? []) as WalletRow[],
@@ -122,6 +143,11 @@ export default async function WalletsPage() {
   );
 
   const ownerByWalletId = new Map((wallets ?? []).map((w) => [w.id, w.owner_id]));
+  // `rows` (WalletRow, from wallet-rows.ts) carries only the fields that
+  // file's own tests need — `space_id`/`shared_with_household` are read
+  // straight off the raw `wallets` select instead of widening that shared
+  // type for a field only this page uses.
+  const sharedByWalletId = new Map((wallets ?? []).map((w) => [w.id, w.shared_with_household]));
 
   // Grouped per wallet, and narrowed to wallets this person OWNS:
   // `invites_invitee_select` also lets them read invites addressed to
@@ -142,10 +168,30 @@ export default async function WalletsPage() {
     membersByWalletId.set(m.wallet_id, list);
   }
 
-  const pendingInvites: PendingInvite[] = (invites ?? []).map((i) => ({
-    id: i.id,
-    wallet_name: i.wallet_name,
-  }));
+  const pendingInvites: PendingInvite[] = [
+    ...(invites ?? []).map((i) => ({ id: i.id, kind: "wallet" as const, name: i.wallet_name })),
+    ...(householdInvites ?? []).map((i) => ({ id: i.id, kind: "household" as const, name: i.space_name })),
+  ];
+
+  // Per wallet: every member of ITS household except its owner, with how
+  // (if at all) they currently see this wallet. `get_space_members` returns
+  // every household this person belongs to, so it is filtered down to the
+  // one wallet's `space_id` — a person in more than one household must not
+  // see one wallet's sharing offered to a household it isn't in.
+  const viaByWalletAndUser = new Map(
+    (sharing ?? []).map((s) => [`${s.wallet_id}:${s.user_id}`, s.via]),
+  );
+  const householdMembersByWalletId = new Map<string, SharingMember[]>();
+  for (const w of wallets ?? []) {
+    const members: SharingMember[] = (spaceMembers ?? [])
+      .filter((m) => m.space_id === w.space_id && m.user_id !== w.owner_id)
+      .map((m) => ({
+        user_id: m.user_id,
+        display_name: m.display_name,
+        via: viaByWalletAndUser.get(`${w.id}:${m.user_id}`) ?? null,
+      }));
+    householdMembersByWalletId.set(w.id, members);
+  }
 
   return (
     <div className="mx-auto max-w-2xl p-6">
@@ -194,9 +240,12 @@ export default async function WalletsPage() {
             </h2>
               <MembersSection
                 walletId={w.id}
+                walletName={w.name}
                 members={membersByWalletId.get(w.id) ?? []}
                 pendingInvites={sentByWalletId.get(w.id) ?? []}
                 isOwner={ownerByWalletId.get(w.id) === profile.id}
+                householdShared={sharedByWalletId.get(w.id) ?? false}
+                householdMembers={householdMembersByWalletId.get(w.id) ?? []}
               />
             </section>,
           ]),
