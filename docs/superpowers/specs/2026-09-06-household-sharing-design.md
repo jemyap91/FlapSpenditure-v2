@@ -165,9 +165,10 @@ Steps, for user U leaving household S:
    step 5 and it finds nothing.
 
 Transactions U recorded in wallets that stay behind are not touched:
-`created_by` still names U, and attribution keeps rendering their name via
-`get_wallet_members`' replacement for departed users (`profiles` still
-exists; only membership changed).
+`created_by` still names U. Their name stops rendering beside those rows,
+because `get_wallet_members` returns current members only and the
+transactions page resolves attribution through it; that is already what
+happens today when someone is removed from a wallet, and it is accepted.
 
 ## 7. Screens
 
