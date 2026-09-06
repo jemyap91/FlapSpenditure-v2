@@ -98,23 +98,30 @@ export async function removeMember(walletId: string, userId: string): Promise<In
     return { error: "The owner cannot be removed." };
   }
 
-  const { error } = await supabase
-    .from("wallet_members")
-    .delete()
-    .eq("wallet_id", walletId)
-    .eq("user_id", userId)
-    // Defence in depth: even if the JS guard above were ever wrong, this
-    // is type-correct by construction — Postgres compares as `uuid`, not
-    // as a string, so it cannot be bypassed by case the way `===` above
-    // could.
-    .neq("user_id", wallet.owner_id);
+  // wallet_members is no longer writable directly (0025). Removing one
+  // person is "the same sharing, minus them": read the wallet's current
+  // direct list and household flag, and submit the row without them. A
+  // member who is here via the household cannot be removed one at a time
+  // -- that is what "shared with the household" means -- so say so.
+  const [{ data: rows }, { data: w }] = await Promise.all([
+    supabase.from("wallet_members").select("user_id, via").eq("wallet_id", walletId),
+    supabase.from("wallets").select("shared_with_household").eq("id", walletId).maybeSingle(),
+  ]);
+  const target = (rows ?? []).find((r) => r.user_id === userId);
+  if (!target) return { error: "That person is not in this wallet." };
+  if (target.via === "household") {
+    return { error: "They see this wallet because it is shared with the household. Turn that off to remove them." };
+  }
+  const direct = (rows ?? []).filter((r) => r.via === "direct" && r.user_id !== userId).map((r) => r.user_id);
+  const { error } = await supabase.rpc("set_wallet_sharing", {
+    p_wallet: walletId,
+    p_household: w?.shared_with_household ?? false,
+    p_direct: direct,
+  });
   if (error) return { error: "Could not remove that person. Please try again." };
-
-  // Access is changing for the removed person, and the (app) layout's
-  // wallet-count/membership gate reads the same membership data —
-  // the same reasoning respondToInvite's revalidation follows above.
   revalidatePath("/", "layout");
   revalidatePath("/wallets");
+  revalidatePath("/household");
   return {};
 }
 

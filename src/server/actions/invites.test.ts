@@ -19,6 +19,7 @@ const OWNER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const MEMBER_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const WALLET_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const INVITE_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const OTHER_DIRECT_ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 
 /**
  * `vi.hoisted` is required because `vi.mock` factories are hoisted above
@@ -32,7 +33,7 @@ const INVITE_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
  * JS-level string comparison inside the action itself (`userId ===
  * wallet.owner_id`, evaluated before anything reaches Postgres), so the
  * fake `.eq()` calls are non-filtering RECORDERS that always resolve to
- * whatever `walletLookup`/`membersDelete` currently hold. What they record
+ * whatever `walletLookup`/`membersRows` currently hold. What they record
  * is asserted on directly (`membersEqCalls`), alongside each action's
  * return value.
  *
@@ -44,7 +45,7 @@ const INVITE_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const {
   getUser,
   walletLookup,
-  membersDelete,
+  membersRows,
   membersEqCalls,
   invitesInsert,
   invitesInsertPayloads,
@@ -54,8 +55,11 @@ const {
   revalidatePath,
 } = vi.hoisted(() => ({
   getUser: vi.fn(),
-  walletLookup: { data: null as { owner_id: string } | null, error: null as unknown },
-  membersDelete: { error: null as unknown },
+  walletLookup: {
+    data: null as { owner_id: string; shared_with_household: boolean } | null,
+    error: null as unknown,
+  },
+  membersRows: { data: [] as { user_id: string; via: string }[] | null, error: null as unknown },
   membersEqCalls: [] as unknown[][],
   invitesInsert: { error: null as unknown },
   invitesInsertPayloads: [] as unknown[],
@@ -95,26 +99,21 @@ vi.mock("@/lib/supabase/server", () => ({
         return builder;
       }
       if (table === "wallet_members") {
+        // wallet_members is no longer writable directly (0025) — removeMember
+        // only reads it now, to learn who is currently on the wallet and how
+        // (`via`), before submitting the row minus the target through
+        // set_wallet_sharing.
         const builder: Record<string, unknown> = {
-          delete: () => builder,
+          select: () => builder,
           eq: (...args: unknown[]) => {
             membersEqCalls.push(["eq", ...args]);
             return builder;
           },
-          // removeMember also chains .neq("user_id", wallet.owner_id) as a
-          // database-level guard (defence in depth alongside the JS check).
-          // The fake doesn't filter on it — it records it, so a test can
-          // prove the guard is actually part of the statement rather than
-          // taking the source comment's word for it.
-          neq: (...args: unknown[]) => {
-            membersEqCalls.push(["neq", ...args]);
-            return builder;
-          },
           // Real supabase-js query builders are thenable (awaiting the
           // builder itself resolves the request) — `removeMember` relies on
-          // that (`await supabase.from(...).delete().eq(...).eq(...)`), so
-          // the fake needs a `.then`, not a terminal method call.
-          then: (resolve: (v: { error: unknown }) => void) => resolve(membersDelete),
+          // that (`await supabase.from(...).select(...).eq(...)`), so the
+          // fake needs a `.then`, not a terminal method call.
+          then: (resolve: (v: { data: typeof membersRows.data; error: unknown }) => void) => resolve(membersRows),
         };
         return builder;
       }
@@ -135,9 +134,10 @@ beforeEach(() => {
   invitesInsertPayloads.length = 0;
   rpcCalls.length = 0;
   fromTables.length = 0;
-  walletLookup.data = { owner_id: OWNER_ID };
+  walletLookup.data = { owner_id: OWNER_ID, shared_with_household: false };
   walletLookup.error = null;
-  membersDelete.error = null;
+  membersRows.data = [];
+  membersRows.error = null;
   invitesInsert.error = null;
   rpcResult.error = null;
 });
@@ -385,52 +385,88 @@ describe("removeMember", () => {
     expect(result).toEqual({ error: "Only the wallet owner can do that." });
   });
 
-  it("removes a legitimate member and revalidates both the layout and /wallets", async () => {
+  /**
+   * wallet_members is no longer writable directly (0025); removing one
+   * person is "the same sharing, minus them" — removeMember reads the
+   * wallet's current direct list and household flag, then resubmits the
+   * row through set_wallet_sharing without the target. This asserts the
+   * OTHER direct member survives the trip (proving the filter removes only
+   * the target, not the whole direct list) and that the household flag is
+   * carried through unchanged.
+   */
+  it("removes a legitimate direct member via set_wallet_sharing, keeping the others, and revalidates layout/wallets/household", async () => {
     getUser.mockResolvedValue({ data: { user: { id: OWNER_ID } } });
+    walletLookup.data = { owner_id: OWNER_ID, shared_with_household: true };
+    membersRows.data = [
+      { user_id: OWNER_ID, via: "owner" },
+      { user_id: MEMBER_ID, via: "direct" },
+      { user_id: OTHER_DIRECT_ID, via: "direct" },
+    ];
 
     const result = await removeMember(WALLET_ID, MEMBER_ID);
 
     expect(result).toEqual({});
+    expect(rpcCalls).toEqual([
+      { fn: "set_wallet_sharing", args: { p_wallet: WALLET_ID, p_household: true, p_direct: [OTHER_DIRECT_ID] } },
+    ]);
     expect(revalidatePath).toHaveBeenCalledWith("/", "layout");
     expect(revalidatePath).toHaveBeenCalledWith("/wallets");
+    expect(revalidatePath).toHaveBeenCalledWith("/household");
   });
 
-  /**
-   * The JS-level owner guard above is not the only protection, and until
-   * now nothing observed the other one. `removeMember` also chains
-   * `.neq("user_id", wallet.owner_id)` onto the DELETE, so Postgres — which
-   * compares as `uuid`, and therefore case-insensitively — refuses to match
-   * the owner's row even if the JS comparison were ever wrong again.
-   *
-   * A comment claiming a database-level guard exists is not evidence that
-   * it is still in the statement. This asserts the whole recorded chain, so
-   * dropping the `.neq`, or reordering it away from `wallet.owner_id`, or
-   * scoping the DELETE to the wrong columns, all fail here.
-   */
-  it("scopes the DELETE to the wallet and member AND excludes the owner at the database level", async () => {
+  it("reads the wallet's current membership and sharing flag before writing", async () => {
     getUser.mockResolvedValue({ data: { user: { id: OWNER_ID } } });
+    membersRows.data = [
+      { user_id: OWNER_ID, via: "owner" },
+      { user_id: MEMBER_ID, via: "direct" },
+    ];
 
     await removeMember(WALLET_ID, MEMBER_ID);
 
-    expect(membersEqCalls).toEqual([
-      ["eq", "wallet_id", WALLET_ID],
-      ["eq", "user_id", MEMBER_ID],
-      ["neq", "user_id", OWNER_ID],
-    ]);
+    expect(membersEqCalls).toEqual([["eq", "wallet_id", WALLET_ID]]);
   });
 
-  it("issues no DELETE at all when the caller is not the owner", async () => {
+  it("refuses to remove someone who is here via the household, without calling any RPC", async () => {
+    getUser.mockResolvedValue({ data: { user: { id: OWNER_ID } } });
+    membersRows.data = [
+      { user_id: OWNER_ID, via: "owner" },
+      { user_id: MEMBER_ID, via: "household" },
+    ];
+
+    const result = await removeMember(WALLET_ID, MEMBER_ID);
+
+    expect(result).toEqual({
+      error: "They see this wallet because it is shared with the household. Turn that off to remove them.",
+    });
+    expect(rpcCalls).toEqual([]);
+  });
+
+  it("reports the target is not in the wallet when they are not among its members", async () => {
+    getUser.mockResolvedValue({ data: { user: { id: OWNER_ID } } });
+    membersRows.data = [{ user_id: OWNER_ID, via: "owner" }];
+
+    const result = await removeMember(WALLET_ID, MEMBER_ID);
+
+    expect(result).toEqual({ error: "That person is not in this wallet." });
+    expect(rpcCalls).toEqual([]);
+  });
+
+  it("issues no RPC at all when the caller is not the owner", async () => {
     getUser.mockResolvedValue({ data: { user: { id: MEMBER_ID } } });
 
     await removeMember(WALLET_ID, MEMBER_ID);
 
-    expect(membersEqCalls).toEqual([]);
+    expect(rpcCalls).toEqual([]);
     expect(fromTables).toEqual(["wallets"]);
   });
 
-  it("returns an error, never throws, when the DELETE fails", async () => {
+  it("returns an error, never throws, when set_wallet_sharing is refused", async () => {
     getUser.mockResolvedValue({ data: { user: { id: OWNER_ID } } });
-    membersDelete.error = { message: "connection reset", code: "08006" };
+    membersRows.data = [
+      { user_id: OWNER_ID, via: "owner" },
+      { user_id: MEMBER_ID, via: "direct" },
+    ];
+    rpcResult.error = { message: "connection reset", code: "08006" };
 
     const result = await removeMember(WALLET_ID, MEMBER_ID);
 
