@@ -588,11 +588,17 @@ begin;
 commit;
 
 -- =====================================================================
--- 8. Legitimate membership: Alice (owner) adds Bob as a real member.
---    This is the POSITIVE control paired with section 4's escalation
---    denial -- members_write must actually work for the wallet's owner,
---    not just always reject everyone.
+-- 8. Legitimate membership: Bob becomes a real member of Alice's wallet.
+--    Paired with section 4's escalation denial above. Direct writes to
+--    wallet_members are gone (0025), so this membership can no longer be
+--    granted by the owner's own INSERT -- it is seeded here at superuser
+--    scope, and what stays under test below is that the owner can still
+--    manage the wallet itself once a real member exists on it.
 -- =====================================================================
+-- 0025: superuser scope, members_write is gone
+insert into public.wallet_members (wallet_id, user_id, role)
+  values ('cccccccc-0000-0000-0000-000000000003', 'bbbbbbbb-0000-0000-0000-000000000002', 'member');
+
 begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
@@ -600,14 +606,11 @@ begin;
     assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
   end $$;
 
-  insert into public.wallet_members (wallet_id, user_id, role)
-    values ('cccccccc-0000-0000-0000-000000000003', 'bbbbbbbb-0000-0000-0000-000000000002', 'member');
-
   do $$ begin
     assert (select role from public.wallet_members
               where wallet_id = 'cccccccc-0000-0000-0000-000000000003'
                 and user_id = 'bbbbbbbb-0000-0000-0000-000000000002') = 'member',
-      'PERMISSION BROKEN: alice (owner) cannot add a member to her own wallet';
+      'test setup broken: bob is not a member of alice''s wallet';
   end $$;
 
   -- Positive control, paired with section 9's denied rename/owner-reassign
@@ -751,8 +754,11 @@ begin;
   end $$;
 
   -- Negative: bob (member, not owner) cannot escalate his own role, nor
-  -- add further members -- members_write is owner-only regardless of
-  -- whether the caller is already a legitimate member.
+  -- add further members -- direct writes to wallet_members are gone (0025),
+  -- so UPDATE is refused for want of privilege before any policy or column
+  -- grant is consulted at all (0022's `grant update (role)` was table-wide
+  -- UPDATE that 0025 revokes, same as the owner_id case above). The test
+  -- accepts either outcome rather than pinning the weaker one.
   do $$
   declare n int;
   begin
@@ -761,6 +767,8 @@ begin;
         and user_id = 'bbbbbbbb-0000-0000-0000-000000000002';
     get diagnostics n = row_count;
     assert n = 0, 'LEAK: member bob escalated his own role to owner';
+  exception when insufficient_privilege then
+    null;
   end $$;
 
   -- Positive: bob (legitimate member now) CAN write into the shared
@@ -2787,18 +2795,19 @@ begin;
     ('5e7b0000-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001', 'SB Wallet Two', 'bank', 'SGD', 2, 'wallet'),
     ('5e7b0000-0000-0000-0000-000000000004', 'aaaaaaaa-0000-0000-0000-000000000001', 'SB Wallet EUR', 'bank', 'EUR', 4, 'euro');
 
-  -- Real membership, granted by the owner, not seeded at superuser scope --
-  -- this is the row the membership-denial block below relies on being
-  -- genuine.
-  insert into public.wallet_members (wallet_id, user_id, role)
-    values ('5e7b0000-0000-0000-0000-000000000002', 'bbbbbbbb-0000-0000-0000-000000000002', 'member');
-
   do $$ begin
     assert is_wallet_member('5e7b0000-0000-0000-0000-000000000001'::uuid) = true
        and is_wallet_member('5e7b0000-0000-0000-0000-000000000002'::uuid) = true,
       'test setup broken: alice should be a member of both her own wallets';
   end $$;
 commit;
+
+-- Real membership -- this is the row the membership-denial block below
+-- relies on being genuine. Direct writes to wallet_members are gone
+-- (0025), so it can no longer be granted by the owner's own INSERT.
+-- 0025: superuser scope, members_write is gone
+insert into public.wallet_members (wallet_id, user_id, role)
+  values ('5e7b0000-0000-0000-0000-000000000002', 'bbbbbbbb-0000-0000-0000-000000000002', 'member');
 
 begin;
   set local role authenticated;
@@ -3589,13 +3598,19 @@ begin;
 
   insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon) values
     ('a4a40000-0000-0000-0000-00000000a004', 'aaaaaaaa-0000-0000-0000-000000000001', 'Task4 D', 'bank', 'USD', 8, 'wallet');
+commit;
 
-  -- Bob is a REAL member here (members_write's owner-only `with check`,
-  -- proven working back in section 8) -- not a superuser seed, so this
-  -- exercises the identical is_wallet_member() path update_transfer_pair's
-  -- own internal SELECTs run through.
-  insert into public.wallet_members (wallet_id, user_id, role)
-    values ('a4a40000-0000-0000-0000-00000000a004', 'bbbbbbbb-0000-0000-0000-000000000002', 'member');
+-- Bob is a REAL member of a004, exercising the identical is_wallet_member()
+-- path update_transfer_pair's own internal SELECTs run through -- direct
+-- writes to wallet_members are gone (0025), so this is seeded at superuser
+-- scope rather than granted by the owner's own INSERT.
+-- 0025: superuser scope, members_write is gone
+insert into public.wallet_members (wallet_id, user_id, role)
+  values ('a4a40000-0000-0000-0000-00000000a004', 'bbbbbbbb-0000-0000-0000-000000000002', 'member');
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
 
   -- f0003: bob's wallet (a004) holds the OUTGOING leg, Alice-only a001
   -- holds the INCOMING leg -- in_ccy will be the NULL one.

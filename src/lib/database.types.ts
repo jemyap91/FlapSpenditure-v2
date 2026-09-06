@@ -576,6 +576,7 @@ export type Database = {
           role: Database["public"]["Enums"]["member_role"]
           space_id: string
           user_id: string
+          via: Database["public"]["Enums"]["member_via"]
           wallet_id: string
         }
         Insert: {
@@ -583,6 +584,7 @@ export type Database = {
           role?: Database["public"]["Enums"]["member_role"]
           space_id: string
           user_id: string
+          via?: Database["public"]["Enums"]["member_via"]
           wallet_id: string
         }
         Update: {
@@ -590,6 +592,7 @@ export type Database = {
           role?: Database["public"]["Enums"]["member_role"]
           space_id?: string
           user_id?: string
+          via?: Database["public"]["Enums"]["member_via"]
           wallet_id?: string
         }
         Relationships: [
@@ -670,6 +673,7 @@ export type Database = {
           kind: Database["public"]["Enums"]["wallet_kind"]
           name: string
           owner_id: string
+          shared_with_household: boolean
           space_id: string
           starting_balance_minor: number
           updated_at: string
@@ -684,6 +688,7 @@ export type Database = {
           kind: Database["public"]["Enums"]["wallet_kind"]
           name: string
           owner_id: string
+          shared_with_household?: boolean
           space_id: string
           starting_balance_minor?: number
           updated_at?: string
@@ -698,6 +703,7 @@ export type Database = {
           kind?: Database["public"]["Enums"]["wallet_kind"]
           name?: string
           owner_id?: string
+          shared_with_household?: boolean
           space_id?: string
           starting_balance_minor?: number
           updated_at?: string
@@ -879,6 +885,7 @@ export type Database = {
       category_kind: "expense" | "income"
       invite_status: "pending" | "accepted" | "declined"
       member_role: "owner" | "member"
+      member_via: "owner" | "household" | "direct"
       recur_interval: "weekly" | "fortnightly" | "monthly" | "yearly"
       theme_pref: "system" | "light" | "dark"
       txn_kind: "expense" | "income" | "transfer"
@@ -1016,6 +1023,7 @@ export const Constants = {
       category_kind: ["expense", "income"],
       invite_status: ["pending", "accepted", "declined"],
       member_role: ["owner", "member"],
+      member_via: ["owner", "household", "direct"],
       recur_interval: ["weekly", "fortnightly", "monthly", "yearly"],
       theme_pref: ["system", "light", "dark"],
       txn_kind: ["expense", "income", "transfer"],

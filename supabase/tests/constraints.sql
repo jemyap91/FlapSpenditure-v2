@@ -1509,3 +1509,71 @@ begin
             where id = '90909090-0000-0000-0000-0000000000e1') = current_date - 5,
     'the edited row''s occurred_on was disturbed by the slot checks above';
 end $$;
+
+-- =====================================================================
+-- 0025: membership provenance and the end of direct wallet_members writes
+-- =====================================================================
+insert into auth.users (id, email) values
+  ('a5a50000-0000-4000-8000-000000000001', 'hs-owner@x.io'),
+  ('a5a50000-0000-4000-8000-000000000002', 'hs-mate@x.io');
+insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon) values
+  ('a5a50000-0000-4000-8000-00000000000a', 'a5a50000-0000-4000-8000-000000000001', 'HS Main', 'bank', 'SGD', 1, 'landmark');
+
+do $$ begin
+  -- add_owner_as_member records WHY the row exists.
+  assert (select via from wallet_members
+           where wallet_id = 'a5a50000-0000-4000-8000-00000000000a'
+             and user_id = 'a5a50000-0000-4000-8000-000000000001') = 'owner',
+    '0025 BROKEN: the owner''s membership row is not via = owner';
+  assert (select shared_with_household from wallets where id = 'a5a50000-0000-4000-8000-00000000000a') = false,
+    '0025 BROKEN: a new wallet is not private by default';
+end $$;
+
+-- accept_wallet_invite (0022) inserts without naming via; the default must
+-- make that a DIRECT share, not a household one.
+insert into wallet_invites (id, wallet_id, invited_email, invited_by)
+values ('a5a50000-0000-4000-8000-0000000000e1', 'a5a50000-0000-4000-8000-00000000000a',
+        'hs-mate@x.io', 'a5a50000-0000-4000-8000-000000000001');
+begin;
+  set local request.jwt.claims = '{"sub":"a5a50000-0000-4000-8000-000000000002","email":"hs-mate@x.io"}';
+  select accept_wallet_invite('a5a50000-0000-4000-8000-0000000000e1');
+commit;
+do $$ begin
+  assert (select via from wallet_members
+           where wallet_id = 'a5a50000-0000-4000-8000-00000000000a'
+             and user_id = 'a5a50000-0000-4000-8000-000000000002') = 'direct',
+    '0025 BROKEN: an accepted wallet invite is not via = direct';
+end $$;
+
+-- No direct writes to wallet_members for authenticated, at the privilege
+-- boundary: a wallet OWNER (who members_write used to admit) is refused.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"a5a50000-0000-4000-8000-000000000001","email":"hs-owner@x.io"}';
+  do $$ begin
+    begin
+      delete from public.wallet_members
+       where wallet_id = 'a5a50000-0000-4000-8000-00000000000a'
+         and user_id = 'a5a50000-0000-4000-8000-000000000002';
+      raise exception 'LEAK: the wallet owner could DELETE from wallet_members directly';
+    exception when insufficient_privilege then null;
+    end;
+    begin
+      insert into public.wallet_members (wallet_id, user_id, role)
+      values ('a5a50000-0000-4000-8000-00000000000a', 'a5a50000-0000-4000-8000-000000000001', 'member');
+      raise exception 'LEAK: the wallet owner could INSERT into wallet_members directly';
+    exception when insufficient_privilege then null;
+    end;
+    assert (select count(*) from public.wallet_members where wallet_id = 'a5a50000-0000-4000-8000-00000000000a') = 2,
+      'PERMISSION BROKEN: a member cannot still SELECT wallet_members';
+  end $$;
+commit;
+
+-- One owner per household: the earliest-joined owner stays, others demote.
+do $$
+declare v_space uuid;
+begin
+  select space_id into v_space from wallets where id = 'a5a50000-0000-4000-8000-00000000000a';
+  assert (select count(*) from space_members where space_id = v_space and role = 'owner') = 1,
+    '0025 BROKEN: a household has more than one owner';
+end $$;
