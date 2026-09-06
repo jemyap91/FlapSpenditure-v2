@@ -319,3 +319,167 @@ grant execute on function revoke_space_invite(uuid)      to authenticated;
 grant execute on function accept_space_invite(uuid)      to authenticated;
 grant execute on function decline_space_invite(uuid)     to authenticated;
 grant execute on function get_pending_space_invites()    to authenticated;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- G. Leaving a household: your wallets come with you
+-- ─────────────────────────────────────────────────────────────────────────
+-- One transaction, keys deferred (section C). 0022's merge run in reverse
+-- for one person: every category the moving rows reference is found or
+-- created by (kind, lower(btrim(name))) in the new household, then rows
+-- are repointed and moved. Budgets entirely over moving wallets move;
+-- mixed ones lose the moving wallets (they keep at least one, so none
+-- empties). Not granted directly: leave_space and remove_space_member
+-- below are the two callers and carry the authorisation.
+create function leave_space_impl(p_space uuid, p_user uuid)
+  returns table(wallets_moved int, budgets_moved int, budgets_trimmed int)
+  language plpgsql security definer set search_path = '' as $$
+declare
+  v_role          public.member_role;
+  v_new           uuid;
+  v_wallets       uuid[];
+  v_moved_budgets uuid[];
+  v_trimmed       int;
+begin
+  set constraints all deferred;
+
+  select sm.role into v_role from public.space_members sm where sm.space_id = p_space and sm.user_id = p_user;
+  if v_role is null then
+    raise exception 'not a member of that household';
+  end if;
+  if v_role = 'owner' then
+    raise exception 'the household owner cannot leave';
+  end if;
+
+  -- handle_new_user (0022) already gave this person a household at signup,
+  -- dormant while they were a member elsewhere. Reuse it rather than
+  -- minting another: without this, leaving-and-rejoining piles up empty
+  -- owned households nobody can see a reason for.
+  select sm.space_id into v_new
+    from public.space_members sm
+   where sm.user_id = p_user and sm.role = 'owner' and sm.space_id <> p_space
+   order by sm.joined_at asc
+   limit 1;
+  if v_new is null then
+    insert into public.spaces (name)
+    values (left(coalesce((select nullif(btrim(p.display_name), '') from public.profiles p where p.id = p_user), 'My'), 49) || ' household')
+    returning id into v_new;
+    insert into public.space_members (space_id, user_id, role) values (v_new, p_user, 'owner');
+  end if;
+
+  select coalesce(array_agg(w.id), array[]::uuid[]) into v_wallets
+    from public.wallets w where w.owner_id = p_user and w.space_id = p_space;
+
+  select coalesce(array_agg(b.id), array[]::uuid[]) into v_moved_budgets
+    from public.budgets b
+   where b.space_id = p_space
+     and exists (select 1 from public.budget_wallets bw where bw.budget_id = b.id)
+     and not exists (select 1 from public.budget_wallets bw
+                      where bw.budget_id = b.id and not (bw.wallet_id = any(v_wallets)));
+
+  -- Categories the moving rows need, created in the new household where no
+  -- active same-named one exists (the seed trigger already made 16).
+  insert into public.categories (space_id, name, kind, color_slot, icon, sort_order, is_default)
+  select distinct on (c.kind, lower(btrim(c.name)))
+         v_new, c.name, c.kind, c.color_slot, c.icon, 900, false
+    from public.categories c
+   where c.id in (
+           select t.category_id from public.transactions t
+            where t.wallet_id = any(v_wallets) and t.category_id is not null
+           union
+           select r.category_id from public.recurring_rules r where r.wallet_id = any(v_wallets)
+           union
+           select b.category_id from public.budgets b
+            where b.id = any(v_moved_budgets) and b.category_id is not null)
+     and not exists (select 1 from public.categories n
+                      where n.space_id = v_new and n.kind = c.kind
+                        and lower(btrim(n.name)) = lower(btrim(c.name)) and n.archived_at is null)
+   order by c.kind, lower(btrim(c.name)), (c.archived_at is null) desc, c.created_at;
+
+  update public.transactions t
+     set category_id = n.id, space_id = v_new
+    from public.categories o
+    join public.categories n
+      on n.space_id = v_new and n.kind = o.kind
+     and lower(btrim(n.name)) = lower(btrim(o.name)) and n.archived_at is null
+   where t.wallet_id = any(v_wallets) and t.category_id = o.id;
+  update public.transactions set space_id = v_new
+   where wallet_id = any(v_wallets) and category_id is null;
+
+  update public.recurring_rules r
+     set category_id = n.id, space_id = v_new
+    from public.categories o
+    join public.categories n
+      on n.space_id = v_new and n.kind = o.kind
+     and lower(btrim(n.name)) = lower(btrim(o.name)) and n.archived_at is null
+   where r.wallet_id = any(v_wallets) and r.category_id = o.id;
+
+  update public.budgets b
+     set category_id = n.id, space_id = v_new
+    from public.categories o
+    join public.categories n
+      on n.space_id = v_new and n.kind = o.kind
+     and lower(btrim(n.name)) = lower(btrim(o.name)) and n.archived_at is null
+   where b.id = any(v_moved_budgets) and b.category_id = o.id;
+  update public.budgets set space_id = v_new
+   where id = any(v_moved_budgets) and category_id is null;
+  update public.budget_wallets set space_id = v_new where budget_id = any(v_moved_budgets);
+
+  delete from public.budget_wallets bw
+   where bw.wallet_id = any(v_wallets) and not (bw.budget_id = any(v_moved_budgets));
+  get diagnostics v_trimmed = row_count;
+
+  update public.wallets set space_id = v_new, shared_with_household = false where id = any(v_wallets);
+  delete from public.wallet_members where wallet_id = any(v_wallets) and user_id <> p_user;
+  update public.wallet_members set space_id = v_new where wallet_id = any(v_wallets) and user_id = p_user;
+
+  -- Rows on wallets that stay behind; the cascade from space_members would
+  -- take these too, but say it.
+  delete from public.wallet_members m using public.wallets w
+   where w.id = m.wallet_id and w.space_id = p_space and m.user_id = p_user;
+  delete from public.space_members where space_id = p_space and user_id = p_user;
+
+  return query select cardinality(v_wallets), cardinality(v_moved_budgets), v_trimmed;
+end $$;
+
+create function leave_space(p_space uuid)
+  returns table(wallets_moved int, budgets_moved int, budgets_trimmed int)
+  language plpgsql security definer set search_path = '' as $$
+begin
+  if auth.uid() is null then raise exception 'not signed in'; end if;
+  return query select * from public.leave_space_impl(p_space, auth.uid());
+end $$;
+
+create function remove_space_member(p_space uuid, p_user uuid)
+  returns table(wallets_moved int, budgets_moved int, budgets_trimmed int)
+  language plpgsql security definer set search_path = '' as $$
+begin
+  if not public.is_space_owner(p_space) then
+    raise exception 'only the household owner can remove people';
+  end if;
+  if p_user = auth.uid() then
+    raise exception 'the household owner cannot leave';
+  end if;
+  return query select * from public.leave_space_impl(p_space, p_user);
+end $$;
+
+revoke all on function leave_space_impl(uuid, uuid)        from public, anon, authenticated;
+revoke all on function leave_space(uuid)                   from public, anon;
+revoke all on function remove_space_member(uuid, uuid)     from public, anon;
+grant execute on function leave_space(uuid)                to authenticated;
+grant execute on function remove_space_member(uuid, uuid)  to authenticated;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- I. The sharing grid's read
+-- ─────────────────────────────────────────────────────────────────────────
+-- wallet_members is already readable under members_select; this carries
+-- `via` alongside in one call so the grid can be drawn from it plus
+-- get_space_members (0024) for names.
+create function get_wallet_sharing()
+  returns table(wallet_id uuid, user_id uuid, via member_via)
+  language sql stable security definer set search_path = '' as $$
+  select m.wallet_id, m.user_id, m.via
+    from public.wallet_members m
+   where public.is_wallet_member(m.wallet_id)
+$$;
+revoke all on function get_wallet_sharing() from public, anon;
+grant execute on function get_wallet_sharing() to authenticated;

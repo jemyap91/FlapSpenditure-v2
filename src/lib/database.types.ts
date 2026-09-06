@@ -867,6 +867,14 @@ export type Database = {
           wallet_id: string
         }[]
       }
+      get_wallet_sharing: {
+        Args: never
+        Returns: {
+          user_id: string
+          via: Database["public"]["Enums"]["member_via"]
+          wallet_id: string
+        }[]
+      }
       invite_to_space: {
         Args: { p_email: string; p_space: string }
         Returns: string
@@ -874,6 +882,22 @@ export type Database = {
       is_space_member: { Args: { s: string }; Returns: boolean }
       is_space_owner: { Args: { s: string }; Returns: boolean }
       is_wallet_member: { Args: { w: string }; Returns: boolean }
+      leave_space: {
+        Args: { p_space: string }
+        Returns: {
+          budgets_moved: number
+          budgets_trimmed: number
+          wallets_moved: number
+        }[]
+      }
+      leave_space_impl: {
+        Args: { p_space: string; p_user: string }
+        Returns: {
+          budgets_moved: number
+          budgets_trimmed: number
+          wallets_moved: number
+        }[]
+      }
       move_transaction: {
         Args: {
           p_amount_minor: number
@@ -885,6 +909,14 @@ export type Database = {
           p_wallet_id: string
         }
         Returns: undefined
+      }
+      remove_space_member: {
+        Args: { p_space: string; p_user: string }
+        Returns: {
+          budgets_moved: number
+          budgets_trimmed: number
+          wallets_moved: number
+        }[]
       }
       revoke_space_invite: { Args: { p_invite: string }; Returns: undefined }
       set_budget: {

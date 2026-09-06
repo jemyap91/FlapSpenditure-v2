@@ -4609,3 +4609,47 @@ do $$ begin
      and not has_function_privilege('anon', 'public.accept_space_invite(uuid)', 'EXECUTE'),
     'GRANT BROKEN: household invite functions are not scoped to authenticated';
 end $$;
+
+-- =====================================================================
+-- 0025: after remove_space_member, the removed user reads nothing of the
+-- old household -- wallets, transactions, or category names.
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"b5b50000-0000-4000-8000-000000000001","email":"hh-owner@x.io"}';
+  select * from remove_space_member(
+    (select space_id from public.wallets where id = 'b5b50000-0000-4000-8000-00000000000a'),
+    'b5b50000-0000-4000-8000-000000000003');
+commit;
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"b5b50000-0000-4000-8000-000000000003","email":"hh-new@x.io"}';
+  do $$ begin
+    assert (select count(*) from public.wallets where id = 'b5b50000-0000-4000-8000-00000000000a') = 0,
+      'LEAK: a removed member can still see the household-shared wallet';
+    assert (select count(*) from public.transactions where wallet_id = 'b5b50000-0000-4000-8000-00000000000a') = 0,
+      'LEAK: a removed member can still read the household''s transactions';
+    assert (select count(*) from public.categories where space_id =
+             (select space_id from public.space_members where user_id = 'b5b50000-0000-4000-8000-000000000001' limit 1)) = 0,
+      'LEAK: a removed member can still read the old household''s category names';
+    assert (select count(*) from public.get_space_members() where user_id = 'b5b50000-0000-4000-8000-000000000003') = 1,
+      'LEAVE BROKEN: the removed member does not own a household of their own';
+  end $$;
+commit;
+-- A non-owner cannot remove anyone.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"b5b50000-0000-4000-8000-000000000002","email":"hh-mate@x.io"}';
+  do $$
+  declare v_ok boolean := false;
+  begin
+    begin
+      perform public.remove_space_member(
+        (select space_id from public.wallets where id = 'b5b50000-0000-4000-8000-00000000000c'),
+        'b5b50000-0000-4000-8000-000000000001');
+      v_ok := true;
+    exception when others then null;
+    end;
+    assert not v_ok, 'ESCALATION: a member removed the household owner';
+  end $$;
+commit;
