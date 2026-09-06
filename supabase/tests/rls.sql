@@ -3947,6 +3947,17 @@ commit;
 -- protection is ever re-implemented as a policy instead of a grant.
 -- =====================================================================
 begin;
+  -- 0025 (G0): a new wallet joins the household its owner most recently
+  -- joined, not one they merely own. Bob joined alice's household after
+  -- his own signup (section 8 above), so without this his private wallet
+  -- below would land there too, collapsing the two separate households
+  -- this escalation test needs. Refresh his own membership's joined_at
+  -- first (superuser scope: this repairs test setup, it is not the thing
+  -- under test).
+  update space_members set joined_at = now()
+   where space_id = (select space_id from wallets where id = 'ffffffff-0000-0000-0000-000000000006')
+     and user_id = 'bbbbbbbb-0000-0000-0000-000000000002';
+
   -- Alice owns a shared wallet; Bob is an ordinary member of it and also
   -- owns a private wallet of his own -- the two-wallet membership the
   -- escalation needs.
@@ -3964,10 +3975,11 @@ begin;
           (select space_id from wallets where id = 'c0de0000-0000-4000-8000-00000000a001'),
           'Shared groceries', 'expense', 1, 'shopping-basket');
 
-  -- The two households really are two: bob's private wallet was filed by
-  -- set_wallet_space into the household he OWNS, not the one he merely
-  -- joined. If this ever failed the escalation below would be moving a row
-  -- from a space to itself and the test would pass for nothing.
+  -- The two households really are two: the joined_at refresh above put
+  -- bob's own household back in front, so set_wallet_space (0025, G0)
+  -- filed his private wallet there and not into alice's. If this ever
+  -- failed the escalation below would be moving a row from a space to
+  -- itself and the test would pass for nothing.
   do $$ begin
     assert (select space_id from wallets where id = 'c0de0000-0000-4000-8000-00000000b002')
         <> (select space_id from wallets where id = 'c0de0000-0000-4000-8000-00000000a001'),
@@ -4445,3 +4457,80 @@ do $$ begin
   assert not has_function_privilege('anon', 'public.get_space_members()', 'EXECUTE'),
     'LEAK: anon must not be able to EXECUTE get_space_members';
 end $$;
+
+-- =====================================================================
+-- 0025: a household-shared wallet is readable by a joiner with no extra
+-- rows; unsharing revokes it; a direct share alongside survives; the
+-- HOUSEHOLD owner cannot change a wallet they do not own.
+-- =====================================================================
+insert into auth.users (id, email) values
+  ('b5b50000-0000-4000-8000-000000000001', 'hh-owner@x.io'),
+  ('b5b50000-0000-4000-8000-000000000002', 'hh-mate@x.io');
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"b5b50000-0000-4000-8000-000000000001","email":"hh-owner@x.io"}';
+  insert into public.wallets (id, owner_id, name, kind, currency_code, color_slot, icon) values
+    ('b5b50000-0000-4000-8000-00000000000a', 'b5b50000-0000-4000-8000-000000000001', 'HH Shared', 'bank', 'USD', 1, 'landmark'),
+    ('b5b50000-0000-4000-8000-00000000000b', 'b5b50000-0000-4000-8000-000000000001', 'HH Private', 'bank', 'USD', 2, 'wallet');
+  insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, occurred_on)
+    values ('b5b50000-0000-4000-8000-00000000000a', 'b5b50000-0000-4000-8000-000000000001', 'expense', -100, 'USD', '2026-09-01');
+  select set_wallet_sharing('b5b50000-0000-4000-8000-00000000000a', true, array[]::uuid[]);
+commit;
+-- hh-mate joins the household (superuser scope: this is the fixture, not
+-- the thing under test; Task 3's accept_space_invite is the real path).
+insert into public.space_members (space_id, user_id, role)
+values ((select space_id from public.wallets where id = 'b5b50000-0000-4000-8000-00000000000a'),
+        'b5b50000-0000-4000-8000-000000000002', 'member');
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"b5b50000-0000-4000-8000-000000000002","email":"hh-mate@x.io"}';
+  do $$ begin
+    assert (select count(*) from public.transactions where wallet_id = 'b5b50000-0000-4000-8000-00000000000a') = 1,
+      'PERMISSION BROKEN: a household member cannot read a household-shared wallet''s transactions';
+    assert (select count(*) from public.wallets where id = 'b5b50000-0000-4000-8000-00000000000b') = 0,
+      'LEAK: a household member can see a housemate''s PRIVATE wallet';
+  end $$;
+commit;
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"b5b50000-0000-4000-8000-000000000001","email":"hh-owner@x.io"}';
+  select set_wallet_sharing('b5b50000-0000-4000-8000-00000000000a', false, array[]::uuid[]);
+commit;
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"b5b50000-0000-4000-8000-000000000002","email":"hh-mate@x.io"}';
+  do $$ begin
+    assert (select count(*) from public.wallets where id = 'b5b50000-0000-4000-8000-00000000000a') = 0,
+      'LEAK: unsharing a wallet from the household did not revoke a member''s access';
+  end $$;
+commit;
+
+-- The household owner (hh-owner) owns the household; hh-mate owns a wallet in
+-- it. hh-owner must NOT be able to change hh-mate's wallet.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"b5b50000-0000-4000-8000-000000000002","email":"hh-mate@x.io"}';
+  insert into public.wallets (id, owner_id, name, kind, currency_code, color_slot, icon) values
+    ('b5b50000-0000-4000-8000-00000000000c', 'b5b50000-0000-4000-8000-000000000002', 'Mate Own', 'bank', 'USD', 3, 'wallet');
+commit;
+do $$ begin
+  assert (select space_id from public.wallets where id = 'b5b50000-0000-4000-8000-00000000000c')
+       = (select space_id from public.wallets where id = 'b5b50000-0000-4000-8000-00000000000a'),
+    'test setup broken: hh-mate''s wallet did not land in the shared household';
+end $$;
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"b5b50000-0000-4000-8000-000000000001","email":"hh-owner@x.io"}';
+  do $$
+  declare v_ok boolean := false;
+  begin
+    begin
+      perform set_wallet_sharing('b5b50000-0000-4000-8000-00000000000c', true, array[]::uuid[]);
+      v_ok := true;
+    exception when others then null;
+    end;
+    assert not v_ok, 'ESCALATION: the household owner changed the sharing of a wallet they do not own';
+  end $$;
+commit;

@@ -845,6 +845,10 @@ export type Database = {
         Returns: undefined
       }
       set_wallet_order: { Args: { p_wallet_ids: string[] }; Returns: undefined }
+      set_wallet_sharing: {
+        Args: { p_direct: string[]; p_household: boolean; p_wallet: string }
+        Returns: undefined
+      }
       update_transfer_pair: {
         Args: {
           p_amount_in: number
