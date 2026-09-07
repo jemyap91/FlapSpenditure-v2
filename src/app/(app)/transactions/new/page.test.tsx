@@ -55,6 +55,10 @@ const { walletsData, categoriesData } = vi.hoisted(() => ({
 
 vi.mock("@/lib/supabase/server", () => ({
   createClient: async () => ({
+    // get_entry_suggestions (0026) is the only RPC this page calls; an
+    // empty list is the "no history yet" case and leaves the form's Note
+    // and Merchant fields as plain inputs.
+    rpc: async () => ({ data: [], error: null }),
     from: (table: string) => {
       if (table === "wallets") {
         const builder = {

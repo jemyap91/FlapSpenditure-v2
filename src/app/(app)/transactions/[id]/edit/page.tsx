@@ -168,14 +168,22 @@ export default async function EditTransactionPage({
     recurring_id: string | null;
   };
 
-  const { data, error: rowError } = await supabase
-    .from("transactions")
-    .select(
-      "id, kind, wallet_id, amount_minor, currency_code, category_id, occurred_on, note, merchant, transfer_id, recurring_id",
-    )
-    .eq("id", id)
-    .is("deleted_at", null)
-    .maybeSingle();
+  const [{ data, error: rowError }, { data: suggestions, error: suggestionsError }] = await Promise.all([
+    supabase
+      .from("transactions")
+      .select(
+        "id, kind, wallet_id, amount_minor, currency_code, category_id, occurred_on, note, merchant, transfer_id, recurring_id",
+      )
+      .eq("id", id)
+      .is("deleted_at", null)
+      .maybeSingle(),
+    // What this user typed before, for the Note and Merchant fields
+    // (get_entry_suggestions, 0026): self-scoped to the caller's own rows,
+    // and read here, ahead of the transfer/transaction split below, because
+    // both render the form and both carry a merchant.
+    supabase.rpc("get_entry_suggestions"),
+  ]);
+  if (suggestionsError) throw new Error("Failed to load suggestions");
 
   // A query ERROR is not "no rows" — every other Server Component read in
   // this codebase (`/wallets/[id]/page.tsx`, `/transactions/page.tsx`,
@@ -275,6 +283,7 @@ export default async function EditTransactionPage({
           categories={[]}
           edit={edit}
           from={from}
+          suggestions={suggestions ?? []}
         />
       </>
     );
@@ -388,6 +397,7 @@ export default async function EditTransactionPage({
         categories={categories}
         edit={edit}
         from={from}
+        suggestions={suggestions ?? []}
       />
     </>
   );

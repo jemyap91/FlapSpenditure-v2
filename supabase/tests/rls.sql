@@ -4812,3 +4812,97 @@ begin;
       'revoke_space_invite left the invitation behind';
   end $$;
 commit;
+
+-- =====================================================================
+-- 0026: get_entry_suggestions() returns only what the CALLER typed --
+-- never a housemate's entries in a shared wallet, never deleted rows,
+-- never anything older than twelve months -- merged case-insensitively
+-- with the most recent spelling kept, and carrying the category most
+-- often paired with the merchant.
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$
+  declare v_cat uuid;
+  begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+    select id into v_cat from public.categories
+     where name = 'Groceries' and kind = 'expense'
+       and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003');
+    assert v_cat is not null, 'test setup broken: alice has no Groceries';
+
+    insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on, merchant, note) values
+      ('cccccccc-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001', 'expense', -100, 'USD', v_cat, current_date,      'ES Bakery',   'Bread'),
+      ('cccccccc-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001', 'expense', -200, 'USD', v_cat, current_date - 1,  ' es bakery ', 'Cake'),
+      ('cccccccc-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001', 'expense', -300, 'USD', null,  current_date - 400, 'ES Old Shop', null);
+    insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, occurred_on, merchant, note, deleted_at) values
+      ('cccccccc-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001', 'expense', -50, 'USD', current_date, 'ES Deleted', null, now());
+  end $$;
+commit;
+
+-- Bob, a genuine member of alice's wallet, records his own entry there.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+    assert public.is_wallet_member('cccccccc-0000-0000-0000-000000000003'::uuid),
+      'test setup broken: bob should still be a member of alice''s wallet';
+    insert into public.transactions (wallet_id, created_by, kind, amount_minor, currency_code, occurred_on, merchant, note) values
+      ('cccccccc-0000-0000-0000-000000000003', 'bbbbbbbb-0000-0000-0000-000000000002', 'expense', -70, 'USD', current_date, 'ES Bob Shop', 'Bob note');
+  end $$;
+commit;
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$
+  declare v_cat uuid;
+  begin
+    select id into v_cat from public.categories
+     where name = 'Groceries' and kind = 'expense'
+       and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003');
+
+    -- Two spellings, one merchant, the most recent spelling kept; one row
+    -- per distinct note under it.
+    assert (select count(*) from public.get_entry_suggestions() where merchant = 'ES Bakery') = 2,
+      format('SUGGESTIONS BROKEN: expected 2 rows for ES Bakery (Bread, Cake), got %s',
+             (select count(*) from public.get_entry_suggestions() where merchant = 'ES Bakery'));
+    assert (select count(*) from public.get_entry_suggestions() where lower(merchant) = 'es bakery' and merchant <> 'ES Bakery') = 0,
+      'SUGGESTIONS BROKEN: an older spelling of a merchant leaked through';
+    assert (select array_agg(note order by note) from public.get_entry_suggestions() where merchant = 'ES Bakery') = array['Bread', 'Cake'],
+      'SUGGESTIONS BROKEN: the notes under ES Bakery are wrong';
+    assert (select bool_and(category_id = v_cat) from public.get_entry_suggestions() where merchant = 'ES Bakery'),
+      'SUGGESTIONS BROKEN: ES Bakery is not paired with its usual category';
+
+    -- Excluded: older than twelve months, soft-deleted, and a housemate's
+    -- entry alice can READ but did not type.
+    assert (select count(*) from public.get_entry_suggestions() where merchant = 'ES Old Shop') = 0,
+      'SUGGESTIONS BROKEN: an entry older than twelve months was suggested';
+    assert (select count(*) from public.get_entry_suggestions() where merchant = 'ES Deleted') = 0,
+      'SUGGESTIONS BROKEN: a deleted entry was suggested';
+    assert (select count(*) from public.transactions where merchant = 'ES Bob Shop') = 1,
+      'test setup broken: alice should be able to READ bob''s entry in the shared wallet';
+    assert (select count(*) from public.get_entry_suggestions() where merchant = 'ES Bob Shop') = 0,
+      'LEAK: a housemate''s entry was suggested to alice';
+  end $$;
+commit;
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
+  do $$ begin
+    assert (select count(*) from public.get_entry_suggestions() where merchant = 'ES Bob Shop') = 1,
+      'PERMISSION BROKEN: bob is not offered his own entry';
+    assert (select count(*) from public.get_entry_suggestions() where merchant = 'ES Bakery') = 0,
+      'LEAK: alice''s entries were suggested to bob';
+  end $$;
+commit;
+
+do $$ begin
+  assert has_function_privilege('authenticated', 'public.get_entry_suggestions()', 'EXECUTE'),
+    'GRANT BROKEN: authenticated must be able to EXECUTE get_entry_suggestions';
+  assert not has_function_privilege('anon', 'public.get_entry_suggestions()', 'EXECUTE'),
+    'LEAK: anon must not be able to EXECUTE get_entry_suggestions';
+end $$;
