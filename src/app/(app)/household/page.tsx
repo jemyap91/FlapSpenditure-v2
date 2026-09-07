@@ -1,28 +1,34 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentUserProfile } from "@/lib/supabase/current-user";
+import type { HouseholdInvite, HouseholdMember, HouseholdWallet, HouseholdSectionProps } from "./HouseholdSection";
+import { HouseholdSections } from "./HouseholdSections";
 
-type Member = { space_id: string; user_id: string; display_name: string; role: "owner" | "member" };
-type Wallet = { id: string; name: string; currency_code: string; archived_at: string | null; space_id: string };
+type Member = HouseholdMember & { space_id: string };
+type Wallet = HouseholdWallet & { space_id: string };
+type Access = { wallet_id: string; user_id: string; via: "owner" | "household" | "direct" };
+type Invite = HouseholdInvite & { space_id: string };
 
 /**
- * /household — who shares a category list with you, and which wallets sit
- * in it. Read-only by design (spec 2026-09-05 §10): membership is DERIVED,
- * never chosen here. Every account gets a household at signup
- * (handle_new_user, 0022), and accepting a wallet invite joins you to that
- * wallet's household (wallet_members_set_space, 0022) because reading the
- * wallet's transactions requires reading the categories they point at.
- * There is therefore nothing to add or remove on this screen; the invite
- * flow on /wallets is the way in, and this page says so.
+ * /household — manage every household you belong to: who's in it, pending
+ * invitations, and which wallets each member can see. Membership itself is
+ * still derived (every account gets a household at signup, and accepting a
+ * wallet invite joins you to that wallet's household), but this screen is
+ * no longer read-only: the household OWNER can invite, revoke, and remove;
+ * anyone can leave; and each wallet's OWNER decides that wallet's sharing.
  *
- * Three RLS-scoped reads, no explicit membership filter — the same trust
+ * Five RLS-scoped reads, no explicit membership filter — the same trust
  * boundary every other Server Component in this app sits behind:
  * - `spaces` under spaces_member (`is_space_member(id)`).
- * - `get_space_members()` (0024), SECURITY DEFINER for the same reason
+ * - `get_space_members()`, SECURITY DEFINER for the same reason
  *   /wallets uses get_wallet_members: profiles_own hides co-members' names.
  * - `wallets` under wallets_select, so the wallet list is "the wallets in
  *   this household that YOU are in" — a co-member's private wallet is in the
  *   same household but is not yours to see, and is not listed.
+ * - `get_wallet_sharing()`, SECURITY DEFINER, for the (wallet, user) -> via
+ *   grid `HouseholdSection` renders.
+ * - `space_invites` under its own RLS (readable by the household owner and
+ *   the invitee), filtered here to `status = 'pending'`.
  *
  * Almost everyone belongs to exactly one household (a second arrives only
  * via an invite from outside your own), so the single-household case is the
@@ -38,13 +44,17 @@ export default async function HouseholdPage() {
     { data: spaces, error: spacesError },
     { data: members, error: membersError },
     { data: wallets, error: walletsError },
+    { data: access, error: accessError },
+    { data: invites, error: invitesError },
   ] = await Promise.all([
     supabase.from("spaces").select("id, name").order("created_at"),
     supabase.rpc("get_space_members"),
     supabase
       .from("wallets")
-      .select("id, name, currency_code, archived_at, space_id")
+      .select("id, name, owner_id, shared_with_household, archived_at, space_id")
       .order("created_at"),
+    supabase.rpc("get_wallet_sharing"),
+    supabase.from("space_invites").select("id, space_id, invited_email").eq("status", "pending"),
   ]);
 
   // A query error is not "no household" — thrown, matching every other
@@ -53,6 +63,8 @@ export default async function HouseholdPage() {
   if (spacesError) throw new Error("Failed to load households");
   if (membersError) throw new Error("Failed to load household members");
   if (walletsError) throw new Error("Failed to load wallets");
+  if (accessError) throw new Error("Failed to load sharing");
+  if (invitesError) throw new Error("Failed to load invitations");
   if (!spaces?.length) redirect("/onboarding");
 
   const membersBySpace = new Map<string, Member[]>();
@@ -67,6 +79,12 @@ export default async function HouseholdPage() {
     list.push(w);
     walletsBySpace.set(w.space_id, list);
   }
+  const invitesBySpace = new Map<string, Invite[]>();
+  for (const inv of (invites ?? []) as Invite[]) {
+    const list = invitesBySpace.get(inv.space_id) ?? [];
+    list.push(inv);
+    invitesBySpace.set(inv.space_id, list);
+  }
 
   const single = spaces.length === 1;
 
@@ -76,89 +94,26 @@ export default async function HouseholdPage() {
         {single ? "Household" : "Households"}
       </h1>
       <p className="mb-6 text-sm" style={{ color: "var(--ink-2)" }}>
-        Everyone in a household shares one list of categories. To bring someone in, invite them to one
-        of your wallets from the Wallets screen — accepting the invite joins them here.
+        Everyone in a household shares one list of categories. The household owner invites people
+        here; each wallet&apos;s owner chooses who sees it.
       </p>
 
-      <div className="flex flex-col gap-8">
-        {spaces.map((space) => {
-          const spaceMembers = (membersBySpace.get(space.id) ?? [])
-            .slice()
-            // Owners first, then by name, so the list reads the same way
-            // every visit rather than in heap order.
-            .sort((a, b) =>
-              a.role === b.role ? a.display_name.localeCompare(b.display_name) : a.role === "owner" ? -1 : 1,
-            );
+      <HouseholdSections
+        sections={spaces.map((space): HouseholdSectionProps => {
           const spaceWallets = walletsBySpace.get(space.id) ?? [];
-          return (
-            <section key={space.id} aria-labelledby={`household-${space.id}`}>
-              <h2
-                id={`household-${space.id}`}
-                className={single ? "mb-4 text-lg font-semibold" : "mb-4 text-xl font-semibold"}
-                style={{ color: "var(--ink)" }}
-              >
-                {space.name}
-              </h2>
-
-              <h3
-                className="mb-2 text-sm font-medium uppercase tracking-wide"
-                style={{ color: "var(--ink-2)" }}
-              >
-                Members
-              </h3>
-              <ul className="mb-6 flex flex-col gap-2" aria-label={`${space.name} members`}>
-                {spaceMembers.map((m) => (
-                  <li
-                    key={m.user_id}
-                    className="flex items-center justify-between rounded-lg border px-3 py-2 text-sm"
-                    style={{ borderColor: "var(--grid)", background: "var(--surface)", color: "var(--ink)" }}
-                  >
-                    <span>
-                      {m.display_name}
-                      {m.user_id === profile.id && (
-                        <span className="ml-2 text-xs" style={{ color: "var(--ink-2)" }}>
-                          (you)
-                        </span>
-                      )}
-                    </span>
-                    <span className="text-xs" style={{ color: "var(--ink-2)" }}>
-                      {m.role === "owner" ? "Owner" : "Member"}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-
-              <h3
-                className="mb-2 text-sm font-medium uppercase tracking-wide"
-                style={{ color: "var(--ink-2)" }}
-              >
-                Wallets you are in
-              </h3>
-              {spaceWallets.length === 0 ? (
-                <p className="text-sm" style={{ color: "var(--ink-2)" }}>
-                  No wallets yet.
-                </p>
-              ) : (
-                <ul className="flex flex-col gap-2" aria-label={`${space.name} wallets`}>
-                  {spaceWallets.map((w) => (
-                    <li
-                      key={w.id}
-                      className="flex items-center justify-between rounded-lg border px-3 py-2 text-sm"
-                      style={{ borderColor: "var(--grid)", background: "var(--surface)", color: "var(--ink)" }}
-                    >
-                      <span>{w.name}</span>
-                      <span className="text-xs" style={{ color: "var(--ink-2)" }}>
-                        {w.currency_code}
-                        {w.archived_at !== null && " · Archived"}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-          );
+          const walletIds = new Set(spaceWallets.map((w) => w.id));
+          const spaceAccess = ((access ?? []) as Access[]).filter((a) => walletIds.has(a.wallet_id));
+          return {
+            space,
+            currentUserId: profile.id,
+            members: membersBySpace.get(space.id) ?? [],
+            wallets: spaceWallets,
+            access: spaceAccess,
+            pendingInvites: invitesBySpace.get(space.id) ?? [],
+            single,
+          };
         })}
-      </div>
+      />
     </div>
   );
 }

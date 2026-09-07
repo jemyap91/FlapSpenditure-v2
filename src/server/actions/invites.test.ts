@@ -10,10 +10,10 @@
 // or calling into Next's real cache-invalidation machinery (which throws
 // outside a request scope).
 //
-// Spec §6 asks for "the three actions' validation and owner-only branches;
-// the enumeration-safe invite response". All three are covered here.
+// Spec §6 asks for "the actions' validation and owner-only branches; the
+// enumeration-safe invite response". Both are covered here.
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { inviteToWallet, respondToInvite, removeMember } from "./invites";
+import { inviteToWallet, respondToInvite } from "./invites";
 
 const OWNER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const MEMBER_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -26,15 +26,10 @@ const INVITE_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
  * would throw "Cannot access '...' before initialization" (see the same
  * note in src/components/TransactionList.test.tsx).
  *
- * The fake query builders deliberately do NOT replicate Postgres's
- * case-insensitive `uuid` equality — that behaviour lives in the database,
- * not in this mock. The bug the `removeMember` suite guards against is a
- * JS-level string comparison inside the action itself (`userId ===
- * wallet.owner_id`, evaluated before anything reaches Postgres), so the
- * fake `.eq()` calls are non-filtering RECORDERS that always resolve to
- * whatever `walletLookup`/`membersDelete` currently hold. What they record
- * is asserted on directly (`membersEqCalls`), alongside each action's
- * return value.
+ * `wallet_invites` is the only table these actions touch, so the fake
+ * client serves that one and THROWS on any other — which is what makes
+ * `fromTables` a real property assertion below rather than a restatement
+ * of today's implementation.
  *
  * `fromTables` and `rpcCalls` record every table and every RPC the action
  * touched. That is what makes the enumeration-safety test below a real
@@ -43,9 +38,6 @@ const INVITE_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
  */
 const {
   getUser,
-  walletLookup,
-  membersDelete,
-  membersEqCalls,
   invitesInsert,
   invitesInsertPayloads,
   rpcResult,
@@ -54,9 +46,6 @@ const {
   revalidatePath,
 } = vi.hoisted(() => ({
   getUser: vi.fn(),
-  walletLookup: { data: null as { owner_id: string } | null, error: null as unknown },
-  membersDelete: { error: null as unknown },
-  membersEqCalls: [] as unknown[][],
   invitesInsert: { error: null as unknown },
   invitesInsertPayloads: [] as unknown[],
   rpcResult: { error: null as unknown },
@@ -76,14 +65,6 @@ vi.mock("@/lib/supabase/server", () => ({
     },
     from: (table: string) => {
       fromTables.push(table);
-      if (table === "wallets") {
-        const builder = {
-          select: () => builder,
-          eq: () => builder,
-          maybeSingle: async () => walletLookup,
-        };
-        return builder;
-      }
       if (table === "wallet_invites") {
         const builder: Record<string, unknown> = {
           insert: (payload: unknown) => {
@@ -91,30 +72,6 @@ vi.mock("@/lib/supabase/server", () => ({
             return builder;
           },
           then: (resolve: (v: { error: unknown }) => void) => resolve(invitesInsert),
-        };
-        return builder;
-      }
-      if (table === "wallet_members") {
-        const builder: Record<string, unknown> = {
-          delete: () => builder,
-          eq: (...args: unknown[]) => {
-            membersEqCalls.push(["eq", ...args]);
-            return builder;
-          },
-          // removeMember also chains .neq("user_id", wallet.owner_id) as a
-          // database-level guard (defence in depth alongside the JS check).
-          // The fake doesn't filter on it — it records it, so a test can
-          // prove the guard is actually part of the statement rather than
-          // taking the source comment's word for it.
-          neq: (...args: unknown[]) => {
-            membersEqCalls.push(["neq", ...args]);
-            return builder;
-          },
-          // Real supabase-js query builders are thenable (awaiting the
-          // builder itself resolves the request) — `removeMember` relies on
-          // that (`await supabase.from(...).delete().eq(...).eq(...)`), so
-          // the fake needs a `.then`, not a terminal method call.
-          then: (resolve: (v: { error: unknown }) => void) => resolve(membersDelete),
         };
         return builder;
       }
@@ -131,13 +88,9 @@ const inviteForm = (email: string) => {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  membersEqCalls.length = 0;
   invitesInsertPayloads.length = 0;
   rpcCalls.length = 0;
   fromTables.length = 0;
-  walletLookup.data = { owner_id: OWNER_ID };
-  walletLookup.error = null;
-  membersDelete.error = null;
   invitesInsert.error = null;
   rpcResult.error = null;
 });
@@ -348,92 +301,5 @@ describe("respondToInvite", () => {
 
     expect(result).toEqual({ error: "Not signed in" });
     expect(rpcCalls).toEqual([]);
-  });
-});
-
-describe("removeMember", () => {
-  it("refuses to remove the owner when their id is passed exactly as stored", async () => {
-    getUser.mockResolvedValue({ data: { user: { id: OWNER_ID } } });
-
-    const result = await removeMember(WALLET_ID, OWNER_ID);
-
-    expect(result).toEqual({ error: "The owner cannot be removed." });
-  });
-
-  // Regression test: `wallet.owner_id` arrives from Postgres already
-  // lower-cased, but a client-supplied `userId` is never normalised before
-  // this. A bare `userId === wallet.owner_id` lets an uppercased copy of
-  // the owner's own id sail past the guard — Postgres's `uuid` type
-  // equality is case-insensitive so the DELETE would still hit the row in
-  // production, but this mock's `.eq()` doesn't filter, so the observable
-  // symptom here is simpler and just as damning: the action returns `{}`
-  // (success) instead of refusing, meaning it proceeded straight to the
-  // delete call.
-  it("refuses to remove the owner even when their id is passed uppercased", async () => {
-    getUser.mockResolvedValue({ data: { user: { id: OWNER_ID } } });
-
-    const result = await removeMember(WALLET_ID, OWNER_ID.toUpperCase());
-
-    expect(result).toEqual({ error: "The owner cannot be removed." });
-  });
-
-  it("refuses a non-owner caller", async () => {
-    getUser.mockResolvedValue({ data: { user: { id: MEMBER_ID } } });
-
-    const result = await removeMember(WALLET_ID, MEMBER_ID);
-
-    expect(result).toEqual({ error: "Only the wallet owner can do that." });
-  });
-
-  it("removes a legitimate member and revalidates both the layout and /wallets", async () => {
-    getUser.mockResolvedValue({ data: { user: { id: OWNER_ID } } });
-
-    const result = await removeMember(WALLET_ID, MEMBER_ID);
-
-    expect(result).toEqual({});
-    expect(revalidatePath).toHaveBeenCalledWith("/", "layout");
-    expect(revalidatePath).toHaveBeenCalledWith("/wallets");
-  });
-
-  /**
-   * The JS-level owner guard above is not the only protection, and until
-   * now nothing observed the other one. `removeMember` also chains
-   * `.neq("user_id", wallet.owner_id)` onto the DELETE, so Postgres — which
-   * compares as `uuid`, and therefore case-insensitively — refuses to match
-   * the owner's row even if the JS comparison were ever wrong again.
-   *
-   * A comment claiming a database-level guard exists is not evidence that
-   * it is still in the statement. This asserts the whole recorded chain, so
-   * dropping the `.neq`, or reordering it away from `wallet.owner_id`, or
-   * scoping the DELETE to the wrong columns, all fail here.
-   */
-  it("scopes the DELETE to the wallet and member AND excludes the owner at the database level", async () => {
-    getUser.mockResolvedValue({ data: { user: { id: OWNER_ID } } });
-
-    await removeMember(WALLET_ID, MEMBER_ID);
-
-    expect(membersEqCalls).toEqual([
-      ["eq", "wallet_id", WALLET_ID],
-      ["eq", "user_id", MEMBER_ID],
-      ["neq", "user_id", OWNER_ID],
-    ]);
-  });
-
-  it("issues no DELETE at all when the caller is not the owner", async () => {
-    getUser.mockResolvedValue({ data: { user: { id: MEMBER_ID } } });
-
-    await removeMember(WALLET_ID, MEMBER_ID);
-
-    expect(membersEqCalls).toEqual([]);
-    expect(fromTables).toEqual(["wallets"]);
-  });
-
-  it("returns an error, never throws, when the DELETE fails", async () => {
-    getUser.mockResolvedValue({ data: { user: { id: OWNER_ID } } });
-    membersDelete.error = { message: "connection reset", code: "08006" };
-
-    const result = await removeMember(WALLET_ID, MEMBER_ID);
-
-    expect(result).toEqual({ error: "Could not remove that person. Please try again." });
   });
 });

@@ -351,6 +351,44 @@ export type Database = {
           },
         ]
       }
+      space_invites: {
+        Row: {
+          created_at: string
+          id: string
+          invited_by: string
+          invited_email: string
+          responded_at: string | null
+          space_id: string
+          status: Database["public"]["Enums"]["invite_status"]
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          invited_by: string
+          invited_email: string
+          responded_at?: string | null
+          space_id: string
+          status?: Database["public"]["Enums"]["invite_status"]
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          invited_by?: string
+          invited_email?: string
+          responded_at?: string | null
+          space_id?: string
+          status?: Database["public"]["Enums"]["invite_status"]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "space_invites_space_id_fkey"
+            columns: ["space_id"]
+            isOneToOne: false
+            referencedRelation: "spaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       space_members: {
         Row: {
           joined_at: string
@@ -576,6 +614,7 @@ export type Database = {
           role: Database["public"]["Enums"]["member_role"]
           space_id: string
           user_id: string
+          via: Database["public"]["Enums"]["member_via"]
           wallet_id: string
         }
         Insert: {
@@ -583,6 +622,7 @@ export type Database = {
           role?: Database["public"]["Enums"]["member_role"]
           space_id: string
           user_id: string
+          via?: Database["public"]["Enums"]["member_via"]
           wallet_id: string
         }
         Update: {
@@ -590,6 +630,7 @@ export type Database = {
           role?: Database["public"]["Enums"]["member_role"]
           space_id?: string
           user_id?: string
+          via?: Database["public"]["Enums"]["member_via"]
           wallet_id?: string
         }
         Relationships: [
@@ -670,6 +711,7 @@ export type Database = {
           kind: Database["public"]["Enums"]["wallet_kind"]
           name: string
           owner_id: string
+          shared_with_household: boolean
           space_id: string
           starting_balance_minor: number
           updated_at: string
@@ -684,6 +726,7 @@ export type Database = {
           kind: Database["public"]["Enums"]["wallet_kind"]
           name: string
           owner_id: string
+          shared_with_household?: boolean
           space_id: string
           starting_balance_minor?: number
           updated_at?: string
@@ -698,6 +741,7 @@ export type Database = {
           kind?: Database["public"]["Enums"]["wallet_kind"]
           name?: string
           owner_id?: string
+          shared_with_household?: boolean
           space_id?: string
           starting_balance_minor?: number
           updated_at?: string
@@ -724,6 +768,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      accept_space_invite: { Args: { p_invite: string }; Returns: undefined }
       accept_wallet_invite: { Args: { invite: string }; Returns: undefined }
       budget_visible: { Args: { b: string }; Returns: boolean }
       create_transfer: {
@@ -737,6 +782,7 @@ export type Database = {
         }
         Returns: string
       }
+      decline_space_invite: { Args: { p_invite: string }; Returns: undefined }
       decline_wallet_invite: { Args: { invite: string }; Returns: undefined }
       get_budget_status: {
         Args: { from_date: string; to_date: string }
@@ -784,6 +830,16 @@ export type Database = {
           wallet_name: string
         }[]
       }
+      get_pending_space_invites: {
+        Args: never
+        Returns: {
+          created_at: string
+          id: string
+          invited_by_name: string
+          space_id: string
+          space_name: string
+        }[]
+      }
       get_space_members: {
         Args: never
         Returns: {
@@ -811,8 +867,37 @@ export type Database = {
           wallet_id: string
         }[]
       }
+      get_wallet_sharing: {
+        Args: never
+        Returns: {
+          user_id: string
+          via: Database["public"]["Enums"]["member_via"]
+          wallet_id: string
+        }[]
+      }
+      invite_to_space: {
+        Args: { p_email: string; p_space: string }
+        Returns: string
+      }
       is_space_member: { Args: { s: string }; Returns: boolean }
+      is_space_owner: { Args: { s: string }; Returns: boolean }
       is_wallet_member: { Args: { w: string }; Returns: boolean }
+      leave_space: {
+        Args: { p_space: string }
+        Returns: {
+          budgets_moved: number
+          budgets_trimmed: number
+          wallets_moved: number
+        }[]
+      }
+      leave_space_impl: {
+        Args: { p_space: string; p_user: string }
+        Returns: {
+          budgets_moved: number
+          budgets_trimmed: number
+          wallets_moved: number
+        }[]
+      }
       move_transaction: {
         Args: {
           p_amount_minor: number
@@ -825,6 +910,15 @@ export type Database = {
         }
         Returns: undefined
       }
+      remove_space_member: {
+        Args: { p_space: string; p_user: string }
+        Returns: {
+          budgets_moved: number
+          budgets_trimmed: number
+          wallets_moved: number
+        }[]
+      }
+      revoke_space_invite: { Args: { p_invite: string }; Returns: undefined }
       set_budget: {
         Args: {
           p_amount_minor: number
@@ -839,6 +933,10 @@ export type Database = {
         Returns: undefined
       }
       set_wallet_order: { Args: { p_wallet_ids: string[] }; Returns: undefined }
+      set_wallet_sharing: {
+        Args: { p_direct: string[]; p_household: boolean; p_wallet: string }
+        Returns: undefined
+      }
       update_transfer_pair: {
         Args: {
           p_amount_in: number
@@ -879,6 +977,7 @@ export type Database = {
       category_kind: "expense" | "income"
       invite_status: "pending" | "accepted" | "declined"
       member_role: "owner" | "member"
+      member_via: "owner" | "household" | "direct"
       recur_interval: "weekly" | "fortnightly" | "monthly" | "yearly"
       theme_pref: "system" | "light" | "dark"
       txn_kind: "expense" | "income" | "transfer"
@@ -1016,6 +1115,7 @@ export const Constants = {
       category_kind: ["expense", "income"],
       invite_status: ["pending", "accepted", "declined"],
       member_role: ["owner", "member"],
+      member_via: ["owner", "household", "direct"],
       recur_interval: ["weekly", "fortnightly", "monthly", "yearly"],
       theme_pref: ["system", "light", "dark"],
       txn_kind: ["expense", "income", "transfer"],

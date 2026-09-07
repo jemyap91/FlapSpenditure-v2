@@ -187,8 +187,9 @@ describe("WalletList", () => {
    *
    * Absent, not disabled — the convention this codebase already applies to
    * a control that can never succeed (TransactionForm removes the category
-   * chip on a transfer rather than greying it out; MembersSection renders
-   * no Remove for a non-owner at all).
+   * chip on a transfer rather than greying it out; MembersSection shows a
+   * non-owner the read-only sharing sentence rather than an editable
+   * switch/checkboxes that could never save).
    */
   it("does not render Archive for a wallet the signed-in user does not own", () => {
     render(
