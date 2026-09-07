@@ -821,6 +821,16 @@ export type Database = {
           total_minor: number
         }[]
       }
+      get_entry_suggestions: {
+        Args: never
+        Returns: {
+          category_id: string
+          last_used: string
+          merchant: string
+          note: string
+          uses: number
+        }[]
+      }
       get_pending_invites: {
         Args: never
         Returns: {

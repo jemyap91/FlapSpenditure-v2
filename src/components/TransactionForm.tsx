@@ -12,6 +12,12 @@ import {
   updateTransfer,
 } from "@/server/actions/transactions";
 import { appendDigit, clampAmountInput, minorUnitFor, parseAmountInput } from "@/lib/money";
+import {
+  merchantOptions,
+  noteOptions,
+  usualCategoryId,
+  type EntrySuggestion,
+} from "@/lib/entry-suggestions";
 import { parseOrigin } from "@/lib/origin";
 import { todayLocalDate } from "@/lib/today";
 
@@ -216,6 +222,10 @@ export function TransactionForm(
          * navigation target; see the redirect below.
          */
         from?: string | null;
+        /** What this user typed before (get_entry_suggestions, 0026), or
+         *  nothing: with none, the Note and Merchant fields are the plain
+         *  inputs they always were. */
+        suggestions?: EntrySuggestion[];
       }
     | {
         mode: "edit";
@@ -232,10 +242,12 @@ export function TransactionForm(
          * the create path already fixed once.
          */
         from?: string | null;
+        suggestions?: EntrySuggestion[];
       },
 ) {
   const router = useRouter();
   const { wallets, categories } = props;
+  const suggestions = props.suggestions ?? [];
   const edit = props.mode === "edit" ? props.edit : undefined;
   // A plain boolean rather than `edit` itself for the mount-focus effect's
   // dependency below: `edit` is an object prop and could arrive as a fresh
@@ -476,8 +488,24 @@ export function TransactionForm(
     setError(null);
   }
 
+  // Whether the user has chosen a category on THIS entry themselves. A
+  // merchant suggestion may prefill an empty category, never replace one
+  // the user picked -- and an edited row arrives with a category already
+  // chosen, so it counts as touched from the start.
+  const [categoryTouched, setCategoryTouched] = useState(() => Boolean(edit && edit.kind !== "transfer" && edit.categoryId));
+
+  // Native <datalist>s for the Note and Merchant fields: type-ahead,
+  // keyboard selection and screen-reader support with no JavaScript, and
+  // rendered only when there is something to suggest, so an account with
+  // no history gets exactly the plain inputs it had before.
+  const merchantListId = useId();
+  const noteListId = useId();
+  const merchantSuggestions = merchantOptions(suggestions);
+  const noteSuggestions = noteOptions(suggestions, merchant);
+
   function handleCategoryChange(next: Category) {
     setCategory(next);
+    setCategoryTouched(true);
     setError(null);
   }
 
@@ -494,6 +522,16 @@ export function TransactionForm(
   function handleMerchantChange(next: string) {
     setMerchant(next);
     setError(null);
+    // Prefill the category this merchant usually gets, but only when the
+    // user has not chosen one on this entry, and only if that category is
+    // one the form is offering right now: the same kind, and the selected
+    // wallet's own household (a merchant used in another household's
+    // wallet pairs with a category this wallet cannot reference).
+    if (categoryTouched || kind === "transfer") return;
+    const usual = usualCategoryId(suggestions, next);
+    if (!usual) return;
+    const match = categories.find((c) => c.id === usual && c.kind === kind && c.space_id === wallet?.space_id);
+    if (match) setCategory(match);
   }
 
   function handleFormKeyDown(e: React.KeyboardEvent<HTMLFormElement>) {
@@ -928,9 +966,17 @@ export function TransactionForm(
           placeholder="Description"
           autoComplete="off"
           aria-describedby={errorId}
+          list={noteSuggestions.length > 0 ? noteListId : undefined}
           className={`rounded-md border px-3 py-2 ${FOCUS_RING}`}
           style={{ borderColor: "var(--ink-2)", background: "var(--surface)", color: "var(--ink)" }}
         />
+        {noteSuggestions.length > 0 && (
+          <datalist id={noteListId}>
+            {noteSuggestions.map((n) => (
+              <option key={n} value={n} />
+            ))}
+          </datalist>
+        )}
       </label>
 
       {/* Task 8, item 1: rendered on the CREATE path too, not edit-only.
@@ -970,9 +1016,17 @@ export function TransactionForm(
             placeholder="Who the money went to or came from"
             autoComplete="off"
             aria-describedby={errorId}
+            list={merchantSuggestions.length > 0 ? merchantListId : undefined}
             className={`rounded-md border px-3 py-2 ${FOCUS_RING}`}
             style={{ borderColor: "var(--ink-2)", background: "var(--surface)", color: "var(--ink)" }}
           />
+          {merchantSuggestions.length > 0 && (
+            <datalist id={merchantListId}>
+              {merchantSuggestions.map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
+          )}
         </label>
       )}
 

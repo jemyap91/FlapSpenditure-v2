@@ -731,3 +731,80 @@ describe("TransactionForm — moving a transaction between wallets", () => {
     expect(payload).not.toHaveProperty("wallet_id");
   });
 });
+
+describe("TransactionForm — suggestions from past entries", () => {
+  const suggestions = [
+    { merchant: "NTUC FairPrice", note: "Weekly shop", category_id: "cat-1", uses: 5, last_used: "2026-09-01" },
+    { merchant: "NTUC FairPrice", note: "Snacks", category_id: "cat-1", uses: 2, last_used: "2026-08-20" },
+    { merchant: "Grab", note: "To work", category_id: "cat-2", uses: 4, last_used: "2026-09-05" },
+  ];
+  const twoCategories: Category[] = [
+    ...categories,
+    { id: "cat-2", name: "Transport", kind: "expense", color_slot: 3, icon: "bus", space_id: SPACE },
+  ];
+
+  /** The <datalist> an input points at, as its option values in order. */
+  function optionsOf(input: HTMLElement): string[] {
+    const listId = input.getAttribute("list");
+    expect(listId).toBeTruthy();
+    const list = document.getElementById(listId!);
+    expect(list).not.toBeNull();
+    return Array.from(list!.querySelectorAll("option")).map((o) => o.getAttribute("value") ?? "");
+  }
+
+  it("offers past merchants, and notes narrowed to the typed merchant", async () => {
+    const user = userEvent.setup();
+    render(
+      <TransactionForm
+        wallets={wallets}
+        categories={twoCategories}
+        defaultWalletId={WALLET_A}
+        suggestions={suggestions}
+      />,
+    );
+    // An <input list=…> has the combobox role, not textbox.
+    const merchant = screen.getByRole("combobox", { name: "Merchant" });
+    const note = screen.getByRole("combobox", { name: "Note" });
+    expect(optionsOf(merchant)).toEqual(["NTUC FairPrice", "Grab"]);
+    expect(optionsOf(note)).toEqual(["Weekly shop", "To work", "Snacks"]);
+
+    await user.type(merchant, "ntuc fairprice");
+    expect(optionsOf(note)).toEqual(["Weekly shop", "Snacks"]);
+  });
+
+  it("prefills the merchant's usual category when none has been chosen", async () => {
+    const user = userEvent.setup();
+    render(
+      <TransactionForm
+        wallets={wallets}
+        categories={twoCategories}
+        defaultWalletId={WALLET_A}
+        suggestions={suggestions}
+      />,
+    );
+    await user.type(screen.getByRole("combobox", { name: "Merchant" }), "Grab");
+    expect(screen.getByRole("button", { name: "Transport" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("never overrides a category the user chose themselves", async () => {
+    const user = userEvent.setup();
+    render(
+      <TransactionForm
+        wallets={wallets}
+        categories={twoCategories}
+        defaultWalletId={WALLET_A}
+        suggestions={suggestions}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Groceries" }));
+    await user.type(screen.getByRole("combobox", { name: "Merchant" }), "Grab");
+    expect(screen.getByRole("button", { name: "Groceries" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Transport" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("renders plain inputs with no suggestion lists when there is nothing to suggest", () => {
+    render(<TransactionForm wallets={wallets} categories={categories} defaultWalletId={WALLET_A} />);
+    expect(screen.getByRole("textbox", { name: "Merchant" })).not.toHaveAttribute("list");
+    expect(screen.getByRole("textbox", { name: "Note" })).not.toHaveAttribute("list");
+  });
+});

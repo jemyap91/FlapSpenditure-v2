@@ -79,6 +79,7 @@ export default async function NewTransactionPage({
   const [
     { data: wallets, error: walletsError },
     { data: categories, error: categoriesError },
+    { data: suggestions, error: suggestionsError },
   ] = await Promise.all([
     supabase
       .from("wallets")
@@ -91,7 +92,13 @@ export default async function NewTransactionPage({
       .is("archived_at", null)
       .order("kind")
       .order("sort_order"),
+    // What this user typed before, for the Note and Merchant fields
+    // (get_entry_suggestions, 0026). Self-scoped to the caller's own rows,
+    // so there is nothing to filter here; loaded with the rest so the form
+    // never fetches on its own.
+    supabase.rpc("get_entry_suggestions"),
   ]);
+  if (suggestionsError) throw new Error("Failed to load suggestions");
 
   // A query error is not "no wallets"/"no categories" — src/app/(app)/
   // layout.tsx's own doc comment on its wallet-count check spells out why
@@ -143,6 +150,7 @@ export default async function NewTransactionPage({
         categories={categories ?? ([] satisfies Category[])}
         defaultWalletId={requestedWalletId ?? wallets[0]!.id}
         from={from}
+        suggestions={suggestions ?? []}
       />
     </>
   );
