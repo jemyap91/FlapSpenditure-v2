@@ -3053,6 +3053,127 @@ begin;
 commit;
 
 -- =====================================================================
+-- Budgets (0027): update_budget_wallets. SECURITY DEFINER like set_budget,
+-- so -- as that section says -- the function's OWN guards, not RLS, stand
+-- between a caller and someone else's budget. constraints.sql proves those
+-- guards against the function's logic; this section proves the three
+-- things only a real role can: the EXECUTE grant is scoped to
+-- `authenticated`; a genuine non-member cannot reach a budget he cannot
+-- see, nor widen one he CAN see onto a wallet he is not in; and an edit a
+-- member IS allowed to make is then reported by get_budget_status through
+-- ordinary RLS. Reuses the 5e7b0000-... fixtures: ...001 alice's alone,
+-- ...002 alice's and genuinely shared with bob, ...003 bob's own. The
+-- Subscriptions budget alice set over ...001 for 2026-09 (the idempotency
+-- block above, id v_id1 there) is the one edited here.
+-- =====================================================================
+
+do $$ begin
+  assert has_function_privilege('authenticated', 'public.update_budget_wallets(uuid,uuid[])', 'EXECUTE'),
+    'GRANT BROKEN: authenticated must be able to EXECUTE update_budget_wallets';
+  assert not has_function_privilege('anon', 'public.update_budget_wallets(uuid,uuid[])', 'EXECUTE'),
+    'LEAK: anon must not be able to EXECUTE update_budget_wallets';
+  assert not has_function_privilege('public', 'public.update_budget_wallets(uuid,uuid[])', 'EXECUTE'),
+    'LEAK: public must not be able to EXECUTE update_budget_wallets';
+end $$;
+
+-- Bob is not a member of ...001, so alice's Subscriptions budget over it is
+-- invisible to him (budget_visible requires membership of EVERY wallet in
+-- the set). He gets the same message a nonexistent id gets -- never a hint
+-- that the budget is real. Looked up at superuser scope, since bob cannot
+-- see it to look it up himself, which is the point.
+create temp table ubw_rls_fixture as
+  select b.id from public.budgets b
+   where b.category_id = (select id from public.categories where name = 'Subscriptions' and archived_at is null
+                            and space_id = (select space_id from public.wallets where id = '5e7b0000-0000-0000-0000-000000000001'))
+     and b.period_start = '2026-09-01'
+     and (select string_agg(bw.wallet_id::text, ',' order by bw.wallet_id) from public.budget_wallets bw where bw.budget_id = b.id)
+         = '5e7b0000-0000-0000-0000-000000000001';
+do $$ begin
+  assert (select count(*) from ubw_rls_fixture) = 1, 'test setup broken: expected exactly one Subscriptions budget over ...001 alone';
+end $$;
+-- The impersonated blocks below run as `authenticated`, which owns nothing
+-- a superuser session created; the fixture id is test scaffolding, not
+-- data under test, so exposing it is harmless.
+grant select on ubw_rls_fixture to authenticated;
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
+  do $$
+  declare v_id uuid; v_ok boolean := false;
+  begin
+    assert (select auth.uid()) = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid, 'impersonation failed';
+    select id into v_id from ubw_rls_fixture;
+    assert (select count(*) from public.budgets where id = v_id) = 0,
+      'test setup broken: bob should not be able to see alice''s budget over her private wallet';
+
+    begin
+      perform update_budget_wallets(v_id, array['5e7b0000-0000-0000-0000-000000000002']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'that budget does not exist',
+        format('wrong error for an invisible budget: %s', sqlerrm);
+    end;
+    assert not v_ok,
+      'LEAK: bob edited a budget he cannot see -- update_budget_wallets must refuse a budget budget_visible does not admit';
+  end $$;
+
+  -- Bob's OWN Groceries budget over ...002 (the I1 block above) is one he
+  -- can see and edit -- but not onto ...001, which he is not a member of.
+  -- Positive control first: shrinking/reasserting the same wallet works.
+  do $$
+  declare v_id uuid; v_ok boolean := false;
+  begin
+    select b.id into v_id from public.budgets b
+     where b.created_by = 'bbbbbbbb-0000-0000-0000-000000000002'::uuid and b.period_start = '2026-08-01';
+    assert v_id is not null, 'test setup broken: bob''s own 2026-08 budget over ...002 should exist';
+
+    begin
+      perform update_budget_wallets(v_id,
+        array['5e7b0000-0000-0000-0000-000000000001', '5e7b0000-0000-0000-0000-000000000002']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'not a member of every account in that set',
+        format('wrong error for partial membership: %s', sqlerrm);
+    end;
+    assert not v_ok,
+      'LEAK: bob widened his budget onto alice''s private wallet -- update_budget_wallets''s membership guard did not hold under owner rights';
+    assert (select array_agg(wallet_id) from public.budget_wallets where budget_id = v_id)
+         = array['5e7b0000-0000-0000-0000-000000000002']::uuid[],
+      'LEAK: a trace of bob''s refused edit survived in budget_wallets';
+  end $$;
+commit;
+
+-- Alice, a member of both, widens her Subscriptions budget from ...001 to
+-- ...001 + ...002 and get_budget_status -- through ordinary RLS, in the
+-- same session -- reports the new scope for that same budget id.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$
+  declare v_id uuid; v_ret uuid; v_count int; v_names text[];
+  begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+    select id into v_id from ubw_rls_fixture;
+
+    v_ret := update_budget_wallets(v_id,
+      array['5e7b0000-0000-0000-0000-000000000001', '5e7b0000-0000-0000-0000-000000000002']::uuid[]);
+    assert v_ret = v_id,
+      'PERMISSION BROKEN: alice, a member of every wallet in the new set, could not widen her own budget';
+
+    select s.wallet_count, s.wallet_names into v_count, v_names
+      from public.get_budget_status('2026-09-01', '2026-09-30') s
+     where s.budget_id = v_id;
+    assert v_count = 2,
+      format('READ-BACK BROKEN: get_budget_status should report 2 wallets for the widened budget, got %s', v_count);
+    assert v_names = array['SB Wallet One', 'SB Wallet Two'],
+      format('READ-BACK BROKEN: get_budget_status should name both wallets, got %s', v_names);
+  end $$;
+commit;
+
+drop table ubw_rls_fixture;
+
+-- =====================================================================
 -- 0015: recurring_rules / recurring_skips RLS. Reuses cccccccc-003
 -- (Alice Bank) -- by this point in the file bob is already a genuine
 -- member of it (section 8) and carol has never touched it (she is only

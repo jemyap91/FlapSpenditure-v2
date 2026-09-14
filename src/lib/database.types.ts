@@ -947,6 +947,10 @@ export type Database = {
         Args: { p_direct: string[]; p_household: boolean; p_wallet: string }
         Returns: undefined
       }
+      update_budget_wallets: {
+        Args: { p_budget_id: string; p_wallet_ids: string[] }
+        Returns: string
+      }
       update_transfer_pair: {
         Args: {
           p_amount_in: number

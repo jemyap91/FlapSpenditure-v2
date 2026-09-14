@@ -11,7 +11,7 @@
 // into Next's real cache-invalidation machinery (which throws outside a
 // request scope).
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { setBudget, removeBudget } from "./budgets";
+import { setBudget, removeBudget, updateBudgetWallets } from "./budgets";
 
 const USER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const WALLET_ID_1 = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -344,5 +344,93 @@ describe("removeBudget", () => {
 
     expect(result).toEqual({ error: "That budget no longer exists." });
     expect(budgetsEqCalls).toEqual([]);
+  });
+});
+
+describe("updateBudgetWallets", () => {
+  const walletsForm = (walletIds: string[]) => {
+    const fd = new FormData();
+    for (const id of walletIds) fd.append("walletIds", id);
+    return fd;
+  };
+
+  it("refuses an empty wallet set before any RPC or table lookup", async () => {
+    // The fails-open hazard 0013 documents applies to an edit emptying a
+    // set as much as to a create — same first-layer refusal as setBudget.
+    const result = await updateBudgetWallets(BUDGET_ID, {}, walletsForm([]));
+
+    expect(result).toEqual({ error: "Choose at least one wallet" });
+    expect(rpcCalls).toEqual([]);
+    expect(fromTables).toEqual([]);
+  });
+
+  it("rejects a malformed wallet id before touching the database", async () => {
+    const result = await updateBudgetWallets(BUDGET_ID, {}, walletsForm(["not-a-uuid"]));
+
+    expect(result).toEqual({ error: "Invalid UUID" });
+    expect(rpcCalls).toEqual([]);
+    expect(fromTables).toEqual([]);
+  });
+
+  it("rejects a malformed budget id with the same not-found message an inaccessible one gets", async () => {
+    // Same reasoning as removeBudget's identical test: a malformed id and
+    // one the caller simply cannot see are indistinguishable from outside.
+    const result = await updateBudgetWallets("not-a-uuid", {}, walletsForm([WALLET_ID_1]));
+
+    expect(result).toEqual({ error: "That budget no longer exists." });
+    expect(rpcCalls).toEqual([]);
+    expect(fromTables).toEqual([]);
+  });
+
+  it("returns an error when there is no session", async () => {
+    getUser.mockResolvedValue({ data: { user: null } });
+
+    const result = await updateBudgetWallets(BUDGET_ID, {}, walletsForm([WALLET_ID_1]));
+
+    expect(result).toEqual({ error: "Not signed in" });
+    expect(rpcCalls).toEqual([]);
+  });
+
+  it("refuses a non-member set with a readable message", async () => {
+    membershipRows.length = 0;
+    membershipRows.push({ wallet_id: WALLET_ID_1 }); // caller is not in WALLET_ID_2
+
+    const result = await updateBudgetWallets(BUDGET_ID, {}, walletsForm([WALLET_ID_1, WALLET_ID_2]));
+
+    expect(result).toEqual({ error: "You do not have access to one or more of those wallets." });
+    expect(rpcCalls).toEqual([]);
+  });
+
+  it("calls update_budget_wallets with the budget id and the exact flat wallet array", async () => {
+    const result = await updateBudgetWallets(BUDGET_ID, {}, walletsForm([WALLET_ID_1, WALLET_ID_2]));
+
+    expect(result).toEqual({ notice: "Wallets updated." });
+    expect(rpcCalls).toEqual([
+      { fn: "update_budget_wallets", args: { p_budget_id: BUDGET_ID, p_wallet_ids: [WALLET_ID_1, WALLET_ID_2] } },
+    ]);
+    // Flat, for the same reason setBudget's own test asserts it (0013 C1).
+    const sent = (rpcCalls[0]!.args as { p_wallet_ids: unknown[] }).p_wallet_ids;
+    expect(sent.some((v) => Array.isArray(v))).toBe(false);
+  });
+
+  it("returns an error, never throws, when update_budget_wallets is refused", async () => {
+    rpcResult.error = { message: "a budget over that set already exists" };
+
+    const result = await updateBudgetWallets(BUDGET_ID, {}, walletsForm([WALLET_ID_1]));
+
+    expect(result).toEqual({ error: "Could not update that budget's wallets. Please try again." });
+    expect(JSON.stringify(result)).not.toContain("already exists");
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it("revalidates both /budgets and / on success", async () => {
+    await updateBudgetWallets(BUDGET_ID, {}, walletsForm([WALLET_ID_1]));
+
+    expect(revalidatePath).toHaveBeenCalledWith("/budgets");
+    expect(revalidatePath).toHaveBeenCalledWith("/");
+    // Positive control for the `fromTables` absence checks above: only the
+    // membership pre-check touches a table — the currency is the budget's
+    // own, checked by the SQL function, so no `wallets` read happens here.
+    expect(fromTables).toEqual(["wallet_members"]);
   });
 });
