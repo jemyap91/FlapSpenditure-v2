@@ -769,6 +769,227 @@ begin;
   end $$;
 commit;
 
+-- update_budget_wallets (0027). Replaces an EXISTING budget's wallet set in
+-- place -- the budget keeps its id, month, category, amount and currency;
+-- only budget_wallets changes. Needed because set_budget's read-modify-
+-- write match is keyed on the exact wallet-id set, so resubmitting a
+-- budget with a bigger set through set_budget creates a SECOND, overlapping
+-- budget rather than editing the first. Same impersonation wrapper and the
+-- same nested begin/exception + flag idiom as the set_budget block above,
+-- for the same reasons. Reuses that block's fixtures: alice's b1/b2 (SGD),
+-- b3 (EUR), Carol's b4 (SGD, alice not a member), b5 (SGD, archived).
+begin;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid,
+      'impersonation failed: auth.uid() did not resolve to alice';
+  end $$;
+
+  -- A budget over ONE wallet, set in an earlier month, to edit throughout.
+  -- 2027-01 so it collides with nothing the set_budget block created.
+  create temp table ubw_fixture as
+    select set_budget((select id from public.categories where kind = 'expense' and name = 'Groceries' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')),
+      '2027-01-01', 40000,
+      array['cccccccc-0000-0000-0000-0000000000b1']::uuid[]) as id;
+
+  -- ACCEPT 1: expanding the set keeps the same budget row and replaces its
+  -- budget_wallets rows -- the whole reason the function exists. Row count
+  -- over the WHOLE budgets table for this category/month is asserted too
+  -- (same I2 reasoning as the set_budget block): "edited in place" and
+  -- "inserted a second budget" read identically if only the set is checked.
+  do $$
+  declare v_id uuid; v_ret uuid; v_rows int; v_set uuid[];
+  begin
+    select id into v_id from ubw_fixture;
+    v_ret := update_budget_wallets(v_id,
+      array['cccccccc-0000-0000-0000-0000000000b1', 'cccccccc-0000-0000-0000-0000000000b2']::uuid[]);
+    assert v_ret = v_id,
+      format('IN-PLACE BROKEN: update_budget_wallets returned %s for budget %s', v_ret, v_id);
+
+    select array_agg(wallet_id order by wallet_id) into v_set from public.budget_wallets where budget_id = v_id;
+    assert v_set = array['cccccccc-0000-0000-0000-0000000000b1', 'cccccccc-0000-0000-0000-0000000000b2']::uuid[],
+      format('IN-PLACE BROKEN: expected the budget to cover b1 and b2 after the edit, found %s', v_set);
+    assert (select count(*) from public.budget_wallets where budget_id = v_id
+              and space_id <> (select space_id from public.budgets where id = v_id)) = 0,
+      'update_budget_wallets did not carry the budget''s household onto its new budget_wallets rows';
+
+    select count(*) into v_rows from public.budgets
+      where category_id = (select id from public.categories where kind = 'expense' and name = 'Groceries' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003'))
+        and period_start = '2027-01-01';
+    assert v_rows = 1,
+      format('IN-PLACE BROKEN: expected exactly 1 budget for the edited category/month, found %s', v_rows);
+
+    -- Everything that is NOT the set must be untouched: the edit is to the
+    -- wallets, not a re-creation of the budget.
+    assert (select (period_start, amount_minor, currency_code) from public.budgets where id = v_id)
+         = ('2027-01-01'::date, 40000::bigint, 'SGD'::char(3)),
+      'IN-PLACE BROKEN: the budget''s month, amount or currency changed on a wallet-set edit';
+  end $$;
+
+  -- ACCEPT 2: shrinking is the same operation in the other direction.
+  do $$
+  declare v_id uuid; v_set uuid[];
+  begin
+    select id into v_id from ubw_fixture;
+    perform update_budget_wallets(v_id, array['cccccccc-0000-0000-0000-0000000000b2']::uuid[]);
+    select array_agg(wallet_id order by wallet_id) into v_set from public.budget_wallets where budget_id = v_id;
+    assert v_set = array['cccccccc-0000-0000-0000-0000000000b2']::uuid[],
+      format('SHRINK BROKEN: expected the budget to cover only b2 after the edit, found %s', v_set);
+  end $$;
+
+  -- REJECT 1: an empty set. The fails-open hazard 0013 documents applies
+  -- just as much to an EDIT emptying a set as to a create -- so this is the
+  -- same message, and rows are proven untouched afterward.
+  do $$
+  declare v_id uuid; v_ok boolean := false;
+  begin
+    select id into v_id from ubw_fixture;
+    begin
+      perform update_budget_wallets(v_id, array[]::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'a budget must cover at least one account',
+        format('wrong error for empty array: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: update_budget_wallets accepted an empty wallet array';
+    assert (select count(*) from public.budget_wallets where budget_id = v_id) = 1,
+      'GUARD BROKEN: a refused edit still changed the budget''s wallet set';
+  end $$;
+
+  -- REJECT 2: the same wallet listed twice.
+  do $$
+  declare v_id uuid; v_ok boolean := false;
+  begin
+    select id into v_id from ubw_fixture;
+    begin
+      perform update_budget_wallets(v_id,
+        array['cccccccc-0000-0000-0000-0000000000b1', 'cccccccc-0000-0000-0000-0000000000b1']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'the same account is listed twice in that set',
+        format('wrong error for duplicate wallet id: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: update_budget_wallets accepted a wallet set with a duplicate id';
+  end $$;
+
+  -- REJECT 3: a wallet the caller is not a member of (Carol's b4). Flat and
+  -- nested forms both, for the reason 0013's C1 finding records.
+  do $$
+  declare v_id uuid; v_ok boolean := false;
+  begin
+    select id into v_id from ubw_fixture;
+    begin
+      perform update_budget_wallets(v_id,
+        array['cccccccc-0000-0000-0000-0000000000b2', 'cccccccc-0000-0000-0000-0000000000b4']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'not a member of every account in that set',
+        format('wrong error for non-member wallet: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: update_budget_wallets accepted a wallet alice is not a member of';
+
+    v_ok := false;
+    begin
+      perform update_budget_wallets(v_id,
+        '{{cccccccc-0000-0000-0000-0000000000b2,cccccccc-0000-0000-0000-0000000000b4}}'::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'not a member of every account in that set',
+        format('wrong error for nested non-member wallet: %s', sqlerrm);
+    end;
+    assert not v_ok, 'C1 REGRESSION: update_budget_wallets accepted a NESTED array containing a wallet alice is not a member of';
+  end $$;
+
+  -- REJECT 4: an archived wallet (b5).
+  do $$
+  declare v_id uuid; v_ok boolean := false;
+  begin
+    select id into v_id from ubw_fixture;
+    begin
+      perform update_budget_wallets(v_id,
+        array['cccccccc-0000-0000-0000-0000000000b2', 'cccccccc-0000-0000-0000-0000000000b5']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'an archived account cannot be part of a budget',
+        format('wrong error for archived wallet: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: update_budget_wallets accepted an archived wallet';
+  end $$;
+
+  -- REJECT 5: a wallet in a currency other than the BUDGET's own. The amount
+  -- is denominated in the budget's stored currency_code (0013 denormalised
+  -- it for exactly this), so the new set must match it -- stricter than
+  -- set_budget's "all one currency", which a lone EUR wallet would satisfy.
+  do $$
+  declare v_id uuid; v_ok boolean := false;
+  begin
+    select id into v_id from ubw_fixture;
+    begin
+      perform update_budget_wallets(v_id, array['cccccccc-0000-0000-0000-0000000000b3']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'every account in a budget must use the budget''s own currency',
+        format('wrong error for currency mismatch: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: update_budget_wallets accepted a wallet in a different currency from the budget';
+  end $$;
+
+  -- REJECT 6: an edit may not produce an exact duplicate of ANOTHER budget
+  -- (same month, category and set) -- the rule set_budget enforces at
+  -- creation, so an edit cannot manufacture what a create refuses. A
+  -- second Groceries budget for 2027-01 over b1 exists after this; editing
+  -- the fixture (currently over b2) onto b1 would duplicate it.
+  do $$
+  declare v_id uuid; v_other uuid; v_ok boolean := false;
+  begin
+    select id into v_id from ubw_fixture;
+    v_other := set_budget((select id from public.categories where kind = 'expense' and name = 'Groceries' and space_id = (select space_id from public.wallets where id = 'cccccccc-0000-0000-0000-000000000003')),
+      '2027-01-01', 10000, array['cccccccc-0000-0000-0000-0000000000b1']::uuid[]);
+    assert v_other <> v_id, 'test setup broken: the second budget should be a distinct row';
+    begin
+      perform update_budget_wallets(v_id, array['cccccccc-0000-0000-0000-0000000000b1']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'a budget over that set already exists',
+        format('wrong error for duplicate set: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: update_budget_wallets let an edit duplicate another budget''s set';
+  end $$;
+
+  -- REJECT 7: an id that names no budget. Same message the RLS-invisible
+  -- case gets in rls.sql -- a caller learns nothing from the difference.
+  do $$
+  declare v_ok boolean := false;
+  begin
+    begin
+      perform update_budget_wallets('00000000-0000-4000-8000-0000000000fe'::uuid,
+        array['cccccccc-0000-0000-0000-0000000000b1']::uuid[]);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'that budget does not exist',
+        format('wrong error for a nonexistent budget: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: update_budget_wallets accepted a budget id that names nothing';
+  end $$;
+
+  -- REJECT 8: null arguments.
+  do $$
+  declare v_id uuid; v_ok boolean := false;
+  begin
+    select id into v_id from ubw_fixture;
+    begin
+      perform update_budget_wallets(v_id, null);
+      v_ok := true;
+    exception when others then
+      assert sqlerrm = 'budget and accounts must not be null',
+        format('wrong error for null accounts: %s', sqlerrm);
+    end;
+    assert not v_ok, 'GUARD BROKEN: update_budget_wallets accepted a null wallet array';
+  end $$;
+
+  drop table ubw_fixture;
+commit;
+
 -- Recurring rules and skips (0015). Fresh fixtures: a user, a wallet, and a
 -- category, following this file's own convention of literal UUIDs and
 -- direct insert into wallets/categories inside a do $$ ... $$ block --

@@ -18,13 +18,17 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BudgetList } from "./BudgetList";
-import { removeBudget, setBudget } from "@/server/actions/budgets";
+import { removeBudget, setBudget, updateBudgetWallets } from "@/server/actions/budgets";
 import type { BudgetStatusRow } from "@/lib/budget-status";
 
 // Every wallet now carries its household (0022); one fixture id serves all.
 const SPACE = "99999999-9999-4999-8999-999999999999";
 
-vi.mock("@/server/actions/budgets", () => ({ setBudget: vi.fn(), removeBudget: vi.fn() }));
+vi.mock("@/server/actions/budgets", () => ({
+  setBudget: vi.fn(),
+  removeBudget: vi.fn(),
+  updateBudgetWallets: vi.fn(),
+}));
 
 /** A BUDGETED row (overall cap or category), matching the "budget row" shape. */
 const row = (over: Partial<BudgetStatusRow> = {}): BudgetStatusRow => ({
@@ -58,6 +62,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(removeBudget).mockResolvedValue({});
   vi.mocked(setBudget).mockResolvedValue({});
+  vi.mocked(updateBudgetWallets).mockResolvedValue({});
 });
 
 describe("BudgetList — rendering a budgeted row", () => {
@@ -508,5 +513,132 @@ describe("BudgetList — empty state", () => {
   it("says so when there is nothing to show", () => {
     render(<BudgetList rows={[]} />);
     expect(screen.getByText(/no spending or budgets recorded/i)).toBeInTheDocument();
+  });
+});
+
+describe("BudgetList — editing an existing budget's wallet set", () => {
+  // Three wallets: two in the row's own currency (one covered, one not)
+  // and one in another currency, which the row's picker must never offer
+  // — the budget's amount is denominated in SGD (0013's stored
+  // currency_code), so an EUR wallet is not a legal member of its set.
+  const wallets = [
+    { id: "w1", name: "Everyday", currency_code: "SGD", space_id: SPACE },
+    { id: "w2", name: "Savings", currency_code: "SGD", space_id: SPACE },
+    { id: "w3", name: "Euro Trip", currency_code: "EUR", space_id: SPACE },
+  ];
+  const renderRow = (over: Partial<BudgetStatusRow> = {}, currentPeriodStart?: string) =>
+    render(
+      <BudgetList
+        rows={[row({ budget_id: "b1", wallet_names: ["Everyday"], wallet_count: 1, ...over })]}
+        wallets={wallets}
+        primaryCurrency="SGD"
+        walletIdsByBudget={{ b1: ["w1"] }}
+        currentPeriodStart={currentPeriodStart}
+      />,
+    );
+  const rowSection = () =>
+    screen.getByRole("heading", { level: 2, name: "Groceries · Everyday" }).closest("section")!;
+
+  it("offers Edit wallets, pinned by name, on a category budget and on the overall cap", () => {
+    render(
+      <BudgetList
+        rows={[
+          row({ budget_id: "b1", wallet_names: ["Everyday"], wallet_count: 1 }),
+          row({ budget_id: "b2", category_id: null, category_label: null, wallet_names: ["Everyday"], wallet_count: 1 }),
+        ]}
+        wallets={wallets}
+        primaryCurrency="SGD"
+      />,
+    );
+    // Row-scoped like Remove (N2): two budgets can share a category, and
+    // a screen-reader user with both open must be able to tell them apart.
+    expect(screen.getByRole("button", { name: "Edit wallets for Groceries · Everyday" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit wallets for Overall budget · Everyday" })).toBeInTheDocument();
+  });
+
+  it("keeps the row's wallet picker closed until Edit wallets is pressed, then pre-checks the row's REAL wallet ids", async () => {
+    const user = userEvent.setup();
+    renderRow();
+    // Scoped to the row: the always-mounted new-budget form renders a
+    // group of the same name below.
+    expect(within(rowSection()).queryByRole("group", { name: "Wallets this budget covers" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Edit wallets for Groceries · Everyday" }));
+
+    const picker = within(rowSection()).getByRole("group", { name: "Wallets this budget covers" });
+    // Seeded from `walletIdsByBudget` (real ids), never from `wallet_names`
+    // — see BudgetList's own doc comment on why name matching is only ever
+    // acceptable for cosmetic text.
+    expect(within(picker).getByRole("checkbox", { name: "Everyday" })).toBeChecked();
+    expect(within(picker).getByRole("checkbox", { name: "Savings" })).not.toBeChecked();
+    // Only the row's own currency is offered.
+    expect(within(picker).queryByRole("checkbox", { name: "Euro Trip" })).not.toBeInTheDocument();
+  });
+
+  it("submits the checked wallets to updateBudgetWallets with the row's real budget id", async () => {
+    const user = userEvent.setup();
+    renderRow();
+    await user.click(screen.getByRole("button", { name: "Edit wallets for Groceries · Everyday" }));
+    const picker = within(rowSection()).getByRole("group", { name: "Wallets this budget covers" });
+    await user.click(within(picker).getByRole("checkbox", { name: "Savings" }));
+    await user.click(within(rowSection()).getByRole("button", { name: "Save wallets" }));
+
+    expect(updateBudgetWallets).toHaveBeenCalled();
+    expect(vi.mocked(updateBudgetWallets).mock.calls[0]![0]).toBe("b1");
+    const formData = vi.mocked(updateBudgetWallets).mock.calls[0]![2] as FormData;
+    expect(formData.getAll("walletIds")).toEqual(["w1", "w2"]);
+    // The amount form is untouched by this: setBudget is never called.
+    expect(setBudget).not.toHaveBeenCalled();
+  });
+
+  it("keeps the checkboxes showing the saved set after a successful save", async () => {
+    // React 19 resets a form's DOM fields once its action settles. A
+    // controlled checkbox that was unchecked at mount is reset to
+    // unchecked by that, while the component's own state — and the
+    // Select all / Clear all label derived from it — still says checked:
+    // the screen then misreports which wallets were just saved. Seen in
+    // the browser before this test existed.
+    const user = userEvent.setup();
+    renderRow();
+    await user.click(screen.getByRole("button", { name: "Edit wallets for Groceries · Everyday" }));
+    const picker = within(rowSection()).getByRole("group", { name: "Wallets this budget covers" });
+    await user.click(within(picker).getByRole("checkbox", { name: "Savings" }));
+    await user.click(within(rowSection()).getByRole("button", { name: "Save wallets" }));
+    await screen.findByRole("status", { name: "Wallets status for Groceries · Everyday" });
+
+    expect(within(picker).getByRole("checkbox", { name: "Savings" })).toBeChecked();
+    expect(within(picker).getByRole("checkbox", { name: "Everyday" })).toBeChecked();
+    expect(within(picker).getByRole("button", { name: "Clear all" })).toBeInTheDocument();
+  });
+
+  it("discloses, inside the open editor, that a past-month budget's earlier months change too", async () => {
+    // The in-place edit's accepted cost (0027's own header comment): a
+    // budget set in June and carried forward reports June over the new
+    // set as well. Said in text, next to the control that does it.
+    const user = userEvent.setup();
+    renderRow({ budget_period_start: "2026-06-01" }, "2026-08-01");
+    await user.click(screen.getByRole("button", { name: "Edit wallets for Groceries · Everyday" }));
+    expect(within(rowSection()).getByText(/set in Jun.*earlier months/i)).toBeInTheDocument();
+  });
+
+  it("makes no past-month claim for a budget set this month", async () => {
+    const user = userEvent.setup();
+    renderRow({ budget_period_start: "2026-08-01" }, "2026-08-01");
+    await user.click(screen.getByRole("button", { name: "Edit wallets for Groceries · Everyday" }));
+    expect(within(rowSection()).queryByText(/earlier months/i)).not.toBeInTheDocument();
+  });
+
+  it("surfaces an update failure in the row's OWN wallets status region, named for that row", async () => {
+    vi.mocked(updateBudgetWallets).mockResolvedValue({ error: "Could not update that budget's wallets. Please try again." });
+    const user = userEvent.setup();
+    renderRow();
+    await user.click(screen.getByRole("button", { name: "Edit wallets for Groceries · Everyday" }));
+    await user.click(within(rowSection()).getByRole("button", { name: "Save wallets" }));
+
+    // A SEPARATE live region from the amount form's "Status for …": the
+    // two forms can fail independently, and one region overwriting the
+    // other's text would lose whichever came first.
+    const status = await screen.findByRole("status", { name: "Wallets status for Groceries · Everyday" });
+    expect(status).toHaveTextContent("Could not update that budget's wallets. Please try again.");
   });
 });

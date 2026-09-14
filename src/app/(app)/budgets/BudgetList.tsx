@@ -1,7 +1,7 @@
 "use client";
 
-import { useId, useState, useTransition, useActionState } from "react";
-import { setBudget, removeBudget, type BudgetState } from "@/server/actions/budgets";
+import { useId, useState, useTransition, useActionState, startTransition } from "react";
+import { setBudget, removeBudget, updateBudgetWallets, type BudgetState } from "@/server/actions/budgets";
 import { formatMoney } from "@/lib/money";
 import { budgetProgress, scopeLabel, type BudgetStatusRow } from "@/lib/budget-status";
 import { MONTH_ABBREV } from "@/lib/month-names";
@@ -201,7 +201,14 @@ export function BudgetList({
           key={row.budget_id!}
           row={row}
           totalInCurrency={walletCountByCurrency.get(row.currency_code) ?? 0}
-          primaryWallets={primaryWallets}
+          // Every active wallet in this ROW's own currency — not
+          // `primaryWallets`. A row can carry a different currency from the
+          // primary one (fix round I3's shared-wallet case), and its set
+          // may only ever contain wallets in its own currency
+          // (update_budget_wallets refuses any other), so this is the list
+          // both the "doesn't cover" disclosure and the row's wallet editor
+          // draw from.
+          currencyWallets={wallets.filter((w) => w.currency_code === row.currency_code)}
           walletIds={walletIdsByBudget[row.budget_id!] ?? []}
           currentPeriodStart={currentPeriodStart}
         />
@@ -231,13 +238,13 @@ export function BudgetList({
 function BudgetRow({
   row,
   totalInCurrency,
-  primaryWallets,
+  currencyWallets,
   walletIds,
   currentPeriodStart,
 }: {
   row: BudgetStatusRow;
   totalInCurrency: number;
-  primaryWallets: BudgetWallet[];
+  currencyWallets: BudgetWallet[];
   walletIds: string[];
   currentPeriodStart?: string;
 }) {
@@ -308,15 +315,12 @@ function BudgetRow({
       ? `Remove (set ${monthAbbrev(row.budget_period_start!, currentPeriodStart!)})`
       : "Remove";
 
-  // Names present in `primaryWallets` (this budget's own currency, since the
-  // picker never offers any other) that this row's own `wallet_names` does
-  // NOT list. Cosmetic only — see `walletIdsByBudget`'s doc comment above
-  // for why a wrong guess here is acceptable where it would not be for
-  // resubmission.
+  // Names in this budget's own currency that this row's own `wallet_names`
+  // does NOT list. Cosmetic only — see `walletIdsByBudget`'s doc comment
+  // above for why a wrong guess here is acceptable where it would not be
+  // for resubmission (the editor below seeds from real ids, never this).
   const covered = new Set(row.wallet_names ?? []);
-  const uncoveredNames = primaryWallets
-    .filter((w) => w.currency_code === row.currency_code && !covered.has(w.name))
-    .map((w) => w.name);
+  const uncoveredNames = currencyWallets.filter((w) => !covered.has(w.name)).map((w) => w.name);
 
   // Fix round I5: `walletIds` (this row's REAL wallet ids, via a direct
   // `budget_wallets` read — see `walletIdsByBudget`'s doc comment on
@@ -363,7 +367,7 @@ function BudgetRow({
 
       {walletCountMismatch && (
         <p className="text-xs" style={{ color: "var(--neg)" }}>
-          Covers an archived wallet, so its amount can&rsquo;t be edited here.
+          Covers an archived wallet, so its amount can&rsquo;t be edited here. Edit its wallets to drop it.
         </p>
       )}
 
@@ -464,7 +468,123 @@ function BudgetRow({
       >
         <span id={amountStatusId}>{formState.error ?? formState.notice}</span>
       </p>
+
+      <EditWalletsForm
+        budgetId={row.budget_id!}
+        rowName={`${categoryLabel} · ${scope}`}
+        currencyWallets={currencyWallets}
+        walletIds={walletIds}
+        pastMonthLabel={isPastBudget ? monthAbbrev(row.budget_period_start!, currentPeriodStart!) : null}
+      />
     </section>
+  );
+}
+
+/**
+ * Edits an EXISTING budget's wallet set in place, through
+ * `updateBudgetWallets` (0027) — never through `setBudget`, which matches
+ * on the exact id set and would create a second, overlapping budget. Its
+ * own form, separate from the row's amount form: the two saves go to two
+ * different SQL functions and can fail independently, so entangling them
+ * behind one button would leave one of them silently un-attempted.
+ *
+ * The picker is rendered only once opened. Closed, the row stays the
+ * compact card it was; and the always-mounted new-budget form below
+ * already renders a `Wallets this budget covers` group, so per-row pickers
+ * on screen at all times would be several identically-named groups for a
+ * screen-reader user to tell apart, for no benefit.
+ */
+function EditWalletsForm({
+  budgetId,
+  rowName,
+  currencyWallets,
+  walletIds,
+  pastMonthLabel,
+}: {
+  budgetId: string;
+  /** `<category label> · <scope label>` — the same row-scoping every
+   *  other control and live region in this row uses (N2, I2). */
+  rowName: string;
+  currencyWallets: BudgetWallet[];
+  /** The row's REAL wallet ids (`walletIdsByBudget`), never names — see
+   *  that prop's doc comment on `BudgetList`. */
+  walletIds: string[];
+  /** `Jun` / `Aug 2025` when this budget was set in an earlier month than
+   *  the one on screen, else null. The in-place edit's accepted cost is
+   *  that earlier months are recomputed over the new set (0027's own
+   *  header comment); it is said here, beside the control that does it. */
+  pastMonthLabel: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set(walletIds));
+  const walletsStatusId = useId();
+
+  const [formState, formAction, saving] = useActionState<BudgetState, FormData>(
+    updateBudgetWallets.bind(null, budgetId),
+    {},
+  );
+
+  return (
+    <div className="flex flex-col gap-2">
+      <button
+        type="button"
+        aria-label={`Edit wallets for ${rowName}`}
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className={`w-fit text-xs underline ${FOCUS_RING}`}
+        style={{ color: "var(--cat-1)" }}
+      >
+        {open ? "Close wallet editor" : "Edit wallets"}
+      </button>
+
+      {open && (
+        <form
+          // NOT `action={formAction}`: React 19 resets a form's DOM fields
+          // once its action settles, and that reset returns every
+          // controlled checkbox here to its MOUNT-time state — the box just
+          // ticked shows unticked while `selectedIds` (and the Select all /
+          // Clear all label) still says ticked, misreporting what was just
+          // saved. Calling the action from a transition is React's own
+          // documented way to opt out of that reset; `saving` (isPending)
+          // still tracks it.
+          onSubmit={(e) => {
+            e.preventDefault();
+            const fd = new FormData(e.currentTarget);
+            startTransition(() => formAction(fd));
+          }}
+          className="flex flex-col gap-3"
+        >
+          <WalletPicker wallets={currencyWallets} selectedIds={selectedIds} onChange={setSelectedIds} />
+          {pastMonthLabel !== null && (
+            <p className="text-xs" style={{ color: "var(--ink-2)" }}>
+              Set in {pastMonthLabel} — changing its wallets also changes earlier months.
+            </p>
+          )}
+          <button
+            type="submit"
+            disabled={saving}
+            className={`w-fit rounded-md px-3 py-2 text-sm font-medium disabled:opacity-60 ${FOCUS_RING}`}
+            style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+          >
+            {saving ? "Saving…" : "Save wallets"}
+          </button>
+          {/* A SEPARATE live region from the amount form's `Status for …`,
+              named distinctly: the two forms fail independently, and one
+              region overwriting the other's text would lose whichever
+              came first. Mounted with the form, before it ever has text,
+              for the same announce-reliability reason as the row's own
+              regions above; same label/text split too. */}
+          <p
+            role="status"
+            aria-label={`Wallets status for ${rowName}`}
+            className="text-sm"
+            style={{ color: formState.error ? "var(--neg)" : "var(--ink-2)" }}
+          >
+            <span id={walletsStatusId}>{formState.error ?? formState.notice}</span>
+          </p>
+        </form>
+      )}
+    </div>
   );
 }
 
@@ -509,11 +629,84 @@ function UncoveredSection({ rows }: { rows: BudgetStatusRow[] }) {
 }
 
 /**
+ * A controlled checkbox set named `Wallets this budget covers`, with a
+ * Select all / Clear all toggle. Shared by the new-budget form (where it
+ * defaults to every primary-currency wallet) and each existing row's
+ * wallet editor (where it is seeded from the row's real ids). Controlled,
+ * not `defaultChecked`: the toggle must both SET every box and KNOW whether
+ * all are currently checked to choose its own label. Every checkbox is
+ * `name="walletIds"`, so the enclosing form's FormData carries one entry
+ * per checked wallet — the shape `budgetWalletsInput` expects.
+ *
+ * Submitting zero is refused server-side (`.min(1)`), so no client-side
+ * guard is duplicated here.
+ */
+function WalletPicker({
+  wallets,
+  selectedIds,
+  onChange,
+}: {
+  wallets: BudgetWallet[];
+  selectedIds: Set<string>;
+  onChange: (next: Set<string>) => void;
+}) {
+  const allSelected = wallets.length > 0 && wallets.every((w) => selectedIds.has(w.id));
+  return (
+    <fieldset className="relative">
+      <legend className="text-xs" style={{ color: "var(--ink-2)" }}>
+        Wallets this budget covers
+      </legend>
+      {/* Absolutely positioned against the fieldset rather than a sibling
+          of the legend in normal flow: `legend` must stay the fieldset's
+          only direct-child legend for its accessible name to resolve
+          (browsers only look at direct children per the HTML-AAM
+          fieldset/legend algorithm), which rules out wrapping legend and
+          button together in a flex row. Rendered only when there is
+          something to select — an empty `wallets` would make `.every()`
+          vacuously true and mislabel this "Clear all" against nothing
+          (controller addendum). */}
+      {wallets.length > 0 && (
+        <button
+          type="button"
+          onClick={() => onChange(allSelected ? new Set() : new Set(wallets.map((w) => w.id)))}
+          className={`absolute right-0 top-0 text-xs underline ${FOCUS_RING}`}
+          style={{ color: "var(--cat-1)" }}
+        >
+          {allSelected ? "Clear all" : "Select all"}
+        </button>
+      )}
+      <div className="mt-1 flex flex-col gap-1">
+        {wallets.map((w) => (
+          <label key={w.id} className="flex items-center gap-2 text-sm" style={{ color: "var(--ink)" }}>
+            <input
+              type="checkbox"
+              name="walletIds"
+              value={w.id}
+              checked={selectedIds.has(w.id)}
+              onChange={(e) => {
+                const next = new Set(selectedIds);
+                if (e.target.checked) {
+                  next.add(w.id);
+                } else {
+                  next.delete(w.id);
+                }
+                onChange(next);
+              }}
+            />
+            {w.name}
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+/**
  * Creates a NEW budget: an overall cap or a category budget, over a chosen
- * wallet set. The only place a Category picker or a wallet PICKER (as
- * opposed to an existing row's hidden, unpicked wallet set) appears on this
- * screen — matches the controller addendum's pinned naming, "Category
- * picker (NEW budget)".
+ * wallet set. The only place a Category picker appears on this screen —
+ * matches the controller addendum's pinned naming, "Category picker (NEW
+ * budget)". (A wallet picker also appears per existing row, behind Edit
+ * wallets — see `EditWalletsForm`.)
  */
 function AddBudgetForm({
   primaryWallets,
@@ -539,8 +732,6 @@ function AddBudgetForm({
   const [selectedWalletIds, setSelectedWalletIds] = useState<Set<string>>(
     () => new Set(primaryWallets.map((w) => w.id)),
   );
-  const allWalletsSelected =
-    primaryWallets.length > 0 && primaryWallets.every((w) => selectedWalletIds.has(w.id));
 
   const [formState, formAction, saving] = useActionState<BudgetState, FormData>(
     setBudget.bind(null, categoryId),
@@ -580,66 +771,11 @@ function AddBudgetForm({
           </select>
         </label>
 
-        <fieldset className="relative">
-          <legend className="text-xs" style={{ color: "var(--ink-2)" }}>
-            Wallets this budget covers
-          </legend>
-          {/* Absolutely positioned against the fieldset rather than a sibling
-              of the legend in normal flow: `legend` must stay the fieldset's
-              only direct-child legend for its accessible name to resolve
-              (browsers only look at direct children per the HTML-AAM
-              fieldset/legend algorithm), which rules out wrapping legend and
-              button together in a flex row. Rendered only when there is
-              something to select — an empty `primaryWallets` would make
-              `.every()` vacuously true and mislabel this "Clear all" against
-              nothing (controller addendum). */}
-          {primaryWallets.length > 0 && (
-            <button
-              type="button"
-              onClick={() =>
-                setSelectedWalletIds(
-                  allWalletsSelected ? new Set() : new Set(primaryWallets.map((w) => w.id)),
-                )
-              }
-              className={`absolute right-0 top-0 text-xs underline ${FOCUS_RING}`}
-              style={{ color: "var(--cat-1)" }}
-            >
-              {allWalletsSelected ? "Clear all" : "Select all"}
-            </button>
-          )}
-          <div className="mt-1 flex flex-col gap-1">
-            {primaryWallets.map((w) => (
-              <label key={w.id} className="flex items-center gap-2 text-sm" style={{ color: "var(--ink)" }}>
-                {/* Defaults to every primary-currency wallet checked — the
-                    picker's own default (controller addendum §4) — and a
-                    caller can uncheck down to a subset. Submitting zero is
-                    refused server-side (budgetInput's `.min(1)`), so no
-                    client-side guard is duplicated here. Controlled (not
-                    `defaultChecked`) so the Select all / Clear all toggle
-                    above can both set every box and know whether all are
-                    checked. */}
-                <input
-                  type="checkbox"
-                  name="walletIds"
-                  value={w.id}
-                  checked={selectedWalletIds.has(w.id)}
-                  onChange={(e) =>
-                    setSelectedWalletIds((prev) => {
-                      const next = new Set(prev);
-                      if (e.target.checked) {
-                        next.add(w.id);
-                      } else {
-                        next.delete(w.id);
-                      }
-                      return next;
-                    })
-                  }
-                />
-                {w.name}
-              </label>
-            ))}
-          </div>
-        </fieldset>
+        <WalletPicker
+          wallets={primaryWallets}
+          selectedIds={selectedWalletIds}
+          onChange={setSelectedWalletIds}
+        />
 
         <label className="flex flex-col gap-1">
           <span className="text-xs" style={{ color: "var(--ink-2)" }}>

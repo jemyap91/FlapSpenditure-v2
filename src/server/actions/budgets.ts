@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { budgetInput } from "@/lib/validation/budget";
+import { budgetInput, budgetWalletsInput } from "@/lib/validation/budget";
 import { parseAmountInput, minorUnitFor } from "@/lib/money";
 import { monthRange } from "@/lib/month-range";
 import type { Database } from "@/lib/database.types";
@@ -40,6 +40,29 @@ const categoryIdSchema = z.uuid().nullable();
  * thrown message never reaches the user.
  */
 
+/**
+ * Membership over the WHOLE submitted set, not just one wallet: members are
+ * equal on money, matching what budgets_member permits. Checked in the
+ * action so a non-member (of even one wallet in the set) gets a readable
+ * message rather than a policy violation or the SQL function's own internal
+ * text. Both set_budget and update_budget_wallets re-check this themselves
+ * — this is belt-and-braces, the same structure the previous single-wallet
+ * action used.
+ */
+async function isMemberOfEvery(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+  walletIds: string[],
+): Promise<boolean> {
+  const { data: memberships } = await supabase
+    .from("wallet_members")
+    .select("wallet_id")
+    .eq("user_id", userId)
+    .in("wallet_id", walletIds);
+  const memberWalletIds = new Set((memberships ?? []).map((m) => m.wallet_id));
+  return walletIds.every((id) => memberWalletIds.has(id));
+}
+
 export async function setBudget(
   categoryId: string | null,
   _prev: BudgetState,
@@ -66,20 +89,9 @@ export async function setBudget(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { error: "Not signed in" };
 
-  // Membership over the WHOLE submitted set, not just one wallet: members
-  // are equal on money, matching what budgets_member permits. Checked here
-  // so a non-member (of even one wallet in the set) gets a readable message
-  // rather than a policy violation or set_budget's own internal text.
-  // set_budget re-checks this too — this is belt-and-braces, the same
-  // structure the previous single-wallet action used.
-  const { data: memberships } = await supabase
-    .from("wallet_members")
-    .select("wallet_id")
-    .eq("user_id", user.id)
-    .in("wallet_id", parsed.data.walletIds);
-  const memberWalletIds = new Set((memberships ?? []).map((m) => m.wallet_id));
-  const isFullyMember = parsed.data.walletIds.every((id) => memberWalletIds.has(id));
-  if (!isFullyMember) return { error: "You do not have access to one or more of those wallets." };
+  if (!(await isMemberOfEvery(supabase, user.id, parsed.data.walletIds))) {
+    return { error: "You do not have access to one or more of those wallets." };
+  }
 
   // The budget is in the set's own currency, so its minor unit comes from
   // one of its wallets — never from the profile, and never from the
@@ -189,4 +201,56 @@ export async function removeBudget(id: string): Promise<BudgetState> {
   // setBudget's revalidation above.
   revalidatePath("/");
   return {};
+}
+
+/**
+ * Replaces an EXISTING budget's wallet set in place (migration 0027). This
+ * is deliberately NOT `setBudget` with a different set: `set_budget`
+ * matches on the exact wallet-id set, so resubmitting a budget with more
+ * wallets through it creates a second, overlapping budget and leaves the
+ * first alive — which is why each row's amount form resubmits its own ids
+ * as hidden inputs (BudgetList.tsx) and never a picker's selection.
+ *
+ * The amount is not part of this edit: it stays denominated in the
+ * budget's own stored currency, and `update_budget_wallets` refuses any
+ * wallet in a different currency, so no `wallets` read is needed here.
+ */
+export async function updateBudgetWallets(
+  budgetId: string,
+  _prev: BudgetState,
+  formData: FormData,
+): Promise<BudgetState> {
+  // `getAll`, never `Object.fromEntries` — same reason as setBudget.
+  const parsed = budgetWalletsInput.safeParse({ walletIds: formData.getAll("walletIds") });
+  if (!parsed.success) return { error: parsed.error.issues[0]!.message };
+
+  // Same message a real-but-invisible id gets from the SQL function below,
+  // for removeBudget's reason: the two are indistinguishable from outside.
+  const parsedId = idSchema.safeParse(budgetId);
+  if (!parsedId.success) return { error: "That budget no longer exists." };
+
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in" };
+
+  if (!(await isMemberOfEvery(supabase, user.id, parsed.data.walletIds))) {
+    return { error: "You do not have access to one or more of those wallets." };
+  }
+
+  // `budget_wallets` has no INSERT/DELETE grant for users (0013), so this
+  // SECURITY DEFINER function is the only path that can rewrite a set; it
+  // re-checks visibility, membership, archived status, currency and the
+  // exact-duplicate rule itself. Its messages are for reviewers, not end
+  // users — never forwarded, same as set_budget's.
+  const { error } = await supabase.rpc("update_budget_wallets", {
+    p_budget_id: parsedId.data,
+    // Flat, exactly as `getAll` produced it — see setBudget's own note on
+    // why a nested array must never reach the SQL layer.
+    p_wallet_ids: parsed.data.walletIds,
+  });
+  if (error) return { error: "Could not update that budget's wallets. Please try again." };
+
+  revalidatePath("/budgets");
+  revalidatePath("/");
+  return { notice: "Wallets updated." };
 }
