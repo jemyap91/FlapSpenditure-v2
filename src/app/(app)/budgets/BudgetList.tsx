@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState, useTransition, useActionState } from "react";
+import { useId, useState, useTransition, useActionState, startTransition } from "react";
 import { setBudget, removeBudget, updateBudgetWallets, type BudgetState } from "@/server/actions/budgets";
 import { formatMoney } from "@/lib/money";
 import { budgetProgress, scopeLabel, type BudgetStatusRow } from "@/lib/budget-status";
@@ -538,7 +538,22 @@ function EditWalletsForm({
       </button>
 
       {open && (
-        <form action={formAction} className="flex flex-col gap-3">
+        <form
+          // NOT `action={formAction}`: React 19 resets a form's DOM fields
+          // once its action settles, and that reset returns every
+          // controlled checkbox here to its MOUNT-time state — the box just
+          // ticked shows unticked while `selectedIds` (and the Select all /
+          // Clear all label) still says ticked, misreporting what was just
+          // saved. Calling the action from a transition is React's own
+          // documented way to opt out of that reset; `saving` (isPending)
+          // still tracks it.
+          onSubmit={(e) => {
+            e.preventDefault();
+            const fd = new FormData(e.currentTarget);
+            startTransition(() => formAction(fd));
+          }}
+          className="flex flex-col gap-3"
+        >
           <WalletPicker wallets={currencyWallets} selectedIds={selectedIds} onChange={setSelectedIds} />
           {pastMonthLabel !== null && (
             <p className="text-xs" style={{ color: "var(--ink-2)" }}>

@@ -591,6 +591,26 @@ describe("BudgetList — editing an existing budget's wallet set", () => {
     expect(setBudget).not.toHaveBeenCalled();
   });
 
+  it("keeps the checkboxes showing the saved set after a successful save", async () => {
+    // React 19 resets a form's DOM fields once its action settles. A
+    // controlled checkbox that was unchecked at mount is reset to
+    // unchecked by that, while the component's own state — and the
+    // Select all / Clear all label derived from it — still says checked:
+    // the screen then misreports which wallets were just saved. Seen in
+    // the browser before this test existed.
+    const user = userEvent.setup();
+    renderRow();
+    await user.click(screen.getByRole("button", { name: "Edit wallets for Groceries · Everyday" }));
+    const picker = within(rowSection()).getByRole("group", { name: "Wallets this budget covers" });
+    await user.click(within(picker).getByRole("checkbox", { name: "Savings" }));
+    await user.click(within(rowSection()).getByRole("button", { name: "Save wallets" }));
+    await screen.findByRole("status", { name: "Wallets status for Groceries · Everyday" });
+
+    expect(within(picker).getByRole("checkbox", { name: "Savings" })).toBeChecked();
+    expect(within(picker).getByRole("checkbox", { name: "Everyday" })).toBeChecked();
+    expect(within(picker).getByRole("button", { name: "Clear all" })).toBeInTheDocument();
+  });
+
   it("discloses, inside the open editor, that a past-month budget's earlier months change too", async () => {
     // The in-place edit's accepted cost (0027's own header comment): a
     // budget set in June and carried forward reports June over the new
