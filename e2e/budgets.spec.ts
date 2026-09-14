@@ -423,3 +423,66 @@ test("a budget counts expenses only, in its own wallet set, and ignores income a
   // actually been through axe before this assertion.
   await expectNoViolations(page, "/budgets (populated)");
 });
+
+test("widening a budget's wallet set counts the newly covered wallet's spending, in the same budget", async ({
+  page,
+}) => {
+  await signUpAndOnboard(page, "Everyday");
+  await addWallet(page, "Savings");
+  await recordTransaction(page, "expense", "30", "Groceries"); // Everyday
+
+  // A Groceries budget over Everyday ONLY. It says so, in text: the
+  // materialised-set disclosure 0013's design asked for, which the editor
+  // below is the answer to.
+  await createBudget(page, "Groceries", "100", { uncheckWallets: ["Savings"] });
+  const groceriesEveryday = budgetRow(page, "Groceries · Everyday");
+  await expect(groceriesEveryday.getByText("$30.00 of $100.00 · 30%")).toBeVisible();
+  await expect(groceriesEveryday.getByText("Doesn’t cover Savings.")).toBeVisible();
+
+  // Groceries spending in Savings is OUTSIDE the set: the budget's figure
+  // does not move, and the spend surfaces as its own uncovered row. This
+  // is the "before" that makes the post-edit figure below a proof rather
+  // than a coincidence.
+  await recordTransaction(page, "expense", "20", "Groceries", "Savings");
+  await page.goto("/budgets");
+  await expect(groceriesEveryday.getByText("$30.00 of $100.00 · 30%")).toBeVisible();
+  await expect(page.getByRole("listitem").filter({ hasText: "Groceries" }).getByText("$20.00 spent · No budget set")).toBeVisible();
+  const countBeforeEdit = await rowCount(page);
+
+  // Edit wallets on that row -- closed by default, opened by its own
+  // row-scoped control -- check Savings, save. The picker inside the ROW
+  // is scoped through the row, since the always-mounted Add-a-budget form
+  // renders a group of the same name.
+  await groceriesEveryday.getByRole("button", { name: "Edit wallets for Groceries · Everyday" }).click();
+  const picker = groceriesEveryday.getByRole("group", { name: "Wallets this budget covers" });
+  await expect(picker.getByLabel("Everyday")).toBeChecked();
+  await expect(picker.getByLabel("Savings")).not.toBeChecked();
+  await picker.getByLabel("Savings").check();
+  // The open editor is a new surface: through the same axe gate first.
+  await expectNoViolations(page, "/budgets (wallet editor open)");
+  await groceriesEveryday.getByRole("button", { name: "Save wallets" }).click();
+
+  // The SAME budget now covers both wallets: its heading re-scopes to "All
+  // wallets", its figure takes in the $20 from Savings, the uncovered row
+  // that $20 used to occupy is gone, and -- the property set_budget could
+  // never give -- there is still exactly ONE Groceries budget, not a
+  // second one alongside the first.
+  const groceriesAll = budgetRow(page, "Groceries · All wallets");
+  await expect(groceriesAll.getByRole("status", { name: "Wallets status for Groceries · All wallets" })).toHaveText("Wallets updated.");
+  await expect(groceriesAll.getByText("$50.00 of $100.00 · 50%")).toBeVisible(); // 30 + 20
+  await expect(groceriesEveryday).toHaveCount(0);
+  await expect(page.getByRole("listitem").filter({ hasText: "Groceries" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { level: 2, name: /^Groceries/ })).toHaveCount(1);
+  expect(await rowCount(page), "the uncovered Groceries row folds into the widened budget").toBe(countBeforeEdit - 1);
+
+  // And the amount form on that row still resubmits the WIDENED set: a
+  // later amount save must edit this budget, not create a second one over
+  // the old set.
+  await groceriesAll.getByLabel("Budget amount").fill("200");
+  await groceriesAll.getByRole("button", { name: "Save budget" }).click();
+  // `exact`: Playwright's `name` is a substring match by default, and the
+  // wallet editor's own region ("Wallets status for …") contains this one.
+  await expect(groceriesAll.getByRole("status", { name: "Status for Groceries · All wallets", exact: true })).toHaveText("Budget saved.");
+  await expect(groceriesAll.getByText("$50.00 of $200.00 · 25%")).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: /^Groceries/ })).toHaveCount(1);
+});
