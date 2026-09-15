@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useId, useRef, useState } from "react";
+import { startTransition, useActionState, useEffect, useId, useRef, useState } from "react";
 import { TrendingDown, TrendingUp } from "lucide-react";
 import type { RecurringState } from "@/server/actions/recurring";
 import { RECUR_INTERVALS } from "@/lib/validation/recurring";
@@ -39,6 +39,14 @@ const FOCUS_RING =
  * ref-based `useEffect` (identical technique, same file to compare against)
  * forcibly re-applies the visible controls' properties after every action
  * response so the DISPLAY doesn't lie either.
+ *
+ * The CAUSE of that reverting is now known and closed at its source: React
+ * 19 calls `form.reset()` once a `<form action>` settles, error or not, so
+ * every uncontrolled field went back to its `defaultValue` — which also
+ * wiped the name and date fields the workaround above never covered. The
+ * form below submits through `onSubmit` + `startTransition(action)`, React's
+ * documented opt-out of that reset, so nothing reverts any more; the hidden
+ * inputs and the ref effect are kept as belt-and-braces, not as the fix.
  *
  * `currency_code` is never offered as its own control, on either path. A
  * rule's currency must equal its wallet's — supabase/migrations/
@@ -107,7 +115,6 @@ export function RecurringForm({
    */
   onSuccess?: () => void;
 }) {
-  const [state, action, pending] = useActionState<RecurringState, FormData>(submitAction, {});
   const [walletId, setWalletId] = useState(defaults?.wallet_id ?? defaultWalletId);
   const [kind, setKind] = useState<"expense" | "income">(defaults?.kind ?? "expense");
   const [intervalUnit, setIntervalUnit] = useState<RecurInterval>(defaults?.interval_unit ?? "monthly");
@@ -119,6 +126,34 @@ export function RecurringForm({
   // rest of this file, even though a plain text input's `value` isn't known
   // to suffer the native-reset bug those exist for.
   const [amount, setAmount] = useState(defaults?.amount ?? "0");
+
+  const formRef = useRef<HTMLFormElement>(null);
+  // Wrapped rather than passed straight through: CREATE mode clears itself
+  // after a submission that returned no error, so the next rule starts
+  // blank. With submission routed through a transition (see the <form>
+  // below), React no longer resets the form on its own -- which it only
+  // ever did for the `defaultValue` fields anyway, leaving amount/category/
+  // kind showing the rule just added. `reset()` handles the native fields;
+  // the state-backed ones are returned to their initial values by hand.
+  // Done here, inside the action (a transition), not in an effect watching
+  // `pending` -- setState inside an effect is the cascading-render pattern
+  // the react-hooks lint forbids. Edit mode keeps its values: the dialog
+  // closes via `onSuccess`, and its fields must still read as the rule
+  // until then.
+  const [state, action, pending] = useActionState<RecurringState, FormData>(
+    async (prev, formData) => {
+      const result = await submitAction(prev, formData);
+      if (!result.error && !defaults) {
+        formRef.current?.reset();
+        setKind("expense");
+        setIntervalUnit("monthly");
+        setCategoryId(null);
+        setAmount("0");
+      }
+      return result;
+    },
+    {},
+  );
 
   const errorId = useId();
   const errorRef = useRef<HTMLParagraphElement>(null);
@@ -209,7 +244,27 @@ export function RecurringForm({
   }
 
   return (
-    <form action={action} className="flex flex-col gap-4" noValidate>
+    <form
+      // NOT `action={action}`. React 19 calls `form.reset()` once a form's
+      // action settles -- on an ERROR return as much as a success, since
+      // the action still completed -- and that reset is the real cause of
+      // the "native element reverts after a failed submission" behaviour
+      // this file's doc comment (and WalletForm's) describe: every
+      // uncontrolled field goes back to its `defaultValue`. The hidden
+      // inputs and the ref effect above cover kind/interval/wallet/amount,
+      // but the plain `defaultValue` fields (name, both dates) were still
+      // wiped, so fixing one bad date lost everything else typed. Calling
+      // the action from a transition is React's documented opt-out of that
+      // reset; `pending` still tracks it and `onSuccess` still fires.
+      ref={formRef}
+      onSubmit={(e) => {
+        e.preventDefault();
+        const fd = new FormData(e.currentTarget);
+        startTransition(() => action(fd));
+      }}
+      className="flex flex-col gap-4"
+      noValidate
+    >
       <input type="hidden" name="wallet_id" value={walletId} />
       <input type="hidden" name="currency_code" value={currencyCode} />
       <input type="hidden" name="kind" value={kind} />
