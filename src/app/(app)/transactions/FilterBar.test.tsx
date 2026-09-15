@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { render, screen, fireEvent, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FilterBar } from "./FilterBar";
 
@@ -11,8 +11,8 @@ vi.mock("next/navigation", () => ({
 
 const CAT_GROCERIES = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const CATEGORIES = [
-  { id: CAT_GROCERIES, name: "Groceries" },
-  { id: "ffffffff-ffff-4fff-8fff-ffffffffffff", name: "Salary" },
+  { id: CAT_GROCERIES, name: "Groceries", household: "Home" },
+  { id: "ffffffff-ffff-4fff-8fff-ffffffffffff", name: "Salary", household: "Home" },
 ];
 
 /** The URL the last `router.replace` navigated to, parsed. */
@@ -109,6 +109,25 @@ describe("FilterBar", () => {
 
     rerender(<FilterBar categories={CATEGORIES} filters={{ q: "x" }} total={0} shown={0} />);
     expect(screen.getByRole("link", { name: "Clear filters" })).toHaveAttribute("href", "/transactions");
+  });
+
+  it("groups categories under their household when the viewer belongs to more than one", () => {
+    // Two households each seed a "Groceries": a flat list would show the
+    // name twice with nothing to tell them apart (seen in the sharing e2e).
+    const twoHouseholds = [
+      { id: CAT_GROCERIES, name: "Groceries", household: "Home" },
+      { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "Groceries", household: "Parents" },
+    ];
+    render(<FilterBar categories={twoHouseholds} filters={{}} total={0} shown={0} />);
+    const groups = screen.getAllByRole("group");
+    expect(groups.map((g) => g.getAttribute("label"))).toEqual(["Home", "Parents"]);
+    expect(within(groups[0]!).getByRole("option", { name: "Groceries" })).toHaveValue(CAT_GROCERIES);
+  });
+
+  it("lists categories flat when they all belong to one household", () => {
+    render(<FilterBar categories={CATEGORIES} filters={{}} total={0} shown={0} />);
+    expect(screen.queryByRole("group")).not.toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Groceries" })).toBeInTheDocument();
   });
 
   it("says how many rows match, and when the page cap hides some of them", () => {

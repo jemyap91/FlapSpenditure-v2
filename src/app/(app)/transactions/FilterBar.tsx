@@ -32,12 +32,14 @@ export function FilterBar({
   /** Rows actually on the page — at most the page cap. */
   shown,
 }: {
-  categories: { id: string; name: string }[];
+  /** Active categories the viewer can see, each with its household's name. */
+  categories: { id: string; name: string; household: string }[];
   filters: TransactionFilters;
   total: number;
   shown: number;
 }) {
   const router = useRouter();
+  const households = Array.from(new Set(categories.map((c) => c.household)));
   const pathname = usePathname();
   const searchId = useId();
   const categoryId = useId();
@@ -121,11 +123,27 @@ export function FilterBar({
             style={FIELD_STYLE}
           >
             <option value="">All categories</option>
-            {categories.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
+            {households.length > 1
+              ? // Every household seeds the same default names, so a viewer
+                // in two of them would see "Groceries" twice with nothing
+                // to tell them apart. Grouped by household only when there
+                // is more than one: the common case stays a flat list.
+                households.map((h) => (
+                  <optgroup key={h} label={h}>
+                    {categories
+                      .filter((c) => c.household === h)
+                      .map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                  </optgroup>
+                ))
+              : categories.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
           </select>
         </label>
         <label htmlFor={fromId} className="flex flex-col gap-1">

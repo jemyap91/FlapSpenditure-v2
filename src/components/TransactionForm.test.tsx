@@ -47,7 +47,7 @@ const TXN_ID = "55555555-5555-4555-8555-555555555555";
 const TRANSFER_ID = "66666666-6666-4666-8666-666666666666";
 const SPACE = "99999999-9999-4999-8999-999999999999";
 
-const wallets = [{ id: WALLET_A, name: "Everyday", currency_code: "USD", space_id: SPACE }];
+const wallets = [{ id: WALLET_A, name: "Everyday", currency_code: "USD", space_id: SPACE, kind: "card" as const, color_slot: 1 }];
 const categories: Category[] = [
   { id: "cat-1", name: "Groceries", kind: "expense", color_slot: 1, icon: "circle", space_id: SPACE },
 ];
@@ -57,9 +57,9 @@ const categories: Category[] = [
 // same-currency/cross-currency transfer-edit tests below share one wallets
 // array rather than each building its own.
 const editWallets = [
-  { id: WALLET_A, name: "Everyday", currency_code: "USD", space_id: SPACE },
-  { id: WALLET_B, name: "Savings", currency_code: "USD", space_id: SPACE },
-  { id: WALLET_EUR, name: "Holiday", currency_code: "EUR", space_id: SPACE },
+  { id: WALLET_A, name: "Everyday", currency_code: "USD", space_id: SPACE, kind: "card" as const, color_slot: 1 },
+  { id: WALLET_B, name: "Savings", currency_code: "USD", space_id: SPACE, kind: "bank" as const, color_slot: 2 },
+  { id: WALLET_EUR, name: "Holiday", currency_code: "EUR", space_id: SPACE, kind: "bank" as const, color_slot: 3 },
 ];
 
 /** Fills the minimum a save needs (a nonzero amount, a category) and clicks
@@ -73,6 +73,16 @@ async function saveAnExpense(from?: string) {
   await user.click(screen.getByRole("button", { name: "Groceries" }));
   await user.click(screen.getByRole("button", { name: "Save" }));
   await waitFor(() => expect(push).toHaveBeenCalled());
+}
+
+/**
+ * Picks a wallet through the WalletPicker: open the chip captioned `label`
+ * ("Wallet", "From" or "To"), then press the row for `name`. Rows are named
+ * "<name> <currency>", so `name` is matched as a prefix.
+ */
+async function pickWallet(user: ReturnType<typeof userEvent.setup>, label: string, name: string) {
+  await user.click(screen.getByRole("button", { name: new RegExp(`^${label} `) }));
+  await user.click(screen.getByRole("button", { name: new RegExp(`^${name} [A-Z]{3}$`) }));
 }
 
 /**
@@ -610,8 +620,8 @@ describe("TransactionForm — moving a transaction between wallets", () => {
     merchant: "",
   };
   const bothWallets = [
-    { id: WALLET_A, name: "Everyday", currency_code: "USD", space_id: SPACE },
-    { id: WALLET_B, name: "Savings", currency_code: "USD", space_id: SPACE },
+    { id: WALLET_A, name: "Everyday", currency_code: "USD", space_id: SPACE, kind: "card" as const, color_slot: 1 },
+    { id: WALLET_B, name: "Savings", currency_code: "USD", space_id: SPACE, kind: "bank" as const, color_slot: 2 },
   ];
   const cats: Category[] = [
     { id: "cat-1", name: "Groceries", kind: "expense", color_slot: 1, icon: "circle", space_id: SPACE },
@@ -621,23 +631,23 @@ describe("TransactionForm — moving a transaction between wallets", () => {
   const renderEdit = (walletList = bothWallets) =>
     render(<TransactionForm mode="edit" wallets={walletList} categories={cats} edit={seed} />);
 
-  it("offers the other same-currency wallet as a destination", () => {
+  it("offers the other same-currency wallet as a destination", async () => {
+    const user = userEvent.setup();
     renderEdit();
-    const select = screen.getByLabelText("Wallet");
-    expect(select).toHaveValue(WALLET_A);
-    expect(within(select).getAllByRole("option").map((o) => o.textContent)).toEqual([
-      "Everyday",
-      "Savings",
-    ]);
+    // The picker's chip names the current wallet; opening it lists both,
+    // each under its kind's own heading.
+    await user.click(screen.getByRole("button", { name: "Wallet Everyday" }));
+    expect(within(screen.getByRole("list", { name: "Wallets" })).getByRole("button", { name: "Everyday USD" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(screen.getByRole("list", { name: "Accounts" })).getByRole("button", { name: "Savings USD" })).toBeInTheDocument();
   });
 
   it("states the wallet as text when there is nowhere to move it", () => {
     // One candidate is not a choice. The page reduces the list to one for a
     // recorded recurring occurrence and for a currency with no second
-    // wallet; rendering a one-option select would be a control that cannot
+    // wallet; rendering a one-option picker would be a control that cannot
     // do anything.
     renderEdit([bothWallets[0]!]);
-    expect(screen.queryByLabelText("Wallet")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Wallet / })).toBeNull();
     expect(screen.getByText(/Wallet:/)).toHaveTextContent("Everyday");
   });
 
@@ -680,7 +690,7 @@ describe("TransactionForm — moving a transaction between wallets", () => {
       "true",
     );
 
-    await user.selectOptions(screen.getByLabelText("Wallet"), WALLET_B);
+    await pickWallet(user, "Wallet", "Savings");
 
     // The exact inverse of the 0008 contract this test was written for. Then,
     // each wallet held its own copy of the list, transactions_category_same_
@@ -699,7 +709,7 @@ describe("TransactionForm — moving a transaction between wallets", () => {
   it("offers the destination wallet's categories after the move", async () => {
     const user = userEvent.setup();
     renderEdit();
-    await user.selectOptions(screen.getByLabelText("Wallet"), WALLET_B);
+    await pickWallet(user, "Wallet", "Savings");
     expect(screen.getByRole("button", { name: /Rainy day/ })).toBeInTheDocument();
   });
 
@@ -708,7 +718,7 @@ describe("TransactionForm — moving a transaction between wallets", () => {
     vi.mocked(updateTransaction).mockResolvedValue({ ok: true });
     renderEdit();
 
-    await user.selectOptions(screen.getByLabelText("Wallet"), WALLET_B);
+    await pickWallet(user, "Wallet", "Savings");
     await user.click(screen.getByRole("button", { name: /Rainy day/ }));
     await user.click(screen.getByRole("button", { name: /save/i }));
 

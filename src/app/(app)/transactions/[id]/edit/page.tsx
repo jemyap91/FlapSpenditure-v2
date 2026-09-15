@@ -231,7 +231,7 @@ export default async function EditTransactionPage({
       // `archived_at` (task 8, item 2): `updateTransfer` requires BOTH legs'
       // wallets to be active, so both are checked here rather than only the
       // leg the user happened to tap.
-      .select("id, name, currency_code, archived_at, space_id")
+      .select("id, name, currency_code, archived_at, space_id, kind, color_slot")
       .in("id", [outLeg.wallet_id, inLeg.wallet_id]);
     if (legWalletsError) throw new Error("Failed to load wallets");
 
@@ -294,7 +294,7 @@ export default async function EditTransactionPage({
     // `archived_at` (task 8, item 2) — see this file's doc comment. Without
     // it this page rendered a fully interactive form whose Save
     // `updateTransaction` was always going to refuse.
-    .select("id, name, currency_code, archived_at, space_id")
+    .select("id, name, currency_code, archived_at, space_id, kind, color_slot")
     .eq("id", row.wallet_id)
     .maybeSingle();
   if (walletError) throw new Error("Failed to load wallet");
@@ -329,7 +329,7 @@ export default async function EditTransactionPage({
     ? { data: [wallet], error: null }
     : await supabase
         .from("wallets")
-        .select("id, name, currency_code, archived_at, space_id")
+        .select("id, name, currency_code, archived_at, space_id, kind, color_slot")
         .eq("currency_code", row.currency_code)
         .is("archived_at", null);
   if (candidatesError) throw new Error("Failed to load wallets");

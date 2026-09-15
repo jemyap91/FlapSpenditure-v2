@@ -124,9 +124,10 @@ async function recordTransaction(
     await page.getByText("Income", { exact: true }).click();
   }
   if (walletName) {
-    // "Wallet" is sr-only for a non-transfer kind (TransactionForm.tsx)
-    // but still the select's accessible name, so getByLabel still finds it.
-    await page.getByLabel("Wallet").selectOption({ label: walletName });
+    // The WalletPicker: a chip named "Wallet <current>", opening into rows
+    // named "<name> <currency>".
+    await page.getByRole("button", { name: /^Wallet / }).click();
+    await page.getByRole("button", { name: new RegExp(`^${walletName} [A-Z]{3}$`) }).click();
   }
   await pressAmount(page, amount);
   await page.getByRole("button", { name: category }).click();

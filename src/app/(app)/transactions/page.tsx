@@ -192,8 +192,17 @@ export default async function TransactionsPage({
     supabase.rpc("get_wallet_members"),
     // Every category the caller can see (RLS scopes to their households),
     // active only, for the Category filter. Both kinds: income rows are
-    // in this ledger too.
-    supabase.from("categories").select("id, name").is("archived_at", null).order("name"),
+    // in this ledger too. The household's name rides along so the filter
+    // can group by it for a viewer in more than one household — every
+    // household seeds the same default names. `spaces(name)` needs no
+    // `!fkey` hint: `categories_space_id_fkey` is the only relationship
+    // from `categories` to `spaces`.
+    supabase
+      .from("categories")
+      .select("id, name, spaces(name)")
+      .is("archived_at", null)
+      .order("space_id")
+      .order("name"),
   ]);
 
   // A query error is not "no transactions" — src/app/(app)/layout.tsx's
@@ -281,7 +290,12 @@ export default async function TransactionsPage({
         </Link>
       </div>
       <FilterBar
-        categories={categoryRows ?? []}
+        // Same "assert the embed's shape once at the boundary" rule as
+        // `JoinedTxn` above; a category's household can't be missing
+        // (`space_id` is NOT NULL, 0022), so "" is a type-level fallback only.
+        categories={((categoryRows ?? []) as unknown as { id: string; name: string; spaces: { name: string } | null }[]).map(
+          (c) => ({ id: c.id, name: c.name, household: c.spaces?.name ?? "" }),
+        )}
         filters={filters}
         total={count ?? rows.length}
         shown={rows.length}

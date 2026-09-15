@@ -105,7 +105,8 @@ async function addExpense(
 ) {
   await page.goto("/transactions/new");
   if (walletName) {
-    await page.getByLabel("Wallet").selectOption({ label: walletName });
+    await page.getByRole("button", { name: /^Wallet / }).click();
+    await page.getByRole("button", { name: new RegExp(`^${walletName} [A-Z]{3}$`) }).click();
   }
   await pressAmount(page, amount);
   await page.getByRole("button", { name: category, exact: true }).click();
@@ -228,12 +229,14 @@ test("a household shares one ledger between two real people", async ({ browser }
   // dashboard chart.
   await b.goto("/transactions");
   await expect(b.getByText("Market", { exact: true })).toBeVisible();
-  await expect(b.getByText(/Groceries/)).toBeVisible();
+  // Scoped to the ledger: the page's Category filter now lists every
+  // household's "Groceries" as an <option> too.
+  await expect(b.getByRole("region", { name: "Transaction list" }).getByText(/Groceries/)).toBeVisible();
   // "Housing" is the noteless row's PRIMARY label (rowLabel falls through
   // to category_name with no note to prefer) — this is the assertion that
   // actually exercises the categories_own regression path, and the one the
   // zero-count check below depends on to be meaningful at all.
-  await expect(b.getByText("Housing", { exact: true })).toBeVisible();
+  await expect(b.getByRole("region", { name: "Transaction list" }).getByText("Housing", { exact: true })).toBeVisible();
   await expect(b.getByText("Uncategorised")).toHaveCount(0);
 
   // --- 6. B adds their OWN transaction to the SHARED wallet. A then sees

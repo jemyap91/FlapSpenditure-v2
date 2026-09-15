@@ -357,7 +357,8 @@ test.describe("wallets", () => {
     await expect(page).toHaveURL("/transactions");
 
     await page.goto("/transactions/new");
-    await page.getByLabel("Wallet").selectOption({ label: "Savings" });
+    await page.getByRole("button", { name: /^Wallet / }).click();
+    await page.getByRole("button", { name: /^Savings [A-Z]{3}$/ }).click();
     await pressAmount(page, "33");
     await page.getByRole("button", { name: "Groceries" }).click();
     await page.getByRole("button", { name: "Save", exact: true }).click();

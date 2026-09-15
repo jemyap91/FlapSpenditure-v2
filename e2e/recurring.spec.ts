@@ -279,7 +279,11 @@ test.describe("recurring", () => {
     await expect(skipGym).toHaveCount(0);
 
     await page.goto("/transactions");
-    await expect(page.getByText("Health", { exact: true })).toHaveCount(0);
+    // Scoped to the ledger: the page's Category filter lists "Health" as an
+    // <option> regardless of whether any row carries it.
+    await expect(
+      page.getByRole("region", { name: "Transaction list" }).getByText("Health", { exact: true }),
+    ).toHaveCount(0);
 
     // The skip doesn't move the hero total either.
     await page.goto("/");

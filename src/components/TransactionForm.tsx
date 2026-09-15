@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { TrendingDown, TrendingUp, ArrowRightLeft } from "lucide-react";
 import { AmountKeypad } from "./AmountKeypad";
 import { CategoryPicker, type Category } from "./CategoryPicker";
+import { WalletPicker, type PickerWallet } from "./WalletPicker";
 import {
   createTransaction,
   createTransfer,
@@ -26,7 +27,9 @@ import { todayLocalDate } from "@/lib/today";
 // wallets therefore had nine category lists, which is the duplication 0022
 // removed. Carried on the wallet rather than passed separately so the
 // category filter stays correct when the wallet chip changes after mount.
-type Wallet = { id: string; name: string; currency_code: string; space_id: string };
+// `kind` and `color_slot` feed the WalletPicker's grouping (cards under
+// "Wallets", banks under "Accounts") and each row's glyph colour.
+type Wallet = PickerWallet & { space_id: string };
 type Kind = "expense" | "income" | "transfer";
 
 /**
@@ -836,71 +839,29 @@ export function TransactionForm(
               )}
             </p>
           ) : (
-            <label className="flex items-center gap-1 text-sm" style={{ color: "var(--ink-2)" }}>
-              <span style={{ color: "var(--ink-2)" }}>Wallet</span>
-              <select
-                value={walletId}
-                onChange={(e) => handleEditWalletChange(e.target.value)}
-                aria-describedby={errorId}
-                className={CHIP_BORDER}
-                style={{ borderColor: "var(--ink-2)", color: "var(--ink)" }}
-              >
-                {wallets.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <WalletPicker label="Wallet" wallets={wallets} value={walletId} onChange={handleEditWalletChange} />
           )
         ) : (
           <>
-            <label className="flex items-center gap-1 text-sm" style={{ color: "var(--ink-2)" }}>
-              {/* VISIBLE for a transfer. These were sr-only, so a screen
-                  reader announced "From wallet"/"To wallet" while a sighted
-                  user saw two identical dropdowns side by side with nothing
-                  to tell them apart — and on a transfer, choosing them the
-                  wrong way round sends money in the wrong direction. Left
-                  sr-only for a non-transfer, where there is only one select
-                  and no ambiguity to resolve. */}
-              <span className={kind === "transfer" ? "text-sm" : "sr-only"} style={{ color: "var(--ink-2)" }}>
-                {kind === "transfer" ? "From" : "Wallet"}
-              </span>
-              <select
-                value={walletId}
-                onChange={(e) => handleWalletChange(e.target.value)}
-                aria-describedby={errorId}
-                className={CHIP_BORDER}
-                style={{ borderColor: "var(--ink-2)", color: "var(--ink)" }}
-              >
-                {wallets.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {/* WalletPicker, not a native <select> (the form's original
+                control): searchable, and grouped under Wallets/Accounts
+                with a colour per group. The label is VISIBLE — "From"/"To"
+                on a transfer, where choosing them the wrong way round
+                sends money in the wrong direction, and "Wallet" otherwise. */}
+            <WalletPicker
+              label={kind === "transfer" ? "From" : "Wallet"}
+              wallets={wallets}
+              value={walletId}
+              onChange={handleWalletChange}
+            />
             {kind === "transfer" && (
-              <label className="flex items-center gap-1 text-sm" style={{ color: "var(--ink-2)" }}>
-                <span className="text-sm" style={{ color: "var(--ink-2)" }}>
-                  To
-                </span>
-                <select
-                  value={toWalletId}
-                  onChange={(e) => handleToWalletChange(e.target.value)}
-                  aria-describedby={errorId}
-                  className={CHIP_BORDER}
-                  style={{ borderColor: "var(--ink-2)", color: "var(--ink)" }}
-                >
-                  {wallets
-                    .filter((w) => w.id !== walletId)
-                    .map((w) => (
-                      <option key={w.id} value={w.id}>
-                        {w.name}
-                      </option>
-                    ))}
-                </select>
-              </label>
+              <WalletPicker
+                label="To"
+                wallets={wallets}
+                value={toWalletId}
+                onChange={handleToWalletChange}
+                exclude={walletId}
+              />
             )}
           </>
         )}
