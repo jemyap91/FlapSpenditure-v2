@@ -60,3 +60,40 @@ describe("todayLocalDate", () => {
     expect(todayLocalDate()).toBe("2026-01-05");
   });
 });
+
+/**
+ * Vercel's runtime is always UTC and `TZ` is a reserved name there, so the
+ * process's own local clock can never be made to match the household's.
+ * Seen live: a rule "monthly on the 15th" was absent from the dashboard
+ * until 08:00 Singapore time on the 15th, because the server's local date
+ * was still the 14th. `NEXT_PUBLIC_APP_TIMEZONE` names the calendar the
+ * app keeps, independent of wherever the process happens to run.
+ */
+describe("todayLocalDate under NEXT_PUBLIC_APP_TIMEZONE", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it("reports the APP timezone's calendar date, not the process's, when the two disagree", () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_TIMEZONE", "Asia/Singapore");
+    vi.useFakeTimers();
+    // 23:00 UTC on the 14th is 07:00 on the 15th in Singapore. The process
+    // runs under TZ=Asia/Singapore for `npm test`, so to make the process
+    // clock DISAGREE with the app zone this pins a zone the process is
+    // not in: America/New_York, where this instant is 19:00 on the 14th.
+    vi.stubEnv("NEXT_PUBLIC_APP_TIMEZONE", "America/New_York");
+    vi.setSystemTime(new Date("2026-09-14T23:00:00Z"));
+    expect(todayLocalDate()).toBe("2026-09-14");
+
+    vi.stubEnv("NEXT_PUBLIC_APP_TIMEZONE", "Asia/Singapore");
+    expect(todayLocalDate()).toBe("2026-09-15");
+  });
+
+  it("falls back to the process's own zone when the variable is unset", () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_TIMEZONE", "");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 1, 0, 30, 0)); // local components, as above
+    expect(todayLocalDate()).toBe("2026-09-01");
+  });
+});

@@ -1,3 +1,4 @@
+import { appTimeZone, calendarDateIn } from "./app-timezone";
 /**
  * Current calendar month, inclusive both ends, as LOCAL calendar-date
  * strings built directly — never via `Date.toISOString()`.
@@ -20,15 +21,16 @@
  * strings are built by direct interpolation, so there is no local-midnight-
  * to-UTC step for a UTC+ offset to corrupt.
  *
- * Residual, deliberately NOT fixed here (flagged, not solved): this still
- * matches the SERVER's calendar month/day, not necessarily the actual
- * viewer's — a request straddling local midnight in a timezone far from
- * the server's could still see a one-day-off window, and any header label
- * built the same way (e.g. `new Date().toLocaleString(...)`, evaluated
- * server-side) has the identical exposure. A real fix needs the viewer's
- * timezone to reach the server (a client-set cookie, an `Intl`-derived
- * offset sent up, or a profile-level timezone field — none of which exist
- * in this schema today) and is out of scope here.
+ * The month is that of the APP's calendar date (`appTimeZone()`,
+ * src/lib/app-timezone.ts), not the process's: on Vercel the process is
+ * always UTC and cannot be told otherwise, so "this month" rolled over
+ * eight hours late for a Singapore household. Unset, the app zone is the
+ * process's own, so nothing changes locally. Residual, still not solved:
+ * one zone per deployment, not per viewer — a household member in a
+ * different zone from the configured one could still see a one-day-off
+ * window at their own midnight. Fixing that needs the viewer's timezone to
+ * reach the server (a client-set cookie, or a profile-level field — neither
+ * exists in this schema today).
  *
  * Extracted from the dashboard (Task 21) so budgets and the dashboard agree
  * on what "this month" means rather than keeping two copies that could
@@ -47,13 +49,15 @@
  */
 export function monthRange(now = new Date()): { from: string; to: string } {
   const pad = (n: number) => String(n).padStart(2, "0");
-  const y = now.getFullYear();
-  const m = now.getMonth(); // 0-11
-  const lastDay = new Date(y, m + 1, 0).getDate(); // still a Date, but only
-  // ever used for its LOCAL getDate() — never round-tripped through
-  // toISOString(), so it carries no UTC-shift risk.
+  // `YYYY-MM` of the app-zone calendar date; the day-of-month is irrelevant.
+  const [y, m] = calendarDateIn(now, appTimeZone()).split("-").map(Number) as [number, number];
+  // Day 0 of the NEXT month is the last day of this one. Built and read in
+  // UTC on purpose: `Date.UTC` + `getUTCDate` is a pure calendar
+  // computation with no zone in play at all, so it cannot be shifted by
+  // the process's own offset the way a local-parts round trip could.
+  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
   return {
-    from: `${y}-${pad(m + 1)}-01`,
-    to: `${y}-${pad(m + 1)}-${pad(lastDay)}`,
+    from: `${y}-${pad(m)}-01`,
+    to: `${y}-${pad(m)}-${pad(lastDay)}`,
   };
 }

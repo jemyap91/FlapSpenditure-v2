@@ -6,6 +6,7 @@ import { DueList } from "@/components/DueList";
 import { formatMoney } from "@/lib/money";
 import { monthRange } from "@/lib/month-range";
 import { todayLocalDate } from "@/lib/today";
+import { MONTH_NAME } from "@/lib/month-names";
 import type { BudgetStatusRow } from "@/lib/budget-status";
 import { buildDueRows, type DueRuleInput, type HandledOccurrence } from "./due-rows";
 import { lookbackFloor, type RecurInterval } from "@/lib/recurrence";
@@ -337,7 +338,11 @@ export default async function DashboardPage() {
           className="text-sm font-medium uppercase tracking-wide"
           style={{ color: "var(--ink-2)" }}
         >
-          {new Date().toLocaleString("en-US", { month: "long", year: "numeric" })}
+          {/* Derived from `from` (the window actually queried), the same
+              way budgets/page.tsx labels its month — never a second read of
+              the clock, which on Vercel (UTC) could name a different month
+              from the one `monthRange()` resolved in the app's own zone. */}
+          {`${MONTH_NAME[Number(from.slice(5, 7)) - 1]} ${from.slice(0, 4)}`}
         </h1>
         {/* Hero figure: >=48px, system sans, proportional figures (§6.4).
             `total_minor` here is a SUM of already-positive per-category
