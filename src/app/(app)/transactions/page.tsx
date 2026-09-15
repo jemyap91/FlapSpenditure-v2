@@ -2,6 +2,8 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { TransactionList, type Row } from "@/components/TransactionList";
 import { resolveCreatedByNames, anyRowShared } from "./attribution";
+import { FilterBar } from "./FilterBar";
+import { parseTransactionFilters, hasAnyFilter, ilikePattern } from "@/lib/transaction-filters";
 
 /**
  * /transactions — Task 20's full ledger review screen, and the route
@@ -145,19 +147,62 @@ import { resolveCreatedByNames, anyRowShared } from "./attribution";
  * `TransactionList` renders as no attribution segment at all — never
  * "added by" with nothing after it.
  */
-export default async function TransactionsPage() {
+export default async function TransactionsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const supabase = await createClient();
-  const [{ data, error }, { data: members, error: membersError }] = await Promise.all([
-    supabase
-      .from("transactions")
-      .select(
-        "id, kind, amount_minor, currency_code, occurred_on, note, merchant, created_by, wallet_id, wallets!transactions_wallet_id_fkey(name), categories!transactions_category_id_fkey(name, color_slot, icon)",
-      )
-      .is("deleted_at", null)
+  // Lenient by design — see transaction-filters.ts: a malformed query
+  // string renders the page unfiltered, never as an error.
+  const filters = parseTransactionFilters(await searchParams);
+
+  // Filters are applied HERE, in the query, and never on the client: the
+  // `.limit(100)` below means a client-side search could only ever see the
+  // latest hundred rows. `count: "exact"` rides on the same request so the
+  // FilterBar can say when the cap is hiding matches.
+  let query = supabase
+    .from("transactions")
+    .select(
+      "id, kind, amount_minor, currency_code, occurred_on, note, merchant, created_by, wallet_id, wallets!transactions_wallet_id_fkey(name), categories!transactions_category_id_fkey(name, color_slot, icon)",
+      { count: "exact" },
+    )
+    .is("deleted_at", null);
+  if (filters.q) {
+    // Merchant OR note. `ilikePattern` carries the two layers of escaping
+    // a user-typed term needs inside an `.or()` string (LIKE wildcards,
+    // then PostgREST's own reserved characters) — never interpolate the
+    // raw term here.
+    const pattern = ilikePattern(filters.q);
+    query = query.or(`merchant.ilike.${pattern},note.ilike.${pattern}`);
+  }
+  if (filters.categoryId) query = query.eq("category_id", filters.categoryId);
+  if (filters.from) query = query.gte("occurred_on", filters.from);
+  if (filters.to) query = query.lte("occurred_on", filters.to);
+
+  const [
+    { data, error, count },
+    { data: members, error: membersError },
+    { data: categoryRows, error: categoriesError },
+  ] = await Promise.all([
+    query
       .order("occurred_on", { ascending: false })
       .order("created_at", { ascending: false })
       .limit(100),
     supabase.rpc("get_wallet_members"),
+    // Every category the caller can see (RLS scopes to their households),
+    // active only, for the Category filter. Both kinds: income rows are
+    // in this ledger too. The household's name rides along so the filter
+    // can group by it for a viewer in more than one household — every
+    // household seeds the same default names. `spaces(name)` needs no
+    // `!fkey` hint: `categories_space_id_fkey` is the only relationship
+    // from `categories` to `spaces`.
+    supabase
+      .from("categories")
+      .select("id, name, spaces(name)")
+      .is("archived_at", null)
+      .order("space_id")
+      .order("name"),
   ]);
 
   // A query error is not "no transactions" — src/app/(app)/layout.tsx's
@@ -174,6 +219,7 @@ export default async function TransactionsPage() {
   // author had left).
   if (error) throw new Error("Failed to load transactions");
   if (membersError) throw new Error("Failed to load wallet members");
+  if (categoriesError) throw new Error("Failed to load categories");
 
   // Supabase types embedded relations loosely. Assert the shape ONCE here,
   // at the data boundary, rather than casting inside the map.
@@ -243,7 +289,28 @@ export default async function TransactionsPage() {
           Recurring
         </Link>
       </div>
-      <TransactionList rows={rows} showAttribution={showAttribution} />
+      <FilterBar
+        // Same "assert the embed's shape once at the boundary" rule as
+        // `JoinedTxn` above; a category's household can't be missing
+        // (`space_id` is NOT NULL, 0022), so "" is a type-level fallback only.
+        categories={((categoryRows ?? []) as unknown as { id: string; name: string; spaces: { name: string } | null }[]).map(
+          (c) => ({ id: c.id, name: c.name, household: c.spaces?.name ?? "" }),
+        )}
+        filters={filters}
+        total={count ?? rows.length}
+        shown={rows.length}
+      />
+      <TransactionList
+        rows={rows}
+        showAttribution={showAttribution}
+        // A filtered-out ledger is not an empty one: the default copy
+        // ("Add your first one to get started") would be wrong advice.
+        emptyMessage={
+          hasAnyFilter(filters)
+            ? "No transactions match these filters."
+            : "No transactions yet. Add your first one to get started."
+        }
+      />
     </div>
   );
 }

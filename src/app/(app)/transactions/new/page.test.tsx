@@ -49,7 +49,7 @@ vi.mock("@/server/actions/categories", () => ({
 }));
 
 const { walletsData, categoriesData } = vi.hoisted(() => ({
-  walletsData: [] as { id: string; name: string; currency_code: string }[],
+  walletsData: [] as { id: string; name: string; currency_code: string; kind: "card" | "bank"; color_slot: number }[],
   categoriesData: [] as Record<string, unknown>[],
 }));
 
@@ -95,8 +95,8 @@ beforeEach(() => {
   walletsData.length = 0;
   categoriesData.length = 0;
   walletsData.push(
-    { id: WALLET_A, name: "Everyday", currency_code: "USD" },
-    { id: WALLET_B, name: "Savings", currency_code: "USD" },
+    { id: WALLET_A, name: "Everyday", currency_code: "USD", kind: "card", color_slot: 1 },
+    { id: WALLET_B, name: "Savings", currency_code: "USD", kind: "bank", color_slot: 2 },
   );
   push.mockClear();
   vi.mocked(createTransaction).mockReset();
@@ -124,7 +124,7 @@ describe("NewTransactionPage — ?wallet preselects, but only from the caller's 
     });
     render(ui);
 
-    expect(screen.getByRole("combobox", { name: "Wallet" })).toHaveValue(WALLET_B);
+    expect(screen.getByRole("button", { name: "Wallet Savings" })).toBeInTheDocument();
   });
 
   it("falls back to the default wallet when ?wallet names one the caller cannot see, rather than erroring", async () => {
@@ -161,7 +161,7 @@ describe("NewTransactionPage — ?wallet preselects, but only from the caller's 
     // correct fallback (`defaultWalletId = WALLET_A`) — kept here anyway
     // (not weakened) because it does confirm the fallback UX, just not the
     // security property.
-    expect(screen.getByRole("combobox", { name: "Wallet" })).toHaveValue(WALLET_A);
+    expect(screen.getByRole("button", { name: "Wallet Everyday" })).toBeInTheDocument();
 
     // The state-driven assertion: `walletCategories` (TransactionForm) is
     // derived by filtering on the RESOLVED wallet id, not the `<select>`'s
@@ -189,14 +189,14 @@ describe("NewTransactionPage — ?wallet preselects, but only from the caller's 
     });
     render(ui);
 
-    expect(screen.getByRole("combobox", { name: "Wallet" })).toHaveValue(WALLET_A);
+    expect(screen.getByRole("button", { name: "Wallet Everyday" })).toBeInTheDocument();
   });
 
   it("defaults to the first wallet when ?wallet is absent", async () => {
     const ui = await NewTransactionPage({ searchParams: Promise.resolve({}) });
     render(ui);
 
-    expect(screen.getByRole("combobox", { name: "Wallet" })).toHaveValue(WALLET_A);
+    expect(screen.getByRole("button", { name: "Wallet Everyday" })).toBeInTheDocument();
   });
 });
 
@@ -248,7 +248,7 @@ describe("NewTransactionPage — array-valued search params do not crash (Task 4
     });
     render(ui);
 
-    expect(screen.getByRole("combobox", { name: "Wallet" })).toHaveValue(WALLET_B);
+    expect(screen.getByRole("button", { name: "Wallet Savings" })).toBeInTheDocument();
   });
 });
 
