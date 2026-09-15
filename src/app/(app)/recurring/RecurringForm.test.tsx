@@ -1,6 +1,6 @@
 
 const SPACE = "99999999-9999-4999-8999-999999999999";import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RecurringForm } from "./RecurringForm";
 import type { RecurringState } from "@/server/actions/recurring";
@@ -83,6 +83,86 @@ describe("RecurringForm in create mode", () => {
     await user.click(screen.getByRole("button", { name: "Add rule" }));
     expect(seen[1]!.get("wallet_id")).toBe("wallet-sgd");
     expect(seen[1]!.get("currency_code")).toBe("SGD");
+  });
+
+  it("keeps every typed value on screen after the action returns an error", async () => {
+    // React 19 resets a form's DOM fields once its `action` settles — on an
+    // ERROR return too, since the action still completed. The earlier
+    // workaround (hidden inputs + a ref effect) covered kind/interval/
+    // wallet/amount, but the plain `defaultValue` fields (name, dates)
+    // were still wiped: a user fixing one bad date lost everything else
+    // they had typed. Seen in the browser.
+    const action = vi.fn(async (): Promise<RecurringState> => ({
+      error: "End date must be on or after the anchor date.",
+    }));
+    const user = userEvent.setup();
+    render(
+      <RecurringForm
+        action={action}
+        submitLabel="Add rule"
+        pendingLabel="Adding…"
+        wallets={WALLETS}
+        categories={CATEGORIES}
+        defaultWalletId="wallet-usd"
+      />,
+    );
+
+    await user.type(screen.getByRole("textbox", { name: "Name" }), "EndowUs DCA");
+    await user.clear(screen.getByRole("textbox", { name: /^Amount/ }));
+    await user.type(screen.getByRole("textbox", { name: /^Amount/ }), "800");
+    await user.click(screen.getByRole("button", { name: "Rent" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Repeats" }), "weekly");
+    fireEvent.change(screen.getByLabelText("Starts on"), { target: { value: "2026-09-15" } });
+    fireEvent.change(screen.getByLabelText("Ends on (optional)"), { target: { value: "2026-01-01" } });
+    await user.click(screen.getByRole("button", { name: "Add rule" }));
+
+    // CategoryPicker mounts its own `role="alert"`, so match on the text.
+    expect(await screen.findByText("End date must be on or after the anchor date.")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue("EndowUs DCA");
+    expect(screen.getByRole("textbox", { name: /^Amount/ })).toHaveValue("800");
+    expect(screen.getByRole("combobox", { name: "Repeats" })).toHaveValue("weekly");
+    expect(screen.getByLabelText("Starts on")).toHaveValue("2026-09-15");
+    expect(screen.getByLabelText("Ends on (optional)")).toHaveValue("2026-01-01");
+  });
+
+  it("clears every field after a successful add, so the next rule starts from a blank form", async () => {
+    // The counterpart of the error case above. React's own post-action
+    // reset used to clear SOME fields on success (the `defaultValue` ones)
+    // and leave the state-backed ones (amount, category, kind) showing the
+    // rule just added -- a half-cleared form. Opting out of that reset
+    // means the form clears itself, fully, and only on success.
+    const { action } = boundAction();
+    const user = userEvent.setup();
+    render(
+      <RecurringForm
+        action={action}
+        submitLabel="Add rule"
+        pendingLabel="Adding…"
+        wallets={WALLETS}
+        categories={CATEGORIES}
+        defaultWalletId="wallet-usd"
+      />,
+    );
+
+    await user.type(screen.getByRole("textbox", { name: "Name" }), "EndowUs DCA");
+    await user.clear(screen.getByRole("textbox", { name: /^Amount/ }));
+    await user.type(screen.getByRole("textbox", { name: /^Amount/ }), "800");
+    await user.click(screen.getByRole("button", { name: "Rent" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Repeats" }), "weekly");
+    fireEvent.change(screen.getByLabelText("Starts on"), { target: { value: "2026-09-15" } });
+    await user.click(screen.getByRole("button", { name: "Add rule" }));
+
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue(""));
+    expect(screen.getByRole("textbox", { name: /^Amount/ })).toHaveValue("0");
+    expect(screen.getByRole("combobox", { name: "Repeats" })).toHaveValue("monthly");
+    expect(screen.getByLabelText("Starts on")).toHaveValue("");
+    // The category selection is state, not a form field: it must clear too.
+    // `aria-pressed`/selected styling aside, the cheapest observable is what
+    // the NEXT submission carries.
+    await user.click(screen.getByRole("button", { name: "Add rule" }));
+    const second = vi.mocked(action).mock.calls[1]![1] as FormData;
+    expect(second.get("category_id")).toBe("");
+    expect(second.get("interval_unit")).toBe("monthly");
   });
 
   it("clears the selected category when the kind changes", async () => {
