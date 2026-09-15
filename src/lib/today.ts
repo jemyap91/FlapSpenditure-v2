@@ -1,3 +1,4 @@
+import { appTimeZone, calendarDateIn } from "./app-timezone";
 /**
  * Today's date as `YYYY-MM-DD` in the caller's LOCAL calendar day, never
  * `new Date().toISOString()` — that is a UTC re-interpretation of a local
@@ -21,17 +22,15 @@
  * been bitten by twice (see month-range.ts's own history) — both call
  * sites now import this one function instead.
  *
- * On the SERVER (a Server Component, or a Server Function such as
- * `recordOccurrence`), this resolves in the SERVER's own timezone, not
- * necessarily the caller's — a request filed just after local midnight in
- * one but not the other can disagree about what day it is. That is a real,
- * known, out-of-scope limitation shared with `month-range.ts`, not solved
- * here.
+ * "Local" now means the APP's calendar (`appTimeZone()`, src/lib/
+ * app-timezone.ts), not the process's: on Vercel the process is always UTC
+ * and cannot be told otherwise, so a Server Component or Server Function
+ * reading its own clock trailed a Singapore household by eight hours a
+ * day. With `NEXT_PUBLIC_APP_TIMEZONE` unset this still reads the
+ * process's own zone, so nothing changes locally or under the test suite's
+ * `TZ` pin. What remains out of scope is PER-VIEWER time: one zone for the
+ * deployment, shared with `month-range.ts`.
  */
 export function todayLocalDate(): string {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+  return calendarDateIn(new Date(), appTimeZone());
 }

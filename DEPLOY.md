@@ -353,6 +353,23 @@ nothing.
 
 `.env.local.example` documents the same two variables.
 
+### The app's timezone — set this too
+
+```
+NEXT_PUBLIC_APP_TIMEZONE=Asia/Singapore
+```
+
+Optional in name, required in practice on Vercel. Every "what day is it"
+question — which recurring occurrences are due, which month the dashboard
+and budgets cover — is answered on the server, and Vercel's runtime is
+**always UTC** with `TZ` on its reserved-variable list (`vercel env add TZ`
+is refused). Without this, a Singapore household's server is eight hours
+behind: a rule due "on the 15th" does not appear in the dashboard's DUE
+section until 08:00 on the 15th, and month totals roll over eight hours
+late. Any IANA zone name works. Unset, the app uses the process's own zone,
+which is what local development and `npm test` (pinned to
+`TZ=Asia/Singapore`) rely on.
+
 > **If the build fails with `Missing required environment variable`**, this is
 > the step that was skipped:
 >
