@@ -351,7 +351,8 @@ protects the data.
 RLS entirely, so shipping it to a deployed environment adds real risk and buys
 nothing.
 
-`.env.local.example` documents the same two variables.
+`.env.local.example` documents the same two variables, plus the optional
+`SUPABASE_JWT_SECRET` the MCP endpoint needs (below).
 
 ### The app's timezone — set this too
 
@@ -383,6 +384,37 @@ which is what local development and `npm test` (pinned to
 > variables for the environment being built — on Vercel, a variable scoped
 > only to Production will still fail a Preview build — then **redeploy**.
 > Adding variables does not rebuild an already-failed deployment on its own.
+
+### Connecting Claude (MCP) — optional, server-only secret
+
+```
+SUPABASE_JWT_SECRET=<the project's JWT secret>
+```
+
+Only `/api/mcp` reads this, and only per request, so a deployment without it
+works everywhere else; the endpoint answers `503 not configured` instead.
+**Never** prefix it `NEXT_PUBLIC_` — anyone holding it can sign in as any user.
+
+Why it is needed: a personal access token (created on `/api-access`) is not a
+Supabase session. `src/server/api-auth.ts` resolves the token to its owner
+with the `resolve_api_token` RPC (migration `0028`), then signs a five-minute
+JWT for that user so every tool call runs as `authenticated` under the same
+RLS as the app. Nothing on this path uses the service role.
+
+Where to find it: Supabase dashboard → Project Settings → **JWT Keys** →
+**Legacy JWT Secret**. If the project has moved to asymmetric signing keys,
+the legacy secret must stay a *verification* key (not revoked), or GoTrue and
+PostgREST will reject the minted tokens and every tool call reports "Not
+signed in". Locally, `npx supabase status` prints it as `JWT_SECRET`.
+
+To connect Claude Code once deployed:
+
+```
+claude mcp add --transport http flapspenditure https://<your-domain>/api/mcp \
+  --header "Authorization: Bearer flap_…"
+```
+
+`/api-access` shows this command with the real URL and token filled in.
 
 ### Which key
 

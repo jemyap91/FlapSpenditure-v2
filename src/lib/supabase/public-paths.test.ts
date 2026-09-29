@@ -22,5 +22,14 @@ describe("isPublicPath", () => {
     expect(isPublicPath("/login-help")).toBe(false);
     expect(isPublicPath("/signups")).toBe(false);
     expect(isPublicPath("/authorize")).toBe(false);
+    expect(isPublicPath("/api/mcp-admin")).toBe(false);
+  });
+
+  it("opens only the MCP endpoint under /api, not the whole prefix", () => {
+    // /api/mcp does its own bearer-token check; any other route under /api
+    // must still go through the session gate.
+    expect(isPublicPath("/api/mcp")).toBe(true);
+    expect(isPublicPath("/api")).toBe(false);
+    expect(isPublicPath("/api/other")).toBe(false);
   });
 });
