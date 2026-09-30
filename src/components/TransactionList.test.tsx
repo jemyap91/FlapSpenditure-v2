@@ -414,3 +414,24 @@ describe("TransactionList — edit entry point (Task 6)", () => {
     expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
   });
 });
+
+describe("refund rows", () => {
+  it("labels a refund as a repayment of its expense", () => {
+    render(
+      <TransactionList
+        rows={[row({ kind: "refund", amount_minor: 500, merchant: null, note: null, category_name: "Eating out", repays: "Matcha Bar" })]}
+      />,
+    );
+    expect(screen.getByRole("link", { name: "Repayment · Matcha Bar" })).toBeInTheDocument();
+  });
+
+  it("keeps a refund's own note as its label and names what it repaid underneath", () => {
+    render(
+      <TransactionList
+        rows={[row({ kind: "refund", amount_minor: 500, merchant: null, note: "Alice", category_name: "Eating out", repays: "Matcha Bar" })]}
+      />,
+    );
+    expect(screen.getByRole("link", { name: "Alice" })).toBeInTheDocument();
+    expect(screen.getByText(/Repayment for Matcha Bar/)).toBeInTheDocument();
+  });
+});
