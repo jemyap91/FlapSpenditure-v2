@@ -24,6 +24,11 @@ describe("handleMessage", () => {
     expect(reply).toMatchObject({ id: 1, result: { protocolVersion: "2025-03-26", capabilities: { tools: {} } } });
   });
 
+  it("tells the client to ask for the merchant before recording", async () => {
+    const reply = await handleMessage({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    expect(reply).toMatchObject({ result: { instructions: expect.stringMatching(/ask .*merchant/i) } });
+  });
+
   it("answers an unknown protocol version with its own latest", async () => {
     const reply = await handleMessage({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "1999-01-01" } });
     expect(reply).toMatchObject({ result: { protocolVersion: SUPPORTED_PROTOCOL_VERSIONS[0] } });

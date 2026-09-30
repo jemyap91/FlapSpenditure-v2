@@ -55,7 +55,21 @@ const createInput = z.object({
   amount,
   category_id: uuid.describe("A category of the same kind, from list_categories"),
   occurred_on: isoDate.optional().describe("Defaults to today"),
-  merchant: z.string().max(120).nullable().optional(),
+  // Required, unlike update's: a merchant is known at the moment of recording
+  // or not at all, so the caller has to decide — by asking — rather than
+  // silently leaving it out. The refusal says so, since Claude reads it.
+  merchant: z
+    .string({
+      error: (issue) =>
+        issue.input === undefined
+          ? "Ask the user who the merchant was, then pass it, or null if they say there isn't one"
+          : undefined,
+    })
+    .max(120)
+    .nullable()
+    .describe(
+      "Who the money went to or came from (a shop, restaurant, person). If the user hasn't said, ask the user before calling; pass null only if they say there isn't one.",
+    ),
   note: z.string().max(280).nullable().optional(),
 });
 

@@ -122,6 +122,7 @@ describe("create_transaction", () => {
       wallet_id: WALLET_ID,
       amount: "3.20",
       category_id: CATEGORY_ID,
+      merchant: null,
     });
     expect(actions.createTransaction).toHaveBeenCalledWith({
       wallet_id: WALLET_ID,
@@ -133,6 +134,27 @@ describe("create_transaction", () => {
       merchant: null,
     });
     expect(result).toEqual({ ok: true, data: { id: "new" } });
+  });
+
+  it("passes the merchant the user gave through to the action", async () => {
+    actions.createTransaction.mockResolvedValue({ id: "new" });
+    await callTool("create_transaction", {
+      wallet_id: WALLET_ID,
+      amount: "3.20",
+      category_id: CATEGORY_ID,
+      merchant: "Kopitiam",
+    });
+    expect(actions.createTransaction.mock.calls[0]![0].merchant).toBe("Kopitiam");
+  });
+
+  it("refuses a call that never considered the merchant, so the caller has to ask", async () => {
+    const result = await callTool("create_transaction", {
+      wallet_id: WALLET_ID,
+      amount: "3.20",
+      category_id: CATEGORY_ID,
+    });
+    expect(result).toMatchObject({ ok: false, error: /^merchant: / });
+    expect(actions.createTransaction).not.toHaveBeenCalled();
   });
 });
 
@@ -165,6 +187,13 @@ describe("toolList", () => {
     }
     const update = tools.find((t) => t.name === "update_transaction")!;
     expect(update.inputSchema).toMatchObject({ required: ["id"] });
+  });
+
+  it("requires a merchant on create and tells the caller to ask for it", () => {
+    const create = toolList().find((t) => t.name === "create_transaction")!;
+    const schema = create.inputSchema as { required: string[]; properties: Record<string, { description?: string }> };
+    expect(schema.required).toContain("merchant");
+    expect(schema.properties.merchant!.description).toMatch(/ask the user/i);
   });
 });
 
