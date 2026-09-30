@@ -2,6 +2,8 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { TransactionForm, type EditSeed } from "@/components/TransactionForm";
 import type { Category } from "@/components/CategoryPicker";
+import { RepaymentsSection } from "./RepaymentsSection";
+import { RefundEditSection } from "./RefundEditSection";
 import { formatAmountInput, formatMoney, minorUnitFor } from "@/lib/money";
 
 const uuid = z.uuid();
@@ -152,7 +154,7 @@ export default async function EditTransactionPage({
 
   type TxnRow = {
     id: string;
-    kind: "expense" | "income" | "transfer";
+    kind: "expense" | "income" | "transfer" | "refund";
     wallet_id: string;
     amount_minor: number;
     currency_code: string;
@@ -195,6 +197,12 @@ export default async function EditTransactionPage({
   const row = data as TxnRow | null;
   if (!row) {
     return <TransactionNotFound />;
+  }
+
+  // A refund has its own small editor: no category, no kind toggle, and a
+  // link back to the expense it repays (spec §4.3).
+  if (row.kind === "refund") {
+    return <RefundEditSection id={row.id} />;
   }
 
   if (row.kind === "transfer") {
@@ -399,6 +407,14 @@ export default async function EditTransactionPage({
         from={from}
         suggestions={suggestions ?? []}
       />
+      {row.kind === "expense" && (
+        <RepaymentsSection
+          expenseId={row.id}
+          currencyCode={row.currency_code}
+          expenseMinor={row.amount_minor}
+          defaultWalletId={row.wallet_id}
+        />
+      )}
     </>
   );
 }

@@ -47,6 +47,13 @@ vi.mock("@/server/actions/categories", () => ({
   createCategory: vi.fn(),
 }));
 
+vi.mock("./RepaymentsSection", () => ({
+  RepaymentsSection: (p: { expenseId: string }) => <div data-testid="repayments" data-expense={p.expenseId} />,
+}));
+vi.mock("./RefundEditSection", () => ({
+  RefundEditSection: (p: { id: string }) => <div data-testid="refund-edit" data-id={p.id} />,
+}));
+
 // `vi.mock` factories are hoisted above this file's own top-level `const`s
 // (same reason `/wallets/[id]/page.test.tsx` wraps its fixtures in
 // `vi.hoisted`), so every fixture map has to live in here too.
@@ -597,5 +604,36 @@ describe("EditTransactionPage — an archived wallet's transaction is read-only"
     render(ui);
 
     expect(screen.getByText(/^Everyday and Holiday are archived/)).toBeInTheDocument();
+  });
+});
+
+describe("EditTransactionPage — repayments", () => {
+  it("shows the repayments section under an expense", async () => {
+    txnById.set(TXN_A, txn(TXN_A));
+    walletsById.set(WALLET_A, wallet(WALLET_A));
+    categoriesBySpaceId.set(SPACE, [category(CATEGORY_A)]);
+
+    render(await EditTransactionPage({ params: Promise.resolve({ id: TXN_A }), searchParams: Promise.resolve({}) }));
+
+    expect(screen.getByTestId("repayments")).toHaveAttribute("data-expense", TXN_A);
+  });
+
+  it("does not show repayments under an income", async () => {
+    txnById.set(TXN_A, txn(TXN_A, { kind: "income", amount_minor: 1250 }));
+    walletsById.set(WALLET_A, wallet(WALLET_A));
+    categoriesBySpaceId.set(SPACE, [category(CATEGORY_A, { kind: "income" })]);
+
+    render(await EditTransactionPage({ params: Promise.resolve({ id: TXN_A }), searchParams: Promise.resolve({}) }));
+
+    expect(screen.queryByTestId("repayments")).not.toBeInTheDocument();
+  });
+
+  it("routes a refund to the refund editor instead of TransactionForm", async () => {
+    txnById.set(TXN_B, txn(TXN_B, { kind: "refund", amount_minor: 500, category_id: null, refund_of: TXN_A }));
+
+    render(await EditTransactionPage({ params: Promise.resolve({ id: TXN_B }), searchParams: Promise.resolve({}) }));
+
+    expect(screen.getByTestId("refund-edit")).toHaveAttribute("data-id", TXN_B);
+    expect(screen.queryByRole("status", { name: "Amount" })).not.toBeInTheDocument();
   });
 });
