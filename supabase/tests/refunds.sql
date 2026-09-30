@@ -195,4 +195,51 @@ begin;
   end $$;
 commit;
 
+-- leave_space moves an expense and its repayment together. 0025's
+-- leave_space_impl defers every deferrable key and moves categorised rows
+-- (the expense) before uncategorised ones (the refund), so the refund FK
+-- must be deferrable or the first statement fails with 23503. Fixture as in
+-- leave_space.sql: owner O shares a wallet, mate M joins and owns two
+-- wallets (expense in one, its refund in the other), then M leaves.
+insert into auth.users (id, email) values
+  ('f5000000-0000-4000-8000-000000000001', 'refund-lo@x.io'),
+  ('f5000000-0000-4000-8000-000000000002', 'refund-lm@x.io');
+insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon) values
+  ('f6000000-0000-4000-8000-0000000000aa', 'f5000000-0000-4000-8000-000000000001', 'LO shared', 'bank', 'USD', 1, 'landmark');
+insert into space_members (space_id, user_id, role)
+values ((select space_id from wallets where id = 'f6000000-0000-4000-8000-0000000000aa'),
+        'f5000000-0000-4000-8000-000000000002', 'member');
+begin;
+  set local request.jwt.claims = '{"sub":"f5000000-0000-4000-8000-000000000001"}';
+  select set_wallet_sharing('f6000000-0000-4000-8000-0000000000aa', true, array[]::uuid[]);
+commit;
+insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon) values
+  ('f6000000-0000-4000-8000-0000000000b1', 'f5000000-0000-4000-8000-000000000002', 'LM1', 'card', 'USD', 2, 'credit-card'),
+  ('f6000000-0000-4000-8000-0000000000b2', 'f5000000-0000-4000-8000-000000000002', 'LM2', 'bank', 'USD', 3, 'landmark');
+insert into transactions (id, wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on) values
+  ('f7000000-0000-4000-8000-000000000001', 'f6000000-0000-4000-8000-0000000000b1',
+   'f5000000-0000-4000-8000-000000000002', 'expense', -900, 'USD',
+   (select id from categories where name = 'Groceries'
+      and space_id = (select space_id from wallets where id = 'f6000000-0000-4000-8000-0000000000aa')),
+   '2026-09-30');
+insert into transactions (id, wallet_id, created_by, kind, amount_minor, currency_code, refund_of, occurred_on) values
+  ('f7000000-0000-4000-8000-000000000002', 'f6000000-0000-4000-8000-0000000000b2',
+   'f5000000-0000-4000-8000-000000000002', 'refund', 400, 'USD',
+   'f7000000-0000-4000-8000-000000000001', '2026-10-02');
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"f5000000-0000-4000-8000-000000000002","email":"refund-lm@x.io"}';
+  select public.leave_space((select space_id from public.wallets where id = 'f6000000-0000-4000-8000-0000000000b1'));
+commit;
+do $$ begin
+  assert (select space_id from transactions where id = 'f7000000-0000-4000-8000-000000000001')
+       = (select space_id from transactions where id = 'f7000000-0000-4000-8000-000000000002'),
+    'LEAVE: expense and refund ended up in different households';
+  assert (select space_id from transactions where id = 'f7000000-0000-4000-8000-000000000001')
+      <> (select space_id from wallets where id = 'f6000000-0000-4000-8000-0000000000aa'),
+    'LEAVE: expense did not move out of the shared household';
+  assert (select refund_of from transactions where id = 'f7000000-0000-4000-8000-000000000002')
+       = 'f7000000-0000-4000-8000-000000000001', 'LEAVE: refund lost its link';
+end $$;
+
 -- (Task 2 appends the report assertions below this line.)

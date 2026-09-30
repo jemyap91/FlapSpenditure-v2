@@ -11,14 +11,18 @@ alter table public.transactions
   add constraint transactions_id_space_unique unique (id, space_id);
 
 -- Same-household by construction: the refund's space_id must equal the
--- expense's. NO ACTION rather than RESTRICT: RESTRICT is checked
--- immediately, so an account deletion that cascades through both the
--- expense and its refund in ONE statement would fail; NO ACTION is checked
--- at statement end and lets that through, while still refusing a deletion
--- that would leave a refund behind.
+-- expense's. Deferrable initially immediate like the *_same_space keys in
+-- 0025, because leave_space_impl defers them all and moves categorised rows
+-- (the expense) before uncategorised ones (its refund); a non-deferrable key
+-- would fail between the two statements. A deferrable key cannot be
+-- RESTRICT, so this is NO ACTION: checked at statement end, which also lets
+-- an account deletion that cascades through both the expense and its refund
+-- in ONE statement through, while still refusing a deletion that would leave
+-- a refund behind.
 alter table public.transactions
   add constraint transactions_refund_same_space
-    foreign key (refund_of, space_id) references public.transactions (id, space_id),
+    foreign key (refund_of, space_id) references public.transactions (id, space_id)
+      deferrable initially immediate,
   add constraint refund_shape check (
     kind <> 'refund'
     or (refund_of is not null and category_id is null and amount_minor > 0
