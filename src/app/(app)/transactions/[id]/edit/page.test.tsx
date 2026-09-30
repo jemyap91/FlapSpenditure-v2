@@ -48,7 +48,9 @@ vi.mock("@/server/actions/categories", () => ({
 }));
 
 vi.mock("./RepaymentsSection", () => ({
-  RepaymentsSection: (p: { expenseId: string }) => <div data-testid="repayments" data-expense={p.expenseId} />,
+  RepaymentsSection: (p: { expenseId: string; spaceId: string }) => (
+    <div data-testid="repayments" data-expense={p.expenseId} data-space={p.spaceId} />
+  ),
 }));
 vi.mock("./RefundEditSection", () => ({
   RefundEditSection: (p: { id: string }) => <div data-testid="refund-edit" data-id={p.id} />,
@@ -616,6 +618,8 @@ describe("EditTransactionPage — repayments", () => {
     render(await EditTransactionPage({ params: Promise.resolve({ id: TXN_A }), searchParams: Promise.resolve({}) }));
 
     expect(screen.getByTestId("repayments")).toHaveAttribute("data-expense", TXN_A);
+    // The expense's household scopes the repayment wallet picker.
+    expect(screen.getByTestId("repayments")).toHaveAttribute("data-space", SPACE);
   });
 
   it("does not show repayments under an income", async () => {

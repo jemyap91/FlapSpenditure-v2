@@ -4,6 +4,7 @@ import { TransactionForm, type EditSeed } from "@/components/TransactionForm";
 import type { Category } from "@/components/CategoryPicker";
 import { RepaymentsSection } from "./RepaymentsSection";
 import { RefundEditSection } from "./RefundEditSection";
+import { TransactionNotFound } from "./TransactionNotFound";
 import { formatAmountInput, formatMoney, minorUnitFor } from "@/lib/money";
 
 const uuid = z.uuid();
@@ -423,6 +424,7 @@ export default async function EditTransactionPage({
       {row.kind === "expense" && (
         <RepaymentsSection
           expenseId={row.id}
+          spaceId={wallet.space_id}
           currencyCode={row.currency_code}
           expenseMinor={row.amount_minor}
           defaultWalletId={row.wallet_id}
@@ -432,15 +434,6 @@ export default async function EditTransactionPage({
   );
 }
 
-/**
- * The SAME rendered output whether `id` doesn't exist, exists but isn't the
- * caller's, isn't even UUID-shaped, or names a soft-deleted row — collapsing
- * every one of those into one state is what keeps this from leaking which
- * of them actually happened, the identical binding rule
- * `/wallets/[id]/page.tsx`'s own `WalletNotFound` doc comment states (see
- * this file's own doc comment above for why `notFound()` isn't used here
- * either).
- */
 /**
  * Task 8, item 2: the read-only state for a transaction whose wallet has
  * been archived. See this file's doc comment for why this is a distinct
@@ -507,19 +500,6 @@ function ArchivedWalletTransaction({
           </div>
         )}
       </dl>
-    </div>
-  );
-}
-
-function TransactionNotFound() {
-  return (
-    <div className="mx-auto max-w-2xl p-6">
-      <h1 className="text-2xl font-semibold" style={{ color: "var(--ink)" }}>
-        Transaction not found
-      </h1>
-      <p className="mt-2 text-sm" style={{ color: "var(--ink-2)" }}>
-        This transaction doesn’t exist or you don’t have access to it.
-      </p>
     </div>
   );
 }

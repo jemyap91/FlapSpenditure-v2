@@ -44,7 +44,13 @@ export async function createRefund(input: RefundInput): Promise<{ id: string } |
     .select("currency_code, archived_at, space_id")
     .eq("id", wallet_id)
     .maybeSingle();
-  if (!wallet || wallet.archived_at || wallet.space_id !== expense.space_id) return { error: "Wallet not found" };
+  if (!wallet || wallet.archived_at) return { error: "Wallet not found" };
+  // A member of two households can see wallets from both (accept_space_invite
+  // leaves a joiner's own wallets where they were); the same-space key in
+  // 0030 would refuse the insert, so say why here instead.
+  if (wallet.space_id !== expense.space_id) {
+    return { error: "A repayment must go to a wallet in the same household as its expense." };
+  }
   if (wallet.currency_code !== expense.currency_code) {
     return { error: "A repayment must be in the same currency as its expense." };
   }

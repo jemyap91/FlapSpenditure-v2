@@ -99,6 +99,17 @@ describe("createRefund", () => {
     expect(await createRefund(input())).toEqual({ error: "Wallet not found" });
   });
 
+  it("refuses a wallet in another household with its own message", async () => {
+    results.wallets = {
+      data: { currency_code: "SGD", archived_at: null, space_id: "99999999-9999-4999-8999-999999999999" },
+      error: null,
+    };
+    expect(await createRefund(input())).toEqual({
+      error: "A repayment must go to a wallet in the same household as its expense.",
+    });
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
+
   it("refuses zero and over-precise amounts", async () => {
     expect(await createRefund(input({ amount: "0" }))).toEqual({ error: "Enter an amount greater than zero" });
     expect("error" in (await createRefund(input({ amount: "5.001" })))).toBe(true);

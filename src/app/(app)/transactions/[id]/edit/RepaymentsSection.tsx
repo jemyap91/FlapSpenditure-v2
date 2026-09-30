@@ -13,17 +13,25 @@ import { RepaymentForm } from "@/components/RepaymentForm";
  */
 export async function RepaymentsSection({
   expenseId,
+  spaceId,
   currencyCode,
   expenseMinor,
   defaultWalletId,
 }: {
   expenseId: string;
+  /** The expense's household. 0030's same-space key refuses a repayment in
+   *  any other, and a member of two households can see wallets from both. */
+  spaceId: string;
   currencyCode: string;
   expenseMinor: number;
   defaultWalletId: string;
 }) {
   const supabase = await createClient();
-  const [{ data: repayments, error: repaymentsError }, { data: wallets, error: walletsError }] = await Promise.all([
+  const [
+    { data: repayments, error: repaymentsError },
+    { data: wallets, error: walletsError },
+    { data: hidden, error: hiddenError },
+  ] = await Promise.all([
     supabase
       .from("transactions")
       .select("id, amount_minor, occurred_on, note, wallets!transactions_wallet_id_fkey(name)")
@@ -31,12 +39,25 @@ export async function RepaymentsSection({
       .is("deleted_at", null)
       .order("occurred_on")
       .order("created_at"),
-    // Same-currency, active wallets only: check_refund_parent (0030) would
-    // refuse anything else, so the picker never offers it.
-    supabase.from("wallets").select("id, name").eq("currency_code", currencyCode).is("archived_at", null).order("name"),
+    // Same-household, same-currency, active wallets only: 0030's same-space
+    // key and check_refund_parent would refuse anything else, so the picker
+    // never offers it.
+    supabase
+      .from("wallets")
+      .select("id, name")
+      .eq("space_id", spaceId)
+      .eq("currency_code", currencyCode)
+      .is("archived_at", null)
+      .order("name"),
+    // Repayments someone recorded into wallets this viewer is not a member
+    // of: RLS hides them from the list above, but they still block deleting
+    // the expense (count_hidden_repayments, 0032).
+    supabase.rpc("count_hidden_repayments", { p_expense: expenseId }),
   ]);
   if (repaymentsError) throw new Error("Failed to load repayments");
   if (walletsError) throw new Error("Failed to load wallets");
+  if (hiddenError) throw new Error("Failed to load repayments");
+  const hiddenCount = hidden ?? 0;
 
   const rows = (repayments ?? []) as unknown as {
     id: string;
@@ -58,6 +79,12 @@ export async function RepaymentsSection({
         Paid {formatMoney(paid, currencyCode)} · Repaid {formatMoney(repaid, currencyCode)} · Your share{" "}
         {formatMoney(share, currencyCode)}
       </p>
+      {hiddenCount > 0 && (
+        <p className="mt-1 text-sm" style={{ color: "var(--ink-2)" }}>
+          Plus {hiddenCount} {hiddenCount === 1 ? "repayment" : "repayments"} recorded in wallets you can’t see — ask
+          the household member who recorded them.
+        </p>
+      )}
       {rows.length > 0 && (
         <ul className="mt-3">
           {rows.map((r) => (

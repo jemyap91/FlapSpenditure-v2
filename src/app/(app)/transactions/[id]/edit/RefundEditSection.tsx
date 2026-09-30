@@ -2,13 +2,14 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { formatAmountInput, minorUnitFor } from "@/lib/money";
 import { RepaymentForm } from "@/components/RepaymentForm";
+import { TransactionNotFound } from "./TransactionNotFound";
 
 /** Editing one refund: which expense it repays, and its own fields. */
 export async function RefundEditSection({ id }: { id: string }) {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("transactions")
-    .select("id, wallet_id, amount_minor, currency_code, occurred_on, note, refund_of, repaid_expense(id, occurred_on, merchant, note)")
+    .select("id, wallet_id, space_id, amount_minor, currency_code, occurred_on, note, refund_of, repaid_expense(id, occurred_on, merchant, note)")
     .eq("id", id)
     .is("deleted_at", null)
     .maybeSingle();
@@ -16,6 +17,7 @@ export async function RefundEditSection({ id }: { id: string }) {
   const row = data as unknown as {
     id: string;
     wallet_id: string;
+    space_id: string;
     amount_minor: number;
     currency_code: string;
     occurred_on: string;
@@ -23,11 +25,16 @@ export async function RefundEditSection({ id }: { id: string }) {
     refund_of: string;
     repaid_expense: { id: string; occurred_on: string; merchant: string | null; note: string | null } | null;
   } | null;
-  if (!row) return null;
+  // The page read this row a moment ago; it can be deleted in between.
+  // Same state the page renders for any row it cannot show.
+  if (!row) return <TransactionNotFound />;
 
   const { data: wallets, error: walletsError } = await supabase
     .from("wallets")
     .select("id, name")
+    // A refund's space_id equals its expense's (0030's same-space key), and
+    // a move to a wallet in another household would be refused.
+    .eq("space_id", row.space_id)
     .eq("currency_code", row.currency_code)
     .is("archived_at", null)
     .order("name");
