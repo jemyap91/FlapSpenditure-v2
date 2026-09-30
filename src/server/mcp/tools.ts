@@ -95,6 +95,7 @@ function presentTransaction(row: {
   wallets: { name: string } | null;
   categories: { name: string } | null;
 }) {
+  const source = row.kind === "refund" ? row.repaid_expense : row;
   return {
     id: row.id,
     date: row.occurred_on,
@@ -105,11 +106,7 @@ function presentTransaction(row: {
     note: row.note,
     wallet: { id: row.wallet_id, name: row.wallets?.name ?? null },
     // A refund counts under its expense's category (spec §3.1); show that.
-    category: (() => {
-      const id = row.kind === "refund" ? (row.repaid_expense?.category_id ?? null) : row.category_id;
-      const name = row.kind === "refund" ? (row.repaid_expense?.categories?.name ?? null) : (row.categories?.name ?? null);
-      return id ? { id, name } : null;
-    })(),
+    category: source?.category_id ? { id: source.category_id, name: source.categories?.name ?? null } : null,
     repays: row.refund_of ?? null,
   };
 }
@@ -161,7 +158,7 @@ export const TOOLS: Record<string, Tool> = {
 
   list_transactions: {
     description:
-      "Search your transactions, newest first. Filter by wallet, category, kind, date range, or text in the merchant/note. Use this to find the id of a transaction before updating it.",
+      "Search your transactions, newest first. Filter by wallet, category, kind, date range, or text in the merchant/note. Use this to find the id of a transaction before updating it. Pass kind \"refund\" for repayments: a repayment row's category is its expense's, and `repays` is the id of the expense it pays back.",
     input: listTransactionsInput,
     run: async (args: z.output<typeof listTransactionsInput>) => {
       if (args.from && args.to && args.from > args.to) {
@@ -235,7 +232,7 @@ export const TOOLS: Record<string, Tool> = {
 
   update_transaction: {
     description:
-      "Change an expense, income or repayment. Only the fields you pass change; the rest keep their current values. A repayment has no category of its own. Transfers can't be edited here.",
+      "Change an expense, income or repayment. Only the fields you pass change; the rest keep their current values. A repayment takes its category from its expense, so passing category_id for one is rejected. Moving a transaction to another wallet keeps its currency. Transfers can't be edited here.",
     input: updateInput,
     run: async (args: z.output<typeof updateInput>) => {
       // updateTransaction takes the whole editable row, so fill in whatever
@@ -273,7 +270,7 @@ export const TOOLS: Record<string, Tool> = {
 
   delete_transaction: {
     description:
-      "Delete a transaction. It can be brought back with restore_transaction. Deleting either leg of a transfer deletes both.",
+      "Delete a transaction. It can be brought back with restore_transaction. Deleting either leg of a transfer deletes both. An expense with repayments can't be deleted until its repayments are.",
     input: idInput,
     run: async (args: { id: string }) => fromAction(await softDeleteTransaction(args.id), { id: args.id, deleted: true }),
   },

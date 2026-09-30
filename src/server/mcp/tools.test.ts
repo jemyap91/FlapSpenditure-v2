@@ -5,6 +5,7 @@ vi.mock("server-only", () => ({}));
 
 const TXN_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const WALLET_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const EXPENSE_ID = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 const CATEGORY_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 
 const { actions, stored } = vi.hoisted(() => ({
@@ -200,15 +201,34 @@ describe("record_repayment", () => {
 
 describe("refunds through the existing tools", () => {
   it("edits a refund without inventing a category", async () => {
-    stored.row = { ...stored.row!, kind: "refund", amount_minor: 500, category_id: null, categories: null, refund_of: CATEGORY_ID };
+    stored.row = { ...stored.row!, kind: "refund", amount_minor: 500, category_id: null, categories: null, refund_of: EXPENSE_ID };
     actions.updateTransaction.mockResolvedValue({ ok: true });
     await callTool("update_transaction", { id: TXN_ID, amount: "6.00" });
     expect(actions.updateTransaction.mock.calls[0]![0].category_id).toBeNull();
   });
 
-  it("lists refunds and presents the expense's category", async () => {
+  it("lists refunds under the expense's category and says which expense they repay", async () => {
+    stored.row = {
+      ...stored.row!,
+      kind: "refund",
+      amount_minor: 500,
+      category_id: null,
+      categories: null,
+      refund_of: EXPENSE_ID,
+      repaid_expense: { category_id: CATEGORY_ID, categories: { name: "Eating out" } },
+    };
     const listed = await callTool("list_transactions", { kind: "refund" });
     expect(listed.ok).toBe(true);
+    const rows = (listed as { data: Record<string, unknown>[] }).data;
+    expect(rows[0]!.category).toEqual({ id: CATEGORY_ID, name: "Eating out" });
+    expect(rows[0]!.repays).toBe(EXPENSE_ID);
     expect(toolList().find((t) => t.name === "record_repayment")).toBeDefined();
+  });
+
+  it("still presents an expense's own category and no repays", async () => {
+    const listed = await callTool("list_transactions", {});
+    const rows = (listed as { data: Record<string, unknown>[] }).data;
+    expect(rows[0]!.category).toEqual({ id: CATEGORY_ID, name: "Eating out" });
+    expect(rows[0]!.repays).toBeNull();
   });
 });
