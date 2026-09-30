@@ -630,10 +630,21 @@ describe("EditTransactionPage — repayments", () => {
 
   it("routes a refund to the refund editor instead of TransactionForm", async () => {
     txnById.set(TXN_B, txn(TXN_B, { kind: "refund", amount_minor: 500, category_id: null, refund_of: TXN_A }));
+    walletsById.set(WALLET_A, wallet(WALLET_A));
 
     render(await EditTransactionPage({ params: Promise.resolve({ id: TXN_B }), searchParams: Promise.resolve({}) }));
 
     expect(screen.getByTestId("refund-edit")).toHaveAttribute("data-id", TXN_B);
     expect(screen.queryByRole("status", { name: "Amount" })).not.toBeInTheDocument();
+  });
+
+  it("renders a refund in an archived wallet read-only, not the editor", async () => {
+    txnById.set(TXN_B, txn(TXN_B, { kind: "refund", amount_minor: 500, category_id: null, refund_of: TXN_A }));
+    walletsById.set(WALLET_A, wallet(WALLET_A, { archived_at: "2026-09-01T00:00:00Z" }));
+
+    render(await EditTransactionPage({ params: Promise.resolve({ id: TXN_B }), searchParams: Promise.resolve({}) }));
+
+    expect(screen.getByRole("heading", { name: "This transaction can’t be edited" })).toBeInTheDocument();
+    expect(screen.queryByTestId("refund-edit")).not.toBeInTheDocument();
   });
 });

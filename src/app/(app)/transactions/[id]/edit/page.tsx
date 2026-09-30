@@ -201,7 +201,20 @@ export default async function EditTransactionPage({
 
   // A refund has its own small editor: no category, no kind toggle, and a
   // link back to the expense it repays (spec §4.3).
+  //
+  // Its wallet is checked first, like the expense path below: an archived
+  // wallet makes Save impossible, so the refund renders read-only instead.
   if (row.kind === "refund") {
+    const { data: refundWallet, error: refundWalletError } = await supabase
+      .from("wallets")
+      .select("id, name, archived_at")
+      .eq("id", row.wallet_id)
+      .maybeSingle();
+    if (refundWalletError) throw new Error("Failed to load wallet");
+    if (!refundWallet) return <TransactionNotFound />;
+    if (refundWallet.archived_at) {
+      return <ArchivedWalletTransaction walletNames={[refundWallet.name]} row={row} />;
+    }
     return <RefundEditSection id={row.id} />;
   }
 
