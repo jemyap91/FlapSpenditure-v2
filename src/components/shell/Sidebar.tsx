@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Wallet, TrendingUp, Tags, LogOut, Plus, Target, Users } from "lucide-react";
+import { Home, Wallet, TrendingUp, Tags, LogOut, Plus, Target, Users, Bot } from "lucide-react";
 import { signOut } from "@/server/actions/auth";
 import type { ThemePref } from "@/lib/supabase/current-user";
 import { ThemeToggle } from "./ThemeToggle";
@@ -26,6 +26,8 @@ const NAV = [
   // comment on six squeezing the wallet names). On mobile /household is
   // reached from the link at the top of /categories.
   { href: "/household", label: "Household", Icon: Users },
+  // Sidebar only, like Household; on mobile it's linked from /household.
+  { href: "/api-access", label: "Connect Claude", Icon: Bot },
 ];
 
 const NAV_HREFS = NAV.map((item) => item.href);

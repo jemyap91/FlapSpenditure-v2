@@ -3,7 +3,15 @@
  * unauthenticated requests through to. Extracted from middleware.ts so the
  * predicate is a pure function, testable without pulling in `next/server`.
  */
-export const PUBLIC_PATHS = ["/login", "/signup", "/auth"];
+export const PUBLIC_PATHS = [
+  "/login",
+  "/signup",
+  "/auth",
+  // Bearer-token authenticated, not cookie-authenticated: redirecting an MCP
+  // client to /login would only break it. The route checks its own token
+  // (src/app/api/mcp/route.ts) and has no other way in.
+  "/api/mcp",
+];
 
 /**
  * True when `path` is exactly one of PUBLIC_PATHS or a sub-path of one

@@ -5027,3 +5027,88 @@ do $$ begin
   assert not has_function_privilege('anon', 'public.get_entry_suggestions()', 'EXECUTE'),
     'LEAK: anon must not be able to EXECUTE get_entry_suggestions';
 end $$;
+
+-- =====================================================================
+-- api_tokens (0028): a token is its owner's alone, the stored hash is
+-- never updatable, and resolve_api_token maps only a live plaintext token
+-- to its owner -- never a hash, never a revoked token.
+-- =====================================================================
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid, 'impersonation failed';
+  end $$;
+  insert into api_tokens (id, name, token_hash, token_prefix)
+    values ('ab000000-0000-4000-8000-000000000001', 'alice token',
+            encode(sha256(convert_to('flap_alice_live', 'UTF8')), 'hex'), 'flap_ali');
+  do $$ begin
+    assert (select user_id from api_tokens where id = 'ab000000-0000-4000-8000-000000000001')
+         = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid,
+      'PERMISSION BROKEN: alice''s token did not default to her own user id';
+  end $$;
+commit;
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"bbbbbbbb-0000-0000-0000-000000000002","email":"bob@x.io"}';
+  do $$
+  begin
+    assert (select count(*) from api_tokens) = 0, 'LEAK: bob can see alice''s tokens';
+
+    update api_tokens set revoked_at = now() where id = 'ab000000-0000-4000-8000-000000000001';
+    assert not found, 'LEAK: bob revoked alice''s token';
+
+    begin
+      insert into api_tokens (user_id, name, token_hash, token_prefix)
+        values ('aaaaaaaa-0000-0000-0000-000000000001', 'planted',
+                encode(sha256(convert_to('flap_planted', 'UTF8')), 'hex'), 'flap_pla');
+      raise exception 'LEAK: bob planted a token that acts as alice';
+    exception when insufficient_privilege then null;
+    end;
+
+    begin
+      update api_tokens set token_hash = repeat('0', 64);
+      raise exception 'LEAK: token_hash is updatable';
+    exception when insufficient_privilege then null;
+    end;
+  end $$;
+commit;
+
+begin;
+  set local role anon;
+  do $$
+  begin
+    begin
+      perform 1 from api_tokens;
+      raise exception 'LEAK: anon can read api_tokens';
+    exception when insufficient_privilege then null;
+    end;
+
+    assert (select user_id from public.resolve_api_token('flap_alice_live'))
+         = 'aaaaaaaa-0000-0000-0000-000000000001'::uuid,
+      'PERMISSION BROKEN: a live token did not resolve to its owner';
+    assert (select email from public.resolve_api_token('flap_alice_live')) = 'alice@x.io',
+      'PERMISSION BROKEN: resolve_api_token did not return the owner''s email';
+    assert (select count(*) from public.resolve_api_token(encode(sha256(convert_to('flap_alice_live', 'UTF8')), 'hex'))) = 0,
+      'LEAK: the stored hash works as a token';
+    assert (select count(*) from public.resolve_api_token('flap_wrong')) = 0,
+      'LEAK: an unknown token resolved';
+  end $$;
+commit;
+
+do $$ begin
+  assert (select last_used_at is not null from api_tokens where id = 'ab000000-0000-4000-8000-000000000001'),
+    'resolve_api_token did not record last_used_at';
+end $$;
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"aaaaaaaa-0000-0000-0000-000000000001","email":"alice@x.io"}';
+  do $$ begin
+    update api_tokens set revoked_at = now() where id = 'ab000000-0000-4000-8000-000000000001';
+    assert found, 'PERMISSION BROKEN: alice cannot revoke her own token';
+    assert (select count(*) from public.resolve_api_token('flap_alice_live')) = 0,
+      'LEAK: a revoked token still resolves';
+  end $$;
+commit;

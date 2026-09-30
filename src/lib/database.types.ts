@@ -34,6 +34,39 @@ export type Database = {
   }
   public: {
     Tables: {
+      api_tokens: {
+        Row: {
+          created_at: string
+          id: string
+          last_used_at: string | null
+          name: string
+          revoked_at: string | null
+          token_hash: string
+          token_prefix: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          last_used_at?: string | null
+          name: string
+          revoked_at?: string | null
+          token_hash: string
+          token_prefix: string
+          user_id?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          last_used_at?: string | null
+          name?: string
+          revoked_at?: string | null
+          token_hash?: string
+          token_prefix?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       budget_wallets: {
         Row: {
           budget_id: string
@@ -926,6 +959,13 @@ export type Database = {
           budgets_moved: number
           budgets_trimmed: number
           wallets_moved: number
+        }[]
+      }
+      resolve_api_token: {
+        Args: { p_token: string }
+        Returns: {
+          email: string
+          user_id: string
         }[]
       }
       revoke_space_invite: { Args: { p_invite: string }; Returns: undefined }

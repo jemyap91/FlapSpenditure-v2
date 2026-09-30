@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentUserProfile } from "@/lib/supabase/current-user";
@@ -96,6 +97,13 @@ export default async function HouseholdPage() {
       <p className="mb-6 text-sm" style={{ color: "var(--ink-2)" }}>
         Everyone in a household shares one list of categories. The household owner invites people
         here; each wallet&apos;s owner chooses who sees it.
+      </p>
+      {/* /api-access is sidebar-only (TabBar is full), so this is its mobile
+          entry point, the same way /categories links here. */}
+      <p className="-mt-4 mb-6 text-sm">
+        <Link href="/api-access" className="underline" style={{ color: "var(--cat-1)" }}>
+          Connect Claude to your ledger
+        </Link>
       </p>
 
       <HouseholdSections
