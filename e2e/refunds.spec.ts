@@ -50,7 +50,8 @@ test("four friends repay their share of a meal", async ({ page }) => {
     await page.getByRole("button", { name: "Record repayment" }).click();
     await expect(page.getByRole("link", { name: who })).toBeVisible();
   }
-  await expect(page.getByText(/Your share\s*\S*5\.00/)).toBeVisible();
+  // Anchored so "5.00" can't be the tail of the un-netted "25.00".
+  await expect(page.getByText(/Paid \S*25\.00 · Repaid \S*20\.00 · Your share \S*5\.00$/)).toBeVisible();
 
   // The ledger shows the repayments as positive rows under the expense's category.
   // This expense has no merchant or note, so the secondary line falls back to the
@@ -70,7 +71,15 @@ test("four friends repay their share of a meal", async ({ page }) => {
   // The dashboard breakdown nets the category to 5.00.
   await page.goto("/");
   const breakdown = page.getByRole("table", { name: /Spending by category/ });
-  await expect(breakdown.getByRole("row", { name: /Eating out/ })).toContainText("5.00");
+  const eatingOut = breakdown.getByRole("row", { name: /Eating out/ });
+  await expect(eatingOut).toContainText(/(^|[^\d.,])5\.00/);
+  await expect(eatingOut).not.toContainText("25.00");
+
+  // Bank started at 0 and received 4 x 5.00, so it is up 20.00 (anchored: not 120.00).
+  await page.goto("/wallets");
+  const bank = page.getByRole("listitem", { name: "Bank" });
+  await expect(bank).toContainText(/(^|[^\d.,])20\.00/);
+  await expect(bank).not.toContainText("120.00");
 
   // The expense can't be deleted while it has repayments.
   await page.goto("/transactions");
