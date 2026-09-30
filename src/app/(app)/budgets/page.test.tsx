@@ -96,3 +96,10 @@ describe("BudgetsPage — primary currency for a non-USD user (B1)", () => {
     expect(screen.getByRole("checkbox", { name: "Everyday" })).toBeInTheDocument();
   });
 });
+
+describe("BudgetsPage — subtitle", () => {
+  it("says budgets count expenses net of their repayments", async () => {
+    render(await BudgetsPage());
+    expect(screen.getByText(/· expenses, less repayments$/)).toBeInTheDocument();
+  });
+});
