@@ -15,5 +15,7 @@ const MESSAGES: Record<string, string> = {
 };
 
 export function refundErrorMessage(dbMessage: string | undefined): string | null {
-  return (dbMessage && MESSAGES[dbMessage]) || null;
+  // Own keys only: a bare index would match "constructor", "toString" and
+  // the rest of Object.prototype and hand back a function.
+  return dbMessage !== undefined && Object.hasOwn(MESSAGES, dbMessage) ? MESSAGES[dbMessage]! : null;
 }

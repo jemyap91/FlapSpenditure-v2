@@ -15,4 +15,10 @@ describe("refundErrorMessage", () => {
     expect(refundErrorMessage("duplicate key value violates unique constraint")).toBeNull();
     expect(refundErrorMessage(undefined)).toBeNull();
   });
+
+  it("never matches an inherited object key", () => {
+    expect(refundErrorMessage("constructor")).toBeNull();
+    expect(refundErrorMessage("toString")).toBeNull();
+    expect(refundErrorMessage("__proto__")).toBeNull();
+  });
 });
