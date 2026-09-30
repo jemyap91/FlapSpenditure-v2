@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { TransactionList, type Row } from "@/components/TransactionList";
+import { ledgerCategory, repaysLabel } from "@/lib/refunds";
 import { resolveCreatedByNames, anyRowShared } from "./attribution";
 import { FilterBar } from "./FilterBar";
 import { parseTransactionFilters, hasAnyFilter, ilikePattern } from "@/lib/transaction-filters";
@@ -164,7 +165,7 @@ export default async function TransactionsPage({
   let query = supabase
     .from("transactions")
     .select(
-      "id, kind, amount_minor, currency_code, occurred_on, note, merchant, created_by, wallet_id, wallets!transactions_wallet_id_fkey(name), categories!transactions_category_id_fkey(name, color_slot, icon)",
+      "id, kind, amount_minor, currency_code, occurred_on, note, merchant, created_by, wallet_id, wallets!transactions_wallet_id_fkey(name), categories!transactions_category_id_fkey(name, color_slot, icon), repaid_expense(merchant, note, categories!transactions_category_id_fkey(name, color_slot, icon))",
       { count: "exact" },
     )
     .is("deleted_at", null);
@@ -176,7 +177,11 @@ export default async function TransactionsPage({
     const pattern = ilikePattern(filters.q);
     query = query.or(`merchant.ilike.${pattern},note.ilike.${pattern}`);
   }
-  if (filters.categoryId) query = query.eq("category_id", filters.categoryId);
+  // effective_category_id (0030) is a row's own category, or a refund's
+  // expense's — so one category filter shows its spending AND the
+  // repayments against it. `.filter` rather than `.eq`: it is a PostgREST
+  // computed field, not a column the generated types know about.
+  if (filters.categoryId) query = query.filter("effective_category_id", "eq", filters.categoryId);
   if (filters.from) query = query.gte("occurred_on", filters.from);
   if (filters.to) query = query.lte("occurred_on", filters.to);
 
@@ -235,6 +240,11 @@ export default async function TransactionsPage({
     wallet_id: string;
     wallets: { name: string } | null;
     categories: { name: string; color_slot: number; icon: string } | null;
+    repaid_expense: {
+      merchant: string | null;
+      note: string | null;
+      categories: { name: string; color_slot: number; icon: string } | null;
+    } | null;
   };
 
   const memberRows = members ?? [];
@@ -254,9 +264,11 @@ export default async function TransactionsPage({
     note: r.note,
     merchant: r.merchant,
     wallet_name: r.wallets?.name ?? "",
-    category_name: r.categories?.name ?? null,
-    category_icon: r.categories?.icon ?? null,
-    color_slot: r.categories?.color_slot ?? null,
+    ...(() => {
+      const c = ledgerCategory(r);
+      return { category_name: c?.name ?? null, category_icon: c?.icon ?? null, color_slot: c?.color_slot ?? null };
+    })(),
+    repays: repaysLabel(r),
     created_by_name: r.created_by_name,
   }));
 

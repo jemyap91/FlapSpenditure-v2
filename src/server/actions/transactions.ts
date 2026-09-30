@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
+import { refundErrorMessage } from "@/lib/refund-errors";
 import {
   transactionInput,
   transferInput,
@@ -304,6 +305,12 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
     return { error: "This is a transfer — edit it from the transfer, not the transaction" };
   }
 
+  // A refund's category is its expense's (spec §4.2); it stores none.
+  // 0030's refund_shape would reject the write anyway — this says why.
+  if (kind === "refund" && category_id) {
+    return { error: "A repayment takes its category from the expense it repays." };
+  }
+
   const { data: wallet } = await supabase
     .from("wallets")
     .select("currency_code, archived_at, space_id")
@@ -450,6 +457,8 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
       p_merchant: merchant ?? undefined,
     });
     if (moveError) {
+      const mapped = refundErrorMessage(moveError.message);
+      if (mapped) return { error: mapped };
       // The function raises plain messages; PostgREST hands them back in
       // `message`. Matched on a stable fragment rather than the whole string
       // so the count it interpolates does not have to be reproduced here.
@@ -483,7 +492,7 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
     .is("deleted_at", null)
     .select("id");
 
-  if (error) return { error: "Could not save transaction. Please try again." };
+  if (error) return { error: refundErrorMessage(error.message) ?? "Could not save transaction. Please try again." };
   // A zero-row UPDATE is not a Postgres error — archiveWallet and
   // archiveCategory both make this same check, and both exist because this
   // codebase has shipped the "reported success, database untouched" bug
@@ -895,6 +904,8 @@ async function setDeletedAt(id: string, value: string | null): Promise<MutationR
     ? await query.eq("transfer_id", row.transfer_id).select("id")
     : await query.eq("id", id).select("id");
   if (error) {
+    const mapped = refundErrorMessage(error.message);
+    if (mapped) return { error: mapped };
     // 23505 unique_violation on transactions_recurring_occurrence (the
     // partial unique index supabase/migrations/0015_recurring.sql adds,
     // moved by 0016_editable_transactions.sql onto (recurring_id,

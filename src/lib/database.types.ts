@@ -484,10 +484,32 @@ export type Database = {
           occurred_on: string
           recurring_id: string | null
           recurring_occurrence_on: string | null
+          refund_of: string | null
           space_id: string
           transfer_id: string | null
           updated_at: string
           wallet_id: string
+          effective_category_id: string | null
+          repaid_expense: {
+            amount_minor: number
+            category_id: string | null
+            created_at: string
+            created_by: string | null
+            currency_code: string
+            deleted_at: string | null
+            id: string
+            kind: Database["public"]["Enums"]["txn_kind"]
+            merchant: string | null
+            note: string | null
+            occurred_on: string
+            recurring_id: string | null
+            recurring_occurrence_on: string | null
+            refund_of: string | null
+            space_id: string
+            transfer_id: string | null
+            updated_at: string
+            wallet_id: string
+          } | null
         }
         Insert: {
           amount_minor: number
@@ -503,6 +525,7 @@ export type Database = {
           occurred_on: string
           recurring_id?: string | null
           recurring_occurrence_on?: string | null
+          refund_of?: string | null
           space_id: string
           transfer_id?: string | null
           updated_at?: string
@@ -522,6 +545,7 @@ export type Database = {
           occurred_on?: string
           recurring_id?: string | null
           recurring_occurrence_on?: string | null
+          refund_of?: string | null
           space_id?: string
           transfer_id?: string | null
           updated_at?: string
@@ -562,6 +586,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "recurring_rules"
             referencedColumns: ["id", "wallet_id"]
+          },
+          {
+            foreignKeyName: "transactions_refund_same_space"
+            columns: ["refund_of", "space_id"]
+            isOneToOne: false
+            referencedRelation: "transactions"
+            referencedColumns: ["id", "space_id"]
           },
           {
             foreignKeyName: "transactions_wallet_id_fkey"
@@ -798,12 +829,23 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      spend_lines: {
+        Row: {
+          category_id: string | null
+          currency_code: string | null
+          occurred_on: string | null
+          spend_minor: number | null
+          transaction_id: string | null
+          wallet_id: string | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       accept_space_invite: { Args: { p_invite: string }; Returns: undefined }
       accept_wallet_invite: { Args: { invite: string }; Returns: undefined }
       budget_visible: { Args: { b: string }; Returns: boolean }
+      count_hidden_repayments: { Args: { p_expense: string }; Returns: number }
       create_transfer: {
         Args: {
           amount_in: number
@@ -817,6 +859,12 @@ export type Database = {
       }
       decline_space_invite: { Args: { p_invite: string }; Returns: undefined }
       decline_wallet_invite: { Args: { invite: string }; Returns: undefined }
+      effective_category_id: {
+        Args: { "": Database["public"]["Tables"]["transactions"]["Row"] }
+        Returns: {
+          error: true
+        } & "the function public.effective_category_id with parameter or with a single unnamed json/jsonb parameter, but no matches were found in the schema cache"
+      }
       get_budget_status: {
         Args: { from_date: string; to_date: string }
         Returns: {
@@ -961,6 +1009,35 @@ export type Database = {
           wallets_moved: number
         }[]
       }
+      repaid_expense: {
+        Args: { "": Database["public"]["Tables"]["transactions"]["Row"] }
+        Returns: {
+          amount_minor: number
+          category_id: string | null
+          created_at: string
+          created_by: string | null
+          currency_code: string
+          deleted_at: string | null
+          id: string
+          kind: Database["public"]["Enums"]["txn_kind"]
+          merchant: string | null
+          note: string | null
+          occurred_on: string
+          recurring_id: string | null
+          recurring_occurrence_on: string | null
+          refund_of: string | null
+          space_id: string
+          transfer_id: string | null
+          updated_at: string
+          wallet_id: string
+        }
+        SetofOptions: {
+          from: "transactions"
+          to: "transactions"
+          isOneToOne: true
+          isSetofReturn: true
+        }
+      }
       resolve_api_token: {
         Args: { p_token: string }
         Returns: {
@@ -1014,6 +1091,7 @@ export type Database = {
           occurred_on: string
           recurring_id: string | null
           recurring_occurrence_on: string | null
+          refund_of: string | null
           space_id: string
           transfer_id: string | null
           updated_at: string
@@ -1034,7 +1112,7 @@ export type Database = {
       member_via: "owner" | "household" | "direct"
       recur_interval: "weekly" | "fortnightly" | "monthly" | "yearly"
       theme_pref: "system" | "light" | "dark"
-      txn_kind: "expense" | "income" | "transfer"
+      txn_kind: "expense" | "income" | "transfer" | "refund"
       wallet_kind: "card" | "bank"
     }
     CompositeTypes: {
@@ -1172,7 +1250,7 @@ export const Constants = {
       member_via: ["owner", "household", "direct"],
       recur_interval: ["weekly", "fortnightly", "monthly", "yearly"],
       theme_pref: ["system", "light", "dark"],
-      txn_kind: ["expense", "income", "transfer"],
+      txn_kind: ["expense", "income", "transfer", "refund"],
       wallet_kind: ["card", "bank"],
     },
   },

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { formatMoney } from "@/lib/money";
 import { TransactionList, type Row } from "@/components/TransactionList";
+import { ledgerCategory, repaysLabel } from "@/lib/refunds";
 import { resolveCreatedByNames, anyRowShared } from "../../transactions/attribution";
 import { mergeWalletBalances, type WalletRow, type BalanceRow } from "../wallet-rows";
 import { WalletFab } from "./WalletFab";
@@ -165,7 +166,7 @@ export default async function WalletDetailPage({
     supabase
       .from("transactions")
       .select(
-        "id, kind, amount_minor, currency_code, occurred_on, note, merchant, created_by, wallet_id, categories!transactions_category_id_fkey(name, color_slot, icon)",
+        "id, kind, amount_minor, currency_code, occurred_on, note, merchant, created_by, wallet_id, categories!transactions_category_id_fkey(name, color_slot, icon), repaid_expense(merchant, note, categories!transactions_category_id_fkey(name, color_slot, icon))",
       )
       .eq("wallet_id", id)
       .is("deleted_at", null)
@@ -203,6 +204,11 @@ export default async function WalletDetailPage({
     created_by: string | null;
     wallet_id: string;
     categories: { name: string; color_slot: number; icon: string } | null;
+    repaid_expense: {
+      merchant: string | null;
+      note: string | null;
+      categories: { name: string; color_slot: number; icon: string } | null;
+    } | null;
   };
 
   const memberRows = members ?? [];
@@ -225,9 +231,11 @@ export default async function WalletDetailPage({
     // heading that already reads "Everyday") without needing any change to
     // that shared component (review-caught, M2).
     wallet_name: "",
-    category_name: r.categories?.name ?? null,
-    category_icon: r.categories?.icon ?? null,
-    color_slot: r.categories?.color_slot ?? null,
+    ...(() => {
+      const c = ledgerCategory(r);
+      return { category_name: c?.name ?? null, category_icon: c?.icon ?? null, color_slot: c?.color_slot ?? null };
+    })(),
+    repays: repaysLabel(r),
     created_by_name: r.created_by_name,
   }));
 

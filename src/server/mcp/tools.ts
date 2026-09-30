@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { formatAmountInput, minorUnitFor } from "@/lib/money";
 import { todayLocalDate } from "@/lib/today";
 import { ilikePattern, SEARCH_MAX_LENGTH } from "@/lib/transaction-filters";
+import { createRefund } from "@/server/actions/refunds";
 import {
   createTransaction,
   restoreTransaction,
@@ -41,7 +42,7 @@ const amount = z
 const listTransactionsInput = z.object({
   wallet_id: uuid.optional(),
   category_id: uuid.optional(),
-  kind: z.enum(["expense", "income", "transfer"]).optional(),
+  kind: z.enum(["expense", "income", "transfer", "refund"]).optional(),
   from: isoDate.optional().describe("Inclusive start date, YYYY-MM-DD"),
   to: isoDate.optional().describe("Inclusive end date, YYYY-MM-DD"),
   search: z.string().trim().min(1).max(SEARCH_MAX_LENGTH).optional().describe("Matches merchant or note"),
@@ -68,6 +69,14 @@ const updateInput = z.object({
   wallet_id: uuid.optional().describe("Moves the transaction to another wallet with the same currency"),
 });
 
+const repaymentInput = z.object({
+  expense_id: uuid.describe("The expense being paid back, from list_transactions"),
+  amount,
+  wallet_id: uuid.optional().describe("Where the money landed. Defaults to the expense's wallet; must be the same currency"),
+  occurred_on: isoDate.optional().describe("When it was paid back. Defaults to today"),
+  note: z.string().max(280).nullable().optional().describe("Who paid, e.g. \"Alice\""),
+});
+
 const idInput = z.object({ id: uuid });
 
 /** One transaction as tools return it: a positive amount plus its kind. */
@@ -81,9 +90,12 @@ function presentTransaction(row: {
   note: string | null;
   wallet_id: string;
   category_id: string | null;
+  refund_of?: string | null;
+  repaid_expense?: { category_id: string | null; categories: { name: string } | null } | null;
   wallets: { name: string } | null;
   categories: { name: string } | null;
 }) {
+  const source = row.kind === "refund" ? row.repaid_expense : row;
   return {
     id: row.id,
     date: row.occurred_on,
@@ -93,12 +105,16 @@ function presentTransaction(row: {
     merchant: row.merchant,
     note: row.note,
     wallet: { id: row.wallet_id, name: row.wallets?.name ?? null },
-    category: row.category_id ? { id: row.category_id, name: row.categories?.name ?? null } : null,
+    // A refund counts under its expense's category (spec §3.1); show that.
+    category: source?.category_id ? { id: source.category_id, name: source.categories?.name ?? null } : null,
+    repays: row.refund_of ?? null,
   };
 }
 
+type PresentRow = Parameters<typeof presentTransaction>[0];
+
 const TRANSACTION_COLUMNS =
-  "id, kind, amount_minor, currency_code, occurred_on, merchant, note, wallet_id, category_id, wallets!transactions_wallet_id_fkey(name), categories!transactions_category_id_fkey(name)";
+  "id, kind, amount_minor, currency_code, occurred_on, merchant, note, wallet_id, category_id, refund_of, wallets!transactions_wallet_id_fkey(name), categories!transactions_category_id_fkey(name), repaid_expense(category_id, categories!transactions_category_id_fkey(name))";
 
 function fromAction(result: { error: string } | object, data: unknown): ToolResult {
   return "error" in result ? { ok: false, error: result.error } : { ok: true, data };
@@ -142,7 +158,7 @@ export const TOOLS: Record<string, Tool> = {
 
   list_transactions: {
     description:
-      "Search your transactions, newest first. Filter by wallet, category, kind, date range, or text in the merchant/note. Use this to find the id of a transaction before updating it.",
+      "Search your transactions, newest first. Filter by wallet, category, kind, date range, or text in the merchant/note. Use this to find the id of a transaction before updating it. Pass kind \"refund\" for repayments: a repayment row's category is its expense's, and `repays` is the id of the expense it pays back.",
     input: listTransactionsInput,
     run: async (args: z.output<typeof listTransactionsInput>) => {
       if (args.from && args.to && args.from > args.to) {
@@ -151,7 +167,7 @@ export const TOOLS: Record<string, Tool> = {
       const supabase = await createClient();
       let query = supabase.from("transactions").select(TRANSACTION_COLUMNS).is("deleted_at", null);
       if (args.wallet_id) query = query.eq("wallet_id", args.wallet_id);
-      if (args.category_id) query = query.eq("category_id", args.category_id);
+      if (args.category_id) query = query.filter("effective_category_id", "eq", args.category_id);
       if (args.kind) query = query.eq("kind", args.kind);
       if (args.from) query = query.gte("occurred_on", args.from);
       if (args.to) query = query.lte("occurred_on", args.to);
@@ -164,12 +180,12 @@ export const TOOLS: Record<string, Tool> = {
         .order("created_at", { ascending: false })
         .limit(args.limit);
       if (error) return { ok: false, error: "Could not load transactions" };
-      return { ok: true, data: data.map(presentTransaction) };
+      return { ok: true, data: (data as unknown as PresentRow[]).map(presentTransaction) };
     },
   },
 
   create_transaction: {
-    description: "Record a new expense (default) or income.",
+    description: "Record a new expense (default) or income. To record someone paying you back for an expense, use record_repayment instead.",
     input: createInput,
     run: async (args: z.output<typeof createInput>) => {
       const result = await createTransaction({
@@ -185,9 +201,38 @@ export const TOOLS: Record<string, Tool> = {
     },
   },
 
+  record_repayment: {
+    description:
+      "Record someone paying you back for an expense (e.g. friends repaying their share of a meal). The repayment counts against that expense's category and month, while the money shows up in the wallet it landed in.",
+    input: repaymentInput,
+    run: async (args: z.output<typeof repaymentInput>) => {
+      let walletId = args.wallet_id;
+      if (!walletId) {
+        const supabase = await createClient();
+        const { data: expense } = await supabase
+          .from("transactions")
+          .select("wallet_id")
+          .eq("id", args.expense_id)
+          .is("deleted_at", null)
+          .maybeSingle();
+        if (!expense) return { ok: false, error: "Expense not found" };
+        walletId = expense.wallet_id;
+      }
+      const result = await createRefund({
+        refund_of: args.expense_id,
+        wallet_id: walletId,
+        amount: args.amount,
+        occurred_on: args.occurred_on ?? todayLocalDate(),
+        note: args.note ?? null,
+        merchant: null,
+      });
+      return fromAction(result, result);
+    },
+  },
+
   update_transaction: {
     description:
-      "Change an expense or income. Only the fields you pass change; the rest keep their current values. Transfers can't be edited here.",
+      "Change an expense, income or repayment. Only the fields you pass change; the rest keep their current values. A repayment takes its category from its expense, so passing category_id for one is rejected. Moving a transaction to another wallet keeps its currency. Transfers can't be edited here.",
     input: updateInput,
     run: async (args: z.output<typeof updateInput>) => {
       // updateTransaction takes the whole editable row, so fill in whatever
@@ -219,13 +264,13 @@ export const TOOLS: Record<string, Tool> = {
         .select(TRANSACTION_COLUMNS)
         .eq("id", args.id)
         .maybeSingle();
-      return { ok: true, data: updated ? presentTransaction(updated) : { id: args.id } };
+      return { ok: true, data: updated ? presentTransaction(updated as unknown as PresentRow) : { id: args.id } };
     },
   },
 
   delete_transaction: {
     description:
-      "Delete a transaction. It can be brought back with restore_transaction. Deleting either leg of a transfer deletes both.",
+      "Delete a transaction. It can be brought back with restore_transaction. Deleting either leg of a transfer deletes both. An expense with repayments can't be deleted until its repayments are.",
     input: idInput,
     run: async (args: { id: string }) => fromAction(await softDeleteTransaction(args.id), { id: args.id, deleted: true }),
   },

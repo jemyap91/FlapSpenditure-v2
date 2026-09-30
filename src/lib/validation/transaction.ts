@@ -58,6 +58,9 @@ export function signedAmount(kind: TxnKind, positiveMinor: number): number {
       return -positiveMinor;
     case "income":
       return positiveMinor;
+    case "refund":
+      // A repayment is money coming back (0030's refund_shape: amount > 0).
+      return positiveMinor;
     case "transfer":
       throw new Error("transfers are signed by create_transfer, not signedAmount");
   }
@@ -75,7 +78,11 @@ export function signedAmount(kind: TxnKind, positiveMinor: number): number {
  * could silently drift from the real enum if a migration ever renames a
  * value.
  */
-export const nonTransferKind = z.enum(Constants.public.Enums.txn_kind).exclude(["transfer"]);
+// The kinds a person picks in the transaction form or a recurring rule.
+// "refund" is excluded as well as "transfer": a refund is only ever created
+// from its expense, by createRefund (src/server/actions/refunds.ts), because
+// it needs an expense to point at and takes its category from there.
+export const nonTransferKind = z.enum(Constants.public.Enums.txn_kind).exclude(["transfer", "refund"]);
 
 /**
  * Same shape `parseAmountInput` itself checks (src/lib/money.ts) — digits,
@@ -380,6 +387,22 @@ export const transferEditInput = z.object({
   note: editableText(280, "Note is too long"),
   merchant: editableText(120, "Merchant is too long"),
 });
+
+/**
+ * One repayment of one expense (spec 2026-09-30-refunds-design.md §4.1).
+ * No category: a refund counts under its expense's category, resolved by
+ * spend_lines, so there is nothing for the caller to choose or get wrong.
+ */
+export const refundInput = z.object({
+  refund_of: z.uuid(),
+  wallet_id: z.uuid("Choose a wallet"),
+  amount: amountField,
+  occurred_on: dateField,
+  note: editableText(280, "Note is too long"),
+  merchant: editableText(120, "Merchant is too long"),
+});
+
+export type RefundInput = z.infer<typeof refundInput>;
 
 export type TransactionEditInput = z.infer<typeof transactionEditInput>;
 export type TransferEditInput = z.infer<typeof transferEditInput>;

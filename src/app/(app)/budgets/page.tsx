@@ -165,7 +165,7 @@ export default async function BudgetsPage() {
         Budgets
       </h1>
       <p className="mb-1 text-sm" style={{ color: "var(--ink-2)" }}>
-        {monthLabel} · expenses only
+        {monthLabel} · expenses, less repayments
       </p>
       {/* Spec §5 (bold) and §9: a UI that does not say budgets can overlap
           reads as a bug, not a feature — the same expense can legitimately

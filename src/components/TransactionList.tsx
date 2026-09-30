@@ -32,7 +32,7 @@ import { UndoToast, type ToastState } from "./UndoToast";
  */
 export type Row = {
   id: string;
-  kind: "expense" | "income" | "transfer";
+  kind: "expense" | "income" | "transfer" | "refund";
   amount_minor: number;
   currency_code: string;
   occurred_on: string;
@@ -49,6 +49,10 @@ export type Row = {
    *  absent. */
   note: string | null;
   category_name: string | null;
+  /** For a refund: what it repaid — the expense's merchant or note
+   *  (`repaysLabel`, src/lib/refunds.ts). Absent/null for every other kind,
+   *  and for a refund whose expense the viewer cannot see. */
+  repays?: string | null;
   category_icon: string | null;
   color_slot: number | null;
   /** Who created this row (`transactions.created_by`, resolved to a display
@@ -116,7 +120,11 @@ function merchantOf(row: Row): string | null {
  *  the row markup below). */
 function rowLabel(row: Row): string {
   return (
-    merchantOf(row) ?? noteOf(row) ?? row.category_name ?? (row.kind === "transfer" ? "Transfer" : "Uncategorised")
+    merchantOf(row) ??
+    noteOf(row) ??
+    (row.kind === "refund" ? (row.repays ? `Repayment · ${row.repays}` : "Repayment") : null) ??
+    row.category_name ??
+    (row.kind === "transfer" ? "Transfer" : "Uncategorised")
   );
 }
 
@@ -129,7 +137,11 @@ function rowLabel(row: Row): string {
  */
 function toastSubject(row: Row): string {
   return (
-    merchantOf(row) ?? noteOf(row) ?? row.category_name ?? (row.kind === "transfer" ? "Transfer" : "Transaction")
+    merchantOf(row) ??
+    noteOf(row) ??
+    (row.kind === "refund" ? "Repayment" : null) ??
+    row.category_name ??
+    (row.kind === "transfer" ? "Transfer" : "Transaction")
   );
 }
 
@@ -494,6 +506,9 @@ export function TransactionList({
                           one. */}
                       <span className="block truncate text-xs" style={{ color: "var(--ink-2)" }}>
                         {[
+                          r.kind === "refund" && (merchantOf(r) || noteOf(r))
+                            ? r.repays ? `Repayment for ${r.repays}` : "Repayment"
+                            : null,
                           merchantOf(r) && noteOf(r) ? noteOf(r) : null,
                           (merchantOf(r) || noteOf(r)) && r.category_name ? r.category_name : null,
                           r.wallet_name,

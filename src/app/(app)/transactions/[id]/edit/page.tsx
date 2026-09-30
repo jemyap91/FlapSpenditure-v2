@@ -2,6 +2,9 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { TransactionForm, type EditSeed } from "@/components/TransactionForm";
 import type { Category } from "@/components/CategoryPicker";
+import { RepaymentsSection } from "./RepaymentsSection";
+import { RefundEditSection } from "./RefundEditSection";
+import { TransactionNotFound } from "./TransactionNotFound";
 import { formatAmountInput, formatMoney, minorUnitFor } from "@/lib/money";
 
 const uuid = z.uuid();
@@ -152,7 +155,7 @@ export default async function EditTransactionPage({
 
   type TxnRow = {
     id: string;
-    kind: "expense" | "income" | "transfer";
+    kind: "expense" | "income" | "transfer" | "refund";
     wallet_id: string;
     amount_minor: number;
     currency_code: string;
@@ -195,6 +198,25 @@ export default async function EditTransactionPage({
   const row = data as TxnRow | null;
   if (!row) {
     return <TransactionNotFound />;
+  }
+
+  // A refund has its own small editor: no category, no kind toggle, and a
+  // link back to the expense it repays (spec §4.3).
+  //
+  // Its wallet is checked first, like the expense path below: an archived
+  // wallet makes Save impossible, so the refund renders read-only instead.
+  if (row.kind === "refund") {
+    const { data: refundWallet, error: refundWalletError } = await supabase
+      .from("wallets")
+      .select("id, name, archived_at")
+      .eq("id", row.wallet_id)
+      .maybeSingle();
+    if (refundWalletError) throw new Error("Failed to load wallet");
+    if (!refundWallet) return <TransactionNotFound />;
+    if (refundWallet.archived_at) {
+      return <ArchivedWalletTransaction walletNames={[refundWallet.name]} row={row} />;
+    }
+    return <RefundEditSection id={row.id} />;
   }
 
   if (row.kind === "transfer") {
@@ -399,19 +421,19 @@ export default async function EditTransactionPage({
         from={from}
         suggestions={suggestions ?? []}
       />
+      {row.kind === "expense" && (
+        <RepaymentsSection
+          expenseId={row.id}
+          spaceId={wallet.space_id}
+          currencyCode={row.currency_code}
+          expenseMinor={row.amount_minor}
+          defaultWalletId={row.wallet_id}
+        />
+      )}
     </>
   );
 }
 
-/**
- * The SAME rendered output whether `id` doesn't exist, exists but isn't the
- * caller's, isn't even UUID-shaped, or names a soft-deleted row — collapsing
- * every one of those into one state is what keeps this from leaking which
- * of them actually happened, the identical binding rule
- * `/wallets/[id]/page.tsx`'s own `WalletNotFound` doc comment states (see
- * this file's own doc comment above for why `notFound()` isn't used here
- * either).
- */
 /**
  * Task 8, item 2: the read-only state for a transaction whose wallet has
  * been archived. See this file's doc comment for why this is a distinct
@@ -478,19 +500,6 @@ function ArchivedWalletTransaction({
           </div>
         )}
       </dl>
-    </div>
-  );
-}
-
-function TransactionNotFound() {
-  return (
-    <div className="mx-auto max-w-2xl p-6">
-      <h1 className="text-2xl font-semibold" style={{ color: "var(--ink)" }}>
-        Transaction not found
-      </h1>
-      <p className="mt-2 text-sm" style={{ color: "var(--ink-2)" }}>
-        This transaction doesn’t exist or you don’t have access to it.
-      </p>
     </div>
   );
 }

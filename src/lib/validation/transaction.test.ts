@@ -10,7 +10,15 @@
 // there, and the schema-level merchant cases below; nothing exercises
 // `transferInput` beyond `refusesMerchant` at the bottom of this file.
 import { describe, it, expect } from "vitest";
-import { transactionInput, transferInput, transactionEditInput, transferEditInput } from "./transaction";
+import {
+  transactionInput,
+  transferInput,
+  transactionEditInput,
+  transferEditInput,
+  refundInput,
+  nonTransferKind,
+  signedAmount,
+} from "./transaction";
 
 const baseEdit = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -254,5 +262,39 @@ describe("transferEditInput", () => {
     // message.
     const parsed = transferEditInput.parse({ ...baseTransferEdit, category_id: "x" } as never);
     expect(parsed).not.toHaveProperty("category_id");
+  });
+});
+
+describe("refunds", () => {
+  it("signs a refund positive", () => {
+    expect(signedAmount("refund", 500)).toBe(500);
+  });
+
+  it("does not let the create form or recurring rules pick refund", () => {
+    expect(nonTransferKind.safeParse("refund").success).toBe(false);
+    expect(nonTransferKind.safeParse("expense").success).toBe(true);
+  });
+
+  it("parses a repayment and blanks empty text to null", () => {
+    const parsed = refundInput.parse({
+      refund_of: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      wallet_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      amount: " 5.00 ",
+      occurred_on: "2026-10-02",
+      note: "  ",
+      merchant: null,
+    });
+    expect(parsed).toEqual({
+      refund_of: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      wallet_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      amount: "5.00",
+      occurred_on: "2026-10-02",
+      note: null,
+      merchant: null,
+    });
+  });
+
+  it("has no category field to fill", () => {
+    expect(Object.keys(refundInput.shape)).not.toContain("category_id");
   });
 });

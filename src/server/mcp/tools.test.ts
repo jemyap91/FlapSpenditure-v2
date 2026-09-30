@@ -5,6 +5,7 @@ vi.mock("server-only", () => ({}));
 
 const TXN_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const WALLET_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const EXPENSE_ID = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 const CATEGORY_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 
 const { actions, stored } = vi.hoisted(() => ({
@@ -13,6 +14,7 @@ const { actions, stored } = vi.hoisted(() => ({
     updateTransaction: vi.fn(),
     softDeleteTransaction: vi.fn(),
     restoreTransaction: vi.fn(),
+    createRefund: vi.fn(),
   },
   stored: {
     row: null as Record<string, unknown> | null,
@@ -20,6 +22,7 @@ const { actions, stored } = vi.hoisted(() => ({
 }));
 
 vi.mock("@/server/actions/transactions", () => actions);
+vi.mock("@/server/actions/refunds", () => ({ createRefund: actions.createRefund }));
 vi.mock("@/lib/today", () => ({ todayLocalDate: () => "2026-09-29" }));
 
 // A read-only fake: every query against `transactions` resolves to the one
@@ -29,7 +32,8 @@ vi.mock("@/lib/supabase/server", () => ({
   createClient: async () => ({
     from: () => {
       const builder: Record<string, unknown> = {};
-      for (const m of ["select", "eq", "is", "order", "limit", "gte", "lte", "or"]) builder[m] = () => builder;
+      for (const m of ["select", "eq", "is", "order", "limit", "gte", "lte", "or", "filter"]) builder[m] = () => builder;
+      builder.then = (r: (v: unknown) => void) => r({ data: stored.row ? [stored.row] : [], error: null });
       builder.maybeSingle = async () => ({ data: stored.row });
       return builder;
     },
@@ -150,6 +154,7 @@ describe("toolList", () => {
       "list_categories",
       "list_transactions",
       "create_transaction",
+      "record_repayment",
       "update_transaction",
       "delete_transaction",
       "restore_transaction",
@@ -160,5 +165,70 @@ describe("toolList", () => {
     }
     const update = tools.find((t) => t.name === "update_transaction")!;
     expect(update.inputSchema).toMatchObject({ required: ["id"] });
+  });
+});
+
+describe("record_repayment", () => {
+  it("defaults the wallet to the expense's and the date to today", async () => {
+    actions.createRefund.mockResolvedValue({ id: "r1" });
+    const result = await callTool("record_repayment", { expense_id: TXN_ID, amount: "5.00", note: "Alice" });
+    expect(actions.createRefund).toHaveBeenCalledWith({
+      refund_of: TXN_ID,
+      wallet_id: WALLET_ID,
+      amount: "5.00",
+      occurred_on: "2026-09-29",
+      note: "Alice",
+      merchant: null,
+    });
+    expect(result).toEqual({ ok: true, data: { id: "r1" } });
+  });
+
+  it("passes an explicit wallet through and surfaces the action's refusal", async () => {
+    actions.createRefund.mockResolvedValue({ error: "A repayment must be in the same currency as its expense." });
+    const other = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    const result = await callTool("record_repayment", { expense_id: TXN_ID, amount: "5.00", wallet_id: other });
+    expect(actions.createRefund.mock.calls[0]![0].wallet_id).toBe(other);
+    expect(result).toEqual({ ok: false, error: "A repayment must be in the same currency as its expense." });
+  });
+
+  it("says so when the expense can't be found", async () => {
+    stored.row = null;
+    const result = await callTool("record_repayment", { expense_id: TXN_ID, amount: "5.00" });
+    expect(result).toEqual({ ok: false, error: "Expense not found" });
+    expect(actions.createRefund).not.toHaveBeenCalled();
+  });
+});
+
+describe("refunds through the existing tools", () => {
+  it("edits a refund without inventing a category", async () => {
+    stored.row = { ...stored.row!, kind: "refund", amount_minor: 500, category_id: null, categories: null, refund_of: EXPENSE_ID };
+    actions.updateTransaction.mockResolvedValue({ ok: true });
+    await callTool("update_transaction", { id: TXN_ID, amount: "6.00" });
+    expect(actions.updateTransaction.mock.calls[0]![0].category_id).toBeNull();
+  });
+
+  it("lists refunds under the expense's category and says which expense they repay", async () => {
+    stored.row = {
+      ...stored.row!,
+      kind: "refund",
+      amount_minor: 500,
+      category_id: null,
+      categories: null,
+      refund_of: EXPENSE_ID,
+      repaid_expense: { category_id: CATEGORY_ID, categories: { name: "Eating out" } },
+    };
+    const listed = await callTool("list_transactions", { kind: "refund" });
+    expect(listed.ok).toBe(true);
+    const rows = (listed as { data: Record<string, unknown>[] }).data;
+    expect(rows[0]!.category).toEqual({ id: CATEGORY_ID, name: "Eating out" });
+    expect(rows[0]!.repays).toBe(EXPENSE_ID);
+    expect(toolList().find((t) => t.name === "record_repayment")).toBeDefined();
+  });
+
+  it("still presents an expense's own category and no repays", async () => {
+    const listed = await callTool("list_transactions", {});
+    const rows = (listed as { data: Record<string, unknown>[] }).data;
+    expect(rows[0]!.category).toEqual({ id: CATEGORY_ID, name: "Eating out" });
+    expect(rows[0]!.repays).toBeNull();
   });
 });

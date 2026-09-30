@@ -19,7 +19,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // `updateTransaction`'s real logic against a fake client rather than a
 // stand-in for the action itself.
 import { signedAmount, precisionError } from "@/lib/validation/transaction";
-import { createTransaction, updateTransaction, updateTransfer } from "./transactions";
+import {
+  createTransaction,
+  updateTransaction,
+  updateTransfer,
+  softDeleteTransaction,
+  restoreTransaction,
+} from "./transactions";
 
 const TXN_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const OWNER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -1407,5 +1413,39 @@ describe("updateTransaction — moving between wallets", () => {
       error:
         "That wallet isn't shared with everyone who can see this transaction, so moving it would hide it from them.",
     });
+  });
+});
+
+describe("refund rows", () => {
+  beforeEach(() => {
+    txnLookupResult.data = { wallet_id: WALLET_ID, kind: "refund", category_id: null, currency_code: "SGD", recurring_id: null };
+  });
+
+  it("refuses to give a refund a category", async () => {
+    const result = await updateTransaction(edit({ category_id: CATEGORY_ID }));
+    expect(result).toEqual({ error: "A repayment takes its category from the expense it repays." });
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("edits a refund's amount as a positive number", async () => {
+    updateResult.data = [{ id: TXN_ID }];
+    await updateTransaction(edit({ category_id: null, amount: "7.25" }));
+    const payload = updateSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.amount_minor).toBe(725);
+    expect(payload.category_id).toBeNull();
+  });
+});
+
+describe("deleting and restoring with repayments", () => {
+  it("explains why an expense with repayments cannot be deleted", async () => {
+    updateResult.data = null;
+    updateResult.error = { message: "this expense has repayments", code: "P0001" };
+    expect(await softDeleteTransaction(TXN_ID)).toEqual({ error: "This expense has repayments. Delete them first." });
+  });
+
+  it("explains why a repayment of a deleted expense cannot be restored", async () => {
+    updateResult.data = null;
+    updateResult.error = { message: "the repaid expense was deleted", code: "P0001" };
+    expect(await restoreTransaction(TXN_ID)).toEqual({ error: "The expense this repaid was deleted." });
   });
 });
