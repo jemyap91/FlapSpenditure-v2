@@ -16,6 +16,12 @@ export type HouseholdState = { error?: string; notice?: string };
 const idSchema = z.uuid();
 const idsSchema = z.array(z.uuid());
 
+// leave_space_impl (0032) refuses a leave that would separate a live
+// repayment from its expense. Same answer whoever is leaving.
+const SPLIT_REPAYMENTS = "repayments link wallets that would be split";
+const SPLIT_REPAYMENTS_COPY =
+  "Some repayments link these wallets to wallets that stay in the household. Delete those repayments first.";
+
 function plural(n: number, one: string, many: string) {
   return `${n} ${n === 1 ? one : many}`;
 }
@@ -123,6 +129,7 @@ export async function leaveHousehold(spaceId: string): Promise<HouseholdState> {
   const { data, error } = await supabase.rpc("leave_space", { p_space: space.data });
   if (error) {
     if (error.message === "the household owner cannot leave") return { error: "The household owner cannot leave." };
+    if (error.message === SPLIT_REPAYMENTS) return { error: SPLIT_REPAYMENTS_COPY };
     return { error: "Could not leave the household. Please try again." };
   }
   revalidatePath("/", "layout");
@@ -138,7 +145,10 @@ export async function removeHouseholdMember(spaceId: string, userId: string): Pr
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { error: "Not signed in" };
   const { data, error } = await supabase.rpc("remove_space_member", { p_space: space.data, p_user: target.data });
-  if (error) return { error: "Could not remove that person. Please try again." };
+  if (error) {
+    if (error.message === SPLIT_REPAYMENTS) return { error: SPLIT_REPAYMENTS_COPY };
+    return { error: "Could not remove that person. Please try again." };
+  }
   revalidatePath("/", "layout");
   return { notice: `Removed from the household. ${summarise(data as LeaveSummary[] | null, "them")}` };
 }

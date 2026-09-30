@@ -845,6 +845,7 @@ export type Database = {
       accept_space_invite: { Args: { p_invite: string }; Returns: undefined }
       accept_wallet_invite: { Args: { invite: string }; Returns: undefined }
       budget_visible: { Args: { b: string }; Returns: boolean }
+      count_hidden_repayments: { Args: { p_expense: string }; Returns: number }
       create_transfer: {
         Args: {
           amount_in: number

@@ -142,6 +142,16 @@ describe("leaveHousehold / removeHouseholdMember", () => {
     rpcResult.error = { message: "the household owner cannot leave" };
     expect(await leaveHousehold(SPACE)).toEqual({ error: "The household owner cannot leave." });
   });
+  it("maps a split-repayments refusal on both paths, and nothing else leaks", async () => {
+    const copy = "Some repayments link these wallets to wallets that stay in the household. Delete those repayments first.";
+    rpcResult.error = { code: "P0001", message: "repayments link wallets that would be split" };
+    expect(await leaveHousehold(SPACE)).toEqual({ error: copy });
+    expect(await removeHouseholdMember(SPACE, MATE)).toEqual({ error: copy });
+    rpcResult.error = { code: "P0001", message: "repayments link wallets that would be split!" };
+    expect(await leaveHousehold(SPACE)).toEqual({ error: "Could not leave the household. Please try again." });
+    expect(await removeHouseholdMember(SPACE, MATE)).toEqual({ error: "Could not remove that person. Please try again." });
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
   it("rejects malformed ids before any RPC", async () => {
     expect(await removeHouseholdMember("x", MATE)).toEqual({ error: "That household no longer exists." });
     expect(rpcCalls).toEqual([]);

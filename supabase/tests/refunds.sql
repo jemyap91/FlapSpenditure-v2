@@ -316,3 +316,134 @@ begin;
       'spend_lines leaked card rows to a non-member';
   end $$;
 commit;
+
+-- ── Household fixes (0032) ──────────────────────────────────────────────
+-- A repayment can link wallets that a leave would split: owner SO shares a
+-- wallet holding an expense, mate SM records a repayment of it into SM's
+-- own private wallet, then SM leaves (taking only SM's wallet).
+insert into auth.users (id, email) values
+  ('f8000000-0000-4000-8000-000000000001', 'refund-so@x.io'),
+  ('f8000000-0000-4000-8000-000000000002', 'refund-sm@x.io');
+insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon) values
+  ('f9000000-0000-4000-8000-0000000000aa', 'f8000000-0000-4000-8000-000000000001', 'SO shared', 'bank', 'USD', 1, 'landmark');
+insert into space_members (space_id, user_id, role)
+values ((select space_id from wallets where id = 'f9000000-0000-4000-8000-0000000000aa'),
+        'f8000000-0000-4000-8000-000000000002', 'member');
+begin;
+  set local request.jwt.claims = '{"sub":"f8000000-0000-4000-8000-000000000001"}';
+  select set_wallet_sharing('f9000000-0000-4000-8000-0000000000aa', true, array[]::uuid[]);
+commit;
+insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon) values
+  ('f9000000-0000-4000-8000-0000000000b1', 'f8000000-0000-4000-8000-000000000002', 'SM private', 'card', 'USD', 2, 'credit-card');
+-- Expense SX in the shared wallet; live repayment SRL and soft-deleted
+-- repayment SRD, both in SM's private wallet.
+insert into transactions (id, wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on) values
+  ('fa000000-0000-4000-8000-000000000001', 'f9000000-0000-4000-8000-0000000000aa',
+   'f8000000-0000-4000-8000-000000000001', 'expense', -1200, 'USD',
+   (select id from categories where name = 'Groceries'
+      and space_id = (select space_id from wallets where id = 'f9000000-0000-4000-8000-0000000000aa')),
+   '2026-09-30');
+insert into transactions (id, wallet_id, created_by, kind, amount_minor, currency_code, refund_of, occurred_on) values
+  ('fa000000-0000-4000-8000-000000000002', 'f9000000-0000-4000-8000-0000000000b1',
+   'f8000000-0000-4000-8000-000000000002', 'refund', 300, 'USD', 'fa000000-0000-4000-8000-000000000001', '2026-10-01'),
+  ('fa000000-0000-4000-8000-000000000003', 'f9000000-0000-4000-8000-0000000000b1',
+   'f8000000-0000-4000-8000-000000000002', 'refund', 200, 'USD', 'fa000000-0000-4000-8000-000000000001', '2026-10-01');
+update transactions set deleted_at = now() where id = 'fa000000-0000-4000-8000-000000000003';
+
+-- count_hidden_repayments: SO (member of the expense's wallet, not of SM's
+-- private one) is told about the one live repayment; the soft-deleted one
+-- does not count. A (not a member of the expense's wallet) learns nothing.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"f8000000-0000-4000-8000-000000000001"}';
+  do $$ begin
+    assert public.count_hidden_repayments('fa000000-0000-4000-8000-000000000001') = 1,
+      'HIDDEN: expense wallet member should be told of 1 repayment they cannot see';
+  end $$;
+commit;
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"f0000000-0000-4000-8000-00000000000a"}';
+  do $$ begin
+    assert public.count_hidden_repayments('fa000000-0000-4000-8000-000000000001') = 0,
+      'HIDDEN: a non-member of the expense wallet must get 0';
+  end $$;
+commit;
+
+-- (ii) A LIVE repayment crossing the split refuses the leave, and nothing moves.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"f8000000-0000-4000-8000-000000000002","email":"refund-sm@x.io"}';
+  select pg_temp.expect_reject($s$
+    select public.leave_space((select space_id from public.wallets where id = 'f9000000-0000-4000-8000-0000000000aa'))$s$,
+    'P0001', 'repayments link wallets that would be split');
+commit;
+do $$ begin
+  assert (select space_id from wallets where id = 'f9000000-0000-4000-8000-0000000000b1')
+       = (select space_id from wallets where id = 'f9000000-0000-4000-8000-0000000000aa'),
+    'SPLIT live: the private wallet moved although the leave was refused';
+  assert (select count(*) from transactions where id in ('fa000000-0000-4000-8000-000000000002',
+                                                         'fa000000-0000-4000-8000-000000000003')) = 2,
+    'SPLIT live: a refused leave deleted repayments';
+  assert exists (select 1 from space_members
+                  where user_id = 'f8000000-0000-4000-8000-000000000002'
+                    and space_id = (select space_id from wallets where id = 'f9000000-0000-4000-8000-0000000000aa')),
+    'SPLIT live: SM left although the leave was refused';
+end $$;
+
+-- (i) With only soft-deleted repayments crossing, the leave succeeds and
+-- those rows are hard-deleted (nothing else can ever unblock the link).
+update transactions set deleted_at = now() where id = 'fa000000-0000-4000-8000-000000000002';
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"f8000000-0000-4000-8000-000000000002","email":"refund-sm@x.io"}';
+  select public.leave_space((select space_id from public.wallets where id = 'f9000000-0000-4000-8000-0000000000aa'));
+commit;
+do $$ begin
+  assert (select space_id from wallets where id = 'f9000000-0000-4000-8000-0000000000b1')
+      <> (select space_id from wallets where id = 'f9000000-0000-4000-8000-0000000000aa'),
+    'SPLIT deleted: the private wallet did not move';
+  assert (select count(*) from transactions where id in ('fa000000-0000-4000-8000-000000000002',
+                                                         'fa000000-0000-4000-8000-000000000003')) = 0,
+    'SPLIT deleted: soft-deleted crossing repayments were not removed';
+  assert (select space_id from transactions where id = 'fa000000-0000-4000-8000-000000000001')
+       = (select space_id from wallets where id = 'f9000000-0000-4000-8000-0000000000aa'),
+    'SPLIT deleted: the expense left the household with the mate';
+end $$;
+
+-- get_entry_suggestions offers expense and income notes, never a refund's.
+insert into transactions (wallet_id, created_by, kind, amount_minor, currency_code, category_id, note, occurred_on) values
+  ('f1000000-0000-4000-8000-000000000001', 'f0000000-0000-4000-8000-00000000000a', 'expense', -100, 'USD',
+   'f2000000-0000-4000-8000-000000000001', 'Refund Test Expense Note', current_date);
+insert into transactions (wallet_id, created_by, kind, amount_minor, currency_code, refund_of, note, occurred_on) values
+  ('f1000000-0000-4000-8000-000000000002', 'f0000000-0000-4000-8000-00000000000a', 'refund', 100, 'USD',
+   'f3000000-0000-4000-8000-000000000001', 'Refund Test Repayment Note', current_date);
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"f0000000-0000-4000-8000-00000000000a"}';
+  do $$ begin
+    assert exists (select 1 from get_entry_suggestions() where note = 'Refund Test Expense Note'),
+      'SUGGEST: an expense note should be suggested';
+    assert not exists (select 1 from get_entry_suggestions() where note = 'Refund Test Repayment Note'),
+      'SUGGEST: a repayment note leaked into suggestions';
+  end $$;
+commit;
+
+-- spend_lines' refund branch only follows links to an expense. The guard
+-- trigger makes a non-expense parent unreachable through the app, so it is
+-- disabled inside a rolled-back transaction to build one.
+insert into transactions (id, wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on) values
+  ('fb000000-0000-4000-8000-000000000001', 'f1000000-0000-4000-8000-000000000001',
+   'f0000000-0000-4000-8000-00000000000a', 'expense', -700, 'USD', 'f2000000-0000-4000-8000-000000000002', '2026-09-20');
+insert into transactions (id, wallet_id, created_by, kind, amount_minor, currency_code, refund_of, occurred_on) values
+  ('fb000000-0000-4000-8000-000000000002', 'f1000000-0000-4000-8000-000000000002',
+   'f0000000-0000-4000-8000-00000000000a', 'refund', 200, 'USD', 'fb000000-0000-4000-8000-000000000001', '2026-09-21');
+begin;
+  alter table transactions disable trigger transactions_guard_refunded_expense;
+  update transactions set kind = 'income', amount_minor = 700, category_id = null
+   where id = 'fb000000-0000-4000-8000-000000000001';
+  do $$ begin
+    assert (select count(*) from spend_lines where transaction_id = 'fb000000-0000-4000-8000-000000000002') = 0,
+      'SPEND: a refund whose parent is not an expense still counted as spend';
+  end $$;
+rollback;
