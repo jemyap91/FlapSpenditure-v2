@@ -56,7 +56,7 @@ the change is two files:
 alter table transactions add column refund_of uuid;
 alter table transactions add constraint transactions_id_space_unique unique (id, space_id);
 alter table transactions add constraint transactions_refund_same_space
-  foreign key (refund_of, space_id) references transactions (id, space_id) on delete restrict;
+  foreign key (refund_of, space_id) references transactions (id, space_id);
 create index transactions_refund_of on transactions (refund_of) where refund_of is not null;
 
 alter table transactions add constraint refund_shape check (
@@ -65,6 +65,11 @@ alter table transactions add constraint refund_shape check (
 alter table transactions add constraint non_refund_no_link check (
   kind = 'refund' or refund_of is null);
 ```
+
+`NO ACTION`, not `RESTRICT`: `RESTRICT` is checked immediately, so deleting an
+account (which cascades through its wallets) would fail whenever an expense
+and its refund go in the same statement. `NO ACTION` is checked at statement
+end and still refuses a delete that would leave a refund behind.
 
 The composite FK means a refund can only point at an expense in its own
 household — the same `*_same_space` pattern 0022 uses for wallets and
