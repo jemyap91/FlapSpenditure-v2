@@ -243,3 +243,76 @@ do $$ begin
 end $$;
 
 -- (Task 2 appends the report assertions below this line.)
+
+-- ── Reports (Task 2) ────────────────────────────────────────────────────
+-- A fully repaid expense in Groceries on the card: -10.00 and +10.00 back.
+insert into transactions (id, wallet_id, created_by, kind, amount_minor, currency_code, category_id, occurred_on) values
+  ('f3000000-0000-4000-8000-000000000005', 'f1000000-0000-4000-8000-000000000001',
+   'f0000000-0000-4000-8000-00000000000a', 'expense', -1000, 'USD',
+   'f2000000-0000-4000-8000-000000000002', '2026-09-15');
+insert into transactions (wallet_id, created_by, kind, amount_minor, currency_code, refund_of, occurred_on) values
+  ('f1000000-0000-4000-8000-000000000002', 'f0000000-0000-4000-8000-00000000000a', 'refund', 1000, 'USD',
+   'f3000000-0000-4000-8000-000000000005', '2026-10-05');
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"f0000000-0000-4000-8000-00000000000a"}';
+  -- A card-only budget for Eating, September.
+  select set_budget('f2000000-0000-4000-8000-000000000001', '2026-09-01', 5000,
+                    array['f1000000-0000-4000-8000-000000000001']::uuid[]);
+  do $$
+  declare n int; v bigint;
+  begin
+    -- Card, September: Eating nets 25.00 - 20.00 = 5.00; Groceries nets 0 and drops out.
+    select count(*) into n from get_category_breakdown(
+      array['f1000000-0000-4000-8000-000000000001']::uuid[], '2026-09-01', '2026-09-30');
+    assert n = 1, format('breakdown: expected only Eating (Groceries fully repaid), got %s rows', n);
+    select total_minor into v from get_category_breakdown(
+      array['f1000000-0000-4000-8000-000000000001']::uuid[], '2026-09-01', '2026-09-30');
+    assert v = 500, format('breakdown: Eating should net 500 after four repayments, got %s', v);
+
+    -- Bank, October: the refunds are attributed to the card and September, so nothing here.
+    select count(*) into n from get_category_breakdown(
+      array['f1000000-0000-4000-8000-000000000002']::uuid[], '2026-10-01', '2026-10-31');
+    assert n = 0, format('breakdown: refunds leaked into the bank wallet / October, got %s rows', n);
+
+    -- Budget scoped to the card sees repayments that landed in the bank.
+    select spent_minor into v from get_budget_status('2026-09-01', '2026-09-30')
+     where category_id = 'f2000000-0000-4000-8000-000000000001' and budget_id is not null;
+    assert v = 500, format('budget: Eating on card should have spent 500, got %s', v);
+
+    -- Money lens unchanged: bank balance = 100.00 income + 20.00 + 10.00 refunds.
+    select balance_minor into v from get_wallet_balances()
+     where wallet_id = 'f1000000-0000-4000-8000-000000000002';
+    assert v = 13000, format('balance: bank should be 13000, got %s', v);
+  end $$;
+commit;
+
+-- Over-repaid: a budget's spent never goes below zero.
+insert into transactions (wallet_id, created_by, kind, amount_minor, currency_code, refund_of, occurred_on) values
+  ('f1000000-0000-4000-8000-000000000002', 'f0000000-0000-4000-8000-00000000000a', 'refund', 900, 'USD',
+   'f3000000-0000-4000-8000-000000000001', '2026-10-06');
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"f0000000-0000-4000-8000-00000000000a"}';
+  do $$
+  declare v bigint; n int;
+  begin
+    select spent_minor into v from get_budget_status('2026-09-01', '2026-09-30')
+     where category_id = 'f2000000-0000-4000-8000-000000000001' and budget_id is not null;
+    assert v = 0, format('budget: over-repaid Eating should clamp to 0, got %s', v);
+    select count(*) into n from get_category_breakdown(
+      array['f1000000-0000-4000-8000-000000000001']::uuid[], '2026-09-01', '2026-09-30');
+    assert n = 0, format('breakdown: over-repaid Eating should drop out, got %s rows', n);
+  end $$;
+commit;
+
+-- spend_lines follows RLS for a direct reader: C sees none of A's card spend.
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"f0000000-0000-4000-8000-00000000000c"}';
+  do $$ begin
+    assert (select count(*) from spend_lines where wallet_id = 'f1000000-0000-4000-8000-000000000001') = 0,
+      'spend_lines leaked card rows to a non-member';
+  end $$;
+commit;
