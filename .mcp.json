@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "flapspenditure": {
+      "type": "http",
+      "url": "${FLAP_MCP_URL}",
+      "headers": {
+        "Authorization": "Bearer ${FLAP_TOKEN}"
+      }
+    }
+  }
+}
