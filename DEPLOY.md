@@ -416,6 +416,20 @@ claude mcp add --transport http flapspenditure https://<your-domain>/api/mcp \
 
 `/api-access` shows this command with the real URL and token filled in.
 
+**Claude Code on the web (cloud sessions)** can't see a server added that way,
+since it lives in `~/.claude.json` on your own machine. The committed
+`.mcp.json` declares the same server with both values taken from the
+environment, so neither the token nor the domain is in the repo. In the cloud
+environment's settings:
+
+- set `FLAP_MCP_URL=https://<your-domain>/api/mcp`
+- set `FLAP_TOKEN=flap_…` (a token created on `/api-access`; revoke it there
+  if it leaks)
+- allow `<your-domain>` under network access
+
+Locally, a server you added with `claude mcp add` under the same name takes
+precedence over `.mcp.json`, so it keeps working without those variables.
+
 ### Which key
 
 Newer Supabase projects issue a `sb_publishable_…` key alongside the legacy
