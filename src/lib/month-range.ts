@@ -48,9 +48,20 @@ import { appTimeZone, calendarDateIn } from "./app-timezone";
  * no TZ override) rather than only on a developer's own UTC+ machine.
  */
 export function monthRange(now = new Date()): { from: string; to: string } {
-  const pad = (n: number) => String(n).padStart(2, "0");
   // `YYYY-MM` of the app-zone calendar date; the day-of-month is irrelevant.
-  const [y, m] = calendarDateIn(now, appTimeZone()).split("-").map(Number) as [number, number];
+  return monthRangeOf(calendarDateIn(now, appTimeZone()).slice(0, 7));
+}
+
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/**
+ * The whole of one `YYYY-MM` month, inclusive both ends -- the same shape
+ * `monthRange()` returns, for a month the caller names (the dashboard's
+ * `?month=`). Same rule as above: plain numbers in, interpolated strings
+ * out, no local `Date` for a UTC+ offset to shift.
+ */
+export function monthRangeOf(month: string): { from: string; to: string } {
+  const [y, m] = month.split("-").map(Number) as [number, number];
   // Day 0 of the NEXT month is the last day of this one. Built and read in
   // UTC on purpose: `Date.UTC` + `getUTCDate` is a pure calendar
   // computation with no zone in play at all, so it cannot be shifted by
@@ -60,4 +71,23 @@ export function monthRange(now = new Date()): { from: string; to: string } {
     from: `${y}-${pad(m)}-01`,
     to: `${y}-${pad(m)}-${pad(lastDay)}`,
   };
+}
+
+/** `month` moved by `delta` months, as `YYYY-MM` (December + 1 = next January). */
+export function shiftMonth(month: string, delta: number): string {
+  const [y, m] = month.split("-").map(Number) as [number, number];
+  const index = y * 12 + (m - 1) + delta;
+  return `${Math.floor(index / 12)}-${pad((index % 12) + 1)}`;
+}
+
+/**
+ * A `?month=` value, or undefined when it isn't a real `YYYY-MM`. Lenient
+ * like `parseTransactionFilters`: a mistyped URL shows the current month,
+ * never an error page.
+ */
+export function parseMonthParam(value: string | string[] | undefined): string | undefined {
+  const v = Array.isArray(value) ? value[0] : value;
+  if (!v || !/^\d{4}-\d{2}$/.test(v)) return undefined;
+  const m = Number(v.slice(5, 7));
+  return m >= 1 && m <= 12 ? v : undefined;
 }

@@ -1,15 +1,29 @@
+import Link from "next/link";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { CategoryBreakdown, type BreakdownRow } from "@/components/CategoryBreakdown";
 import { CashFlow, type FlowRow } from "@/components/CashFlow";
 import { BudgetSummary } from "@/components/BudgetSummary";
 import { DueList } from "@/components/DueList";
 import { formatMoney } from "@/lib/money";
-import { monthRange } from "@/lib/month-range";
+import { monthRange, monthRangeOf, parseMonthParam, shiftMonth } from "@/lib/month-range";
 import { todayLocalDate } from "@/lib/today";
 import { MONTH_NAME } from "@/lib/month-names";
 import type { BudgetStatusRow } from "@/lib/budget-status";
 import { buildDueRows, type DueRuleInput, type HandledOccurrence } from "./due-rows";
 import { lookbackFloor, type RecurInterval } from "@/lib/recurrence";
+
+const LINK_CLASS =
+  "rounded-sm text-sm underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+const ARROW_CLASS =
+  "inline-flex h-8 w-8 items-center justify-center rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+
+const monthName = (month: string) =>
+  `${MONTH_NAME[Number(month.slice(5, 7)) - 1]} ${month.slice(0, 4)}`;
+/** The current month is the plain `/`, so "back to now" is a clean URL. */
+const monthHref = (month: string, current: string) => (month === current ? "/" : `/?month=${month}`);
+
+type SearchParams = Record<string, string | string[] | undefined>;
 
 /**
  * Task 21's dashboard — the first thing a returning user sees. Replaces
@@ -24,10 +38,24 @@ import { lookbackFloor, type RecurInterval } from "@/lib/recurrence";
  * implementation rather than drifting apart. See that module's doc comment
  * for the timezone rationale (a REVIEW-CAUGHT bug where building the range
  * via `Date.toISOString()` silently shifted it by a day in UTC+ timezones).
+ *
+ * `?month=YYYY-MM` shows that month instead of the current one. A month
+ * after the current one is clamped back to it: nothing can have been
+ * spent there yet, and the budgets RPC would happily report next month's
+ * caps as untouched. `searchParams` is optional so tests can render the
+ * page bare, which is the current month.
  */
-export default async function DashboardPage() {
+export default async function DashboardPage(props: { searchParams?: Promise<SearchParams> } = {}) {
   const supabase = await createClient();
-  const { from, to } = monthRange();
+  const currentMonth = monthRange().from.slice(0, 7);
+  const requested = parseMonthParam((await props.searchParams)?.month);
+  const month = requested && requested < currentMonth ? requested : currentMonth;
+  const isCurrentMonth = month === currentMonth;
+  const { from, to } = monthRangeOf(month);
+  const monthLabel = monthName(month);
+  const periodLabel = isCurrentMonth ? "this month" : `in ${monthLabel}`;
+  const prevMonth = shiftMonth(month, -1);
+  const nextMonth = shiftMonth(month, 1);
 
   // `created_at` ascending so "the first wallet this user set up" is a
   // deterministic pick, not whatever order Postgres happens to return.
@@ -318,11 +346,12 @@ export default async function DashboardPage() {
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-8 p-6">
-      {/* Above the hero total (this task's brief), and rendered
-          unconditionally: `DueList` itself renders nothing at all when
-          `dueRows` is empty, which is most opens of this dashboard -- there
-          is no wrapping empty state to add or omit here. */}
-      <DueList rows={dueRows} olderDropped={dueOlderDropped} today={today} />
+      {/* Above the hero total (this task's brief). Shown on the current
+          month only -- what's due is about today, not a month being looked
+          back on. `DueList` itself renders nothing at all when `dueRows` is
+          empty, which is most opens of this dashboard -- there is no
+          wrapping empty state to add or omit here. */}
+      {isCurrentMonth && <DueList rows={dueRows} olderDropped={dueOlderDropped} today={today} />}
       <header>
         {/* An `<h1>`, not a `<p>`: this page had no level-one heading at
             all, so its first heading was CategoryBreakdown's `<h2>` and
@@ -332,18 +361,35 @@ export default async function DashboardPage() {
             Promoting the month rather than adding a hidden title keeps the
             heading something a sighted user can actually see, and the
             month IS what this dashboard is scoped to — every figure below
-            is "this month". Tag only; the classes are unchanged, so
-            nothing moves. */}
-        <h1
-          className="text-sm font-medium uppercase tracking-wide"
-          style={{ color: "var(--ink-2)" }}
-        >
-          {/* Derived from `from` (the window actually queried), the same
-              way budgets/page.tsx labels its month — never a second read of
-              the clock, which on Vercel (UTC) could name a different month
-              from the one `monthRange()` resolved in the app's own zone. */}
-          {`${MONTH_NAME[Number(from.slice(5, 7)) - 1]} ${from.slice(0, 4)}`}
-        </h1>
+            is for that month. */}
+        {/* Month navigation sits around the heading it changes. "Next" is
+            left out on the current month rather than disabled: there is no
+            later month to show (see the clamp above). */}
+        <div className="-ml-2 flex items-center gap-1" style={{ color: "var(--ink-2)" }}>
+          <Link
+            href={monthHref(prevMonth, currentMonth)}
+            className={ARROW_CLASS}
+            aria-label={`Previous month, ${monthName(prevMonth)}`}
+          >
+            <ChevronLeft size={18} aria-hidden />
+          </Link>
+          <h1 className="text-sm font-medium uppercase tracking-wide">
+            {/* Derived from the month actually queried, never a second
+                read of the clock, which on Vercel (UTC) could name a
+                different month from the one `monthRange()` resolved in
+                the app's own zone. */}
+            {monthLabel}
+          </h1>
+          {!isCurrentMonth && (
+            <Link
+              href={monthHref(nextMonth, currentMonth)}
+              className={ARROW_CLASS}
+              aria-label={`Next month, ${monthName(nextMonth)}`}
+            >
+              <ChevronRight size={18} aria-hidden />
+            </Link>
+          )}
+        </div>
         {/* Hero figure: >=48px, system sans, proportional figures (§6.4).
             `total_minor` here is a SUM of already-positive per-category
             magnitudes (get_category_breakdown's own `sum(-t.amount_minor)`),
@@ -360,11 +406,26 @@ export default async function DashboardPage() {
             currency — the common case, and the only case the un-qualified
             text was ever accurate for. */}
         <p className="text-sm" style={{ color: "var(--ink-2)" }}>
-          spent this month{hasExcludedWallets ? ` · ${currency} wallets` : ""}
+          spent {periodLabel}{hasExcludedWallets ? ` · ${currency} wallets` : ""}
+        </p>
+        <p className="mt-2 flex gap-4" style={{ color: "var(--ink-2)" }}>
+          <Link href={`/transactions?from=${from}&to=${to}`} className={LINK_CLASS}>
+            {isCurrentMonth ? "This month's transactions" : `Transactions in ${monthLabel}`}
+          </Link>
+          {!isCurrentMonth && (
+            <Link href="/" className={LINK_CLASS}>
+              Back to this month
+            </Link>
+          )}
         </p>
       </header>
-      <CategoryBreakdown rows={rows} currencyCode={currency} total={spent} />
-      <CashFlow rows={flowRows} currencyCode={currency} hasExcludedWallets={hasExcludedWallets} />
+      <CategoryBreakdown rows={rows} currencyCode={currency} total={spent} periodLabel={periodLabel} />
+      <CashFlow
+        rows={flowRows}
+        currencyCode={currency}
+        hasExcludedWallets={hasExcludedWallets}
+        periodLabel={periodLabel}
+      />
       <BudgetSummary rows={budgetRows} currencyCode={currency} walletCount={walletIds.length} />
     </div>
   );

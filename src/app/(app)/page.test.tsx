@@ -32,7 +32,8 @@ vi.mock("@/server/actions/categories", () => ({
   createCategory: vi.fn(),
 }));
 
-const { walletsData, rulesData, skipsData, transactionsData } = vi.hoisted(() => ({
+const { walletsData, rulesData, skipsData, transactionsData, rpcCalls } = vi.hoisted(() => ({
+  rpcCalls: [] as { name: string; args: Record<string, unknown> }[],
   walletsData: [] as { id: string; currency_code: string; created_at: string }[],
   rulesData: [] as Record<string, unknown>[],
   skipsData: [] as { rule_id: string; occurrence_on: string }[],
@@ -46,7 +47,8 @@ const { walletsData, rulesData, skipsData, transactionsData } = vi.hoisted(() =>
 
 vi.mock("@/lib/supabase/server", () => ({
   createClient: async () => ({
-    rpc: async (name: string) => {
+    rpc: async (name: string, args: Record<string, unknown>) => {
+      rpcCalls.push({ name, args });
       // Every RPC this page calls (`get_category_breakdown`,
       // `get_cash_flow`, `get_budget_status`) is irrelevant to the due-list
       // question this file tests — a quiet, error-free empty result for all
@@ -159,6 +161,7 @@ beforeEach(() => {
   rulesData.length = 0;
   skipsData.length = 0;
   transactionsData.length = 0;
+  rpcCalls.length = 0;
 
   walletsData.push({ id: WALLET_ID, currency_code: "SGD", created_at: "2026-01-01T00:00:00Z" });
   rulesData.push({
@@ -230,5 +233,66 @@ describe("DashboardPage — due list (I8: a deleted transaction returns its occu
     render(ui);
 
     expect(screen.queryByRole("button", { name: "Record Rent for 1 Sep" })).not.toBeInTheDocument();
+  });
+});
+
+describe("DashboardPage — viewing another month (?month=)", () => {
+  const render_ = async (month?: string) =>
+    render(await DashboardPage({ searchParams: Promise.resolve(month ? { month } : {}) }));
+
+  it("queries and labels the requested earlier month", async () => {
+    await render_("2026-08");
+
+    expect(screen.getByRole("heading", { level: 1, name: "August 2026" })).toBeInTheDocument();
+    for (const name of ["get_category_breakdown", "get_cash_flow", "get_budget_status"]) {
+      expect(rpcCalls.find((c) => c.name === name)?.args).toMatchObject({
+        from_date: "2026-08-01",
+        to_date: "2026-08-31",
+      });
+    }
+    expect(screen.getByText("spent in August 2026")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Transactions in August 2026" })).toHaveAttribute(
+      "href",
+      "/transactions?from=2026-08-01&to=2026-08-31",
+    );
+  });
+
+  it("links back and forth, with the current month as the plain /", async () => {
+    await render_("2026-08");
+
+    expect(screen.getByRole("link", { name: "Previous month, July 2026" })).toHaveAttribute(
+      "href",
+      "/?month=2026-07",
+    );
+    expect(screen.getByRole("link", { name: "Next month, September 2026" })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("link", { name: "Back to this month" })).toHaveAttribute("href", "/");
+  });
+
+  it("hides what's due when looking back, since that is about today", async () => {
+    await render_("2026-08");
+
+    expect(screen.queryByRole("button", { name: "Record Rent for 1 Sep" })).not.toBeInTheDocument();
+  });
+
+  it("shows the current month with no next link by default", async () => {
+    await render_();
+
+    expect(screen.getByRole("heading", { level: 1, name: "September 2026" })).toBeInTheDocument();
+    expect(screen.getByText("spent this month")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Previous month, August 2026" })).toHaveAttribute(
+      "href",
+      "/?month=2026-08",
+    );
+    expect(screen.queryByRole("link", { name: /^Next month/ })).not.toBeInTheDocument();
+  });
+
+  it("clamps a future or malformed month to the current one", async () => {
+    for (const month of ["2026-10", "2026-13", "nope"]) {
+      rpcCalls.length = 0;
+      const { unmount } = await render_(month);
+      expect(screen.getByRole("heading", { level: 1, name: "September 2026" })).toBeInTheDocument();
+      expect(rpcCalls.find((c) => c.name === "get_cash_flow")?.args).toMatchObject({ from_date: "2026-09-01" });
+      unmount();
+    }
   });
 });
