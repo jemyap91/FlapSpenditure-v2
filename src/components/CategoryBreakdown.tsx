@@ -125,6 +125,7 @@ export function CategoryBreakdown({
   rows,
   currencyCode,
   total,
+  periodLabel = "this month",
 }: {
   rows: BreakdownRow[];
   currencyCode: string;
@@ -134,11 +135,14 @@ export function CategoryBreakdown({
    * ever agree by construction, never by a guarantee (review-caught); a
    * single source of truth means the hero and this bar cannot disagree. */
   total: number;
+  /** Ends the empty state: "this month", or "in August 2026" when the
+   * dashboard is showing an earlier month. */
+  periodLabel?: string;
 }) {
   if (!rows.length) {
     return (
       <p className="text-sm" style={{ color: "var(--ink-2)" }}>
-        No spending recorded this month.
+        No spending recorded {periodLabel}.
       </p>
     );
   }

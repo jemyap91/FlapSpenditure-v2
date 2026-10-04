@@ -70,6 +70,7 @@ export function CashFlow({
   rows,
   currencyCode,
   hasExcludedWallets = false,
+  periodLabel = "this month",
 }: {
   rows: FlowRow[];
   currencyCode: string;
@@ -84,11 +85,13 @@ export function CashFlow({
    * `false`) so existing callers/tests that don't pass it still compile.
    */
   hasExcludedWallets?: boolean;
+  /** Ends the empty state, as in CategoryBreakdown. */
+  periodLabel?: string;
 }) {
   if (!rows.length) {
     return (
       <p className="text-sm" style={{ color: "var(--ink-2)" }}>
-        No cash flow recorded this month.
+        No cash flow recorded {periodLabel}.
       </p>
     );
   }
