@@ -15,9 +15,14 @@ const { actions, stored } = vi.hoisted(() => ({
     softDeleteTransaction: vi.fn(),
     restoreTransaction: vi.fn(),
     createRefund: vi.fn(),
+    createTransfer: vi.fn(),
+    updateTransfer: vi.fn(),
   },
   stored: {
     row: null as Record<string, unknown> | null,
+    // What an array query (no maybeSingle) returns, when a test needs more
+    // than the one stored row -- a transfer's two legs.
+    list: null as Record<string, unknown>[] | null,
   },
 }));
 
@@ -33,7 +38,8 @@ vi.mock("@/lib/supabase/server", () => ({
     from: () => {
       const builder: Record<string, unknown> = {};
       for (const m of ["select", "eq", "is", "order", "limit", "gte", "lte", "or", "filter"]) builder[m] = () => builder;
-      builder.then = (r: (v: unknown) => void) => r({ data: stored.row ? [stored.row] : [], error: null });
+      builder.then = (r: (v: unknown) => void) =>
+        r({ data: stored.list ?? (stored.row ? [stored.row] : []), error: null });
       builder.maybeSingle = async () => ({ data: stored.row });
       return builder;
     },
@@ -44,6 +50,7 @@ import { callTool, toolList } from "./tools";
 
 beforeEach(() => {
   Object.values(actions).forEach((fn) => fn.mockReset());
+  stored.list = null;
   stored.row = {
     id: TXN_ID,
     kind: "expense",
@@ -177,7 +184,9 @@ describe("toolList", () => {
       "list_transactions",
       "create_transaction",
       "record_repayment",
+      "record_transfer",
       "update_transaction",
+      "update_transfer",
       "delete_transaction",
       "restore_transaction",
     ]);
@@ -259,5 +268,113 @@ describe("refunds through the existing tools", () => {
     const rows = (listed as { data: Record<string, unknown>[] }).data;
     expect(rows[0]!.category).toEqual({ id: CATEGORY_ID, name: "Eating out" });
     expect(rows[0]!.repays).toBeNull();
+  });
+});
+
+const OTHER_WALLET_ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+const TRANSFER_ID = "99999999-9999-4999-8999-999999999999";
+
+/** A same-currency transfer: 50.00 out of Main, 50.00 into Savings. */
+function transferLegs(over: { inMinor?: number; inCurrency?: string } = {}) {
+  stored.row = { id: TXN_ID, kind: "transfer", transfer_id: TRANSFER_ID };
+  stored.list = [
+    { wallet_id: WALLET_ID, amount_minor: -5000, currency_code: "SGD", occurred_on: "2026-09-20", note: "top up", merchant: null },
+    {
+      wallet_id: OTHER_WALLET_ID,
+      amount_minor: over.inMinor ?? 5000,
+      currency_code: over.inCurrency ?? "SGD",
+      occurred_on: "2026-09-20",
+      note: "top up",
+      merchant: null,
+    },
+  ];
+}
+
+describe("record_transfer", () => {
+  it("moves money between two wallets, dated today by default", async () => {
+    actions.createTransfer.mockResolvedValue({ transferId: TRANSFER_ID });
+    const result = await callTool("record_transfer", {
+      from_wallet_id: WALLET_ID,
+      to_wallet_id: OTHER_WALLET_ID,
+      amount: "200.00",
+      note: "savings",
+    });
+    expect(actions.createTransfer).toHaveBeenCalledWith({
+      from_wallet_id: WALLET_ID,
+      to_wallet_id: OTHER_WALLET_ID,
+      amount: "200.00",
+      amount_in: undefined,
+      occurred_on: "2026-09-29",
+      note: "savings",
+    });
+    expect(result).toEqual({ ok: true, data: { transferId: TRANSFER_ID } });
+  });
+
+  it("passes a received amount through for a cross-currency transfer", async () => {
+    actions.createTransfer.mockResolvedValue({ transferId: TRANSFER_ID });
+    await callTool("record_transfer", {
+      from_wallet_id: WALLET_ID,
+      to_wallet_id: OTHER_WALLET_ID,
+      amount: "100.00",
+      amount_in: "73.50",
+      occurred_on: "2026-09-25",
+    });
+    expect(actions.createTransfer.mock.calls[0]![0]).toMatchObject({ amount_in: "73.50", occurred_on: "2026-09-25", note: "" });
+  });
+
+  it("surfaces the action's refusal", async () => {
+    actions.createTransfer.mockResolvedValue({ error: "cannot transfer to the same wallet" });
+    const result = await callTool("record_transfer", {
+      from_wallet_id: WALLET_ID,
+      to_wallet_id: WALLET_ID,
+      amount: "1.00",
+    });
+    expect(result).toEqual({ ok: false, error: "cannot transfer to the same wallet" });
+  });
+});
+
+describe("update_transfer", () => {
+  it("keeps a same-currency transfer balanced when only the amount changes", async () => {
+    transferLegs();
+    actions.updateTransfer.mockResolvedValue({ ok: true });
+    const result = await callTool("update_transfer", { id: TXN_ID, amount: "60.00" });
+    expect(actions.updateTransfer).toHaveBeenCalledWith({
+      transfer_id: TRANSFER_ID,
+      amount_out: "60.00",
+      amount_in: "60.00",
+      occurred_on: "2026-09-20",
+      note: "top up",
+      merchant: null,
+    });
+    expect(result).toEqual({ ok: true, data: { id: TXN_ID, transfer_id: TRANSFER_ID } });
+  });
+
+  it("keeps a cross-currency transfer's received amount unless told otherwise", async () => {
+    transferLegs({ inMinor: 3675, inCurrency: "USD" });
+    actions.updateTransfer.mockResolvedValue({ ok: true });
+    await callTool("update_transfer", { id: TXN_ID, amount: "60.00", occurred_on: "2026-09-21" });
+    expect(actions.updateTransfer.mock.calls[0]![0]).toMatchObject({
+      amount_out: "60.00",
+      amount_in: "36.75",
+      occurred_on: "2026-09-21",
+    });
+  });
+
+  it("changes only the note when that is all that is passed", async () => {
+    transferLegs();
+    actions.updateTransfer.mockResolvedValue({ ok: true });
+    await callTool("update_transfer", { id: TXN_ID, note: null });
+    expect(actions.updateTransfer.mock.calls[0]![0]).toMatchObject({ amount_out: "50.00", amount_in: "50.00", note: null });
+  });
+
+  it("points a non-transfer at update_transaction", async () => {
+    const result = await callTool("update_transfer", { id: TXN_ID, amount: "1.00" });
+    expect(result).toEqual({ ok: false, error: "That isn't a transfer. Use update_transaction for it." });
+    expect(actions.updateTransfer).not.toHaveBeenCalled();
+  });
+
+  it("says so when the transaction isn't found", async () => {
+    stored.row = null;
+    expect(await callTool("update_transfer", { id: TXN_ID })).toEqual({ ok: false, error: "Transfer not found" });
   });
 });

@@ -7,9 +7,11 @@ import { ilikePattern, SEARCH_MAX_LENGTH } from "@/lib/transaction-filters";
 import { createRefund } from "@/server/actions/refunds";
 import {
   createTransaction,
+  createTransfer,
   restoreTransaction,
   softDeleteTransaction,
   updateTransaction,
+  updateTransfer,
 } from "@/server/actions/transactions";
 
 /**
@@ -89,6 +91,28 @@ const repaymentInput = z.object({
   wallet_id: uuid.optional().describe("Where the money landed. Defaults to the expense's wallet; must be the same currency"),
   occurred_on: isoDate.optional().describe("When it was paid back. Defaults to today"),
   note: z.string().max(280).nullable().optional().describe("Who paid, e.g. \"Alice\""),
+});
+
+const transferInput = z.object({
+  from_wallet_id: uuid.describe("The wallet the money leaves"),
+  to_wallet_id: uuid.describe("The wallet the money arrives in; must be a different wallet"),
+  amount: amount.describe('Amount leaving the source wallet, e.g. "200.00"'),
+  amount_in: amount
+    .optional()
+    .describe("Amount arriving, in the destination wallet's currency. Required only when the two wallets' currencies differ"),
+  occurred_on: isoDate.optional().describe("Defaults to today"),
+  note: z.string().max(280).nullable().optional(),
+});
+
+const transferUpdateInput = z.object({
+  id: uuid.describe("The id of either leg of the transfer, from list_transactions"),
+  amount: amount.optional().describe("New amount leaving the source wallet"),
+  amount_in: amount
+    .optional()
+    .describe("New amount arriving. For same-currency transfers it always equals amount, so leave it out"),
+  occurred_on: isoDate.optional(),
+  note: z.string().max(280).nullable().optional().describe("null clears it"),
+  merchant: z.string().max(120).nullable().optional().describe("null clears it"),
 });
 
 const idInput = z.object({ id: uuid });
@@ -244,9 +268,26 @@ export const TOOLS: Record<string, Tool> = {
     },
   },
 
+  record_transfer: {
+    description:
+      "Move money between two of your own wallets (e.g. paying off a card from the bank, topping up savings). Records both sides at once; it is neither spending nor income. Wallets in different currencies need amount_in.",
+    input: transferInput,
+    run: async (args: z.output<typeof transferInput>) => {
+      const result = await createTransfer({
+        from_wallet_id: args.from_wallet_id,
+        to_wallet_id: args.to_wallet_id,
+        amount: args.amount,
+        amount_in: args.amount_in,
+        occurred_on: args.occurred_on ?? todayLocalDate(),
+        note: args.note ?? "",
+      });
+      return fromAction(result, result);
+    },
+  },
+
   update_transaction: {
     description:
-      "Change an expense, income or repayment. Only the fields you pass change; the rest keep their current values. A repayment takes its category from its expense, so passing category_id for one is rejected. Moving a transaction to another wallet keeps its currency. Transfers can't be edited here.",
+      "Change an expense, income or repayment. Only the fields you pass change; the rest keep their current values. A repayment takes its category from its expense, so passing category_id for one is rejected. Moving a transaction to another wallet keeps its currency. For a transfer, use update_transfer.",
     input: updateInput,
     run: async (args: z.output<typeof updateInput>) => {
       // updateTransaction takes the whole editable row, so fill in whatever
@@ -279,6 +320,56 @@ export const TOOLS: Record<string, Tool> = {
         .eq("id", args.id)
         .maybeSingle();
       return { ok: true, data: updated ? presentTransaction(updated as unknown as PresentRow) : { id: args.id } };
+    },
+  },
+
+  update_transfer: {
+    description:
+      "Change a transfer's amount, date, note or merchant, given the id of either leg. Only the fields you pass change. A same-currency transfer's two sides always match, so changing amount changes both. The wallets can't be changed; delete and record it again instead.",
+    input: transferUpdateInput,
+    run: async (args: z.output<typeof transferUpdateInput>) => {
+      // updateTransfer takes the whole pair, so fill in whatever the caller
+      // left out from the two stored legs. The action re-loads and re-checks
+      // both legs itself; these reads only supply defaults.
+      const supabase = await createClient();
+      const { data: leg } = await supabase
+        .from("transactions")
+        .select("kind, transfer_id")
+        .eq("id", args.id)
+        .is("deleted_at", null)
+        .maybeSingle();
+      if (!leg) return { ok: false, error: "Transfer not found" };
+      if (leg.kind !== "transfer" || !leg.transfer_id) {
+        return { ok: false, error: "That isn't a transfer. Use update_transaction for it." };
+      }
+
+      const { data: legs } = await supabase
+        .from("transactions")
+        .select("wallet_id, amount_minor, currency_code, occurred_on, note, merchant")
+        .eq("transfer_id", leg.transfer_id)
+        .is("deleted_at", null);
+      const outLeg = legs?.find((l) => l.amount_minor < 0);
+      const inLeg = legs?.find((l) => l.amount_minor > 0);
+      if (!outLeg || !inLeg) return { ok: false, error: "Transfer not found" };
+
+      const amountOut = args.amount ?? formatAmountInput(-outLeg.amount_minor, minorUnitFor(outLeg.currency_code));
+      // Same currency: the database requires both sides to match, so the
+      // arriving amount follows the leaving one unless the caller says otherwise.
+      const amountIn =
+        args.amount_in ??
+        (outLeg.currency_code === inLeg.currency_code
+          ? amountOut
+          : formatAmountInput(inLeg.amount_minor, minorUnitFor(inLeg.currency_code)));
+
+      const result = await updateTransfer({
+        transfer_id: leg.transfer_id,
+        amount_out: amountOut,
+        amount_in: amountIn,
+        occurred_on: args.occurred_on ?? outLeg.occurred_on,
+        note: args.note === undefined ? outLeg.note : args.note,
+        merchant: args.merchant === undefined ? outLeg.merchant : args.merchant,
+      });
+      return fromAction(result, { id: args.id, transfer_id: leg.transfer_id });
     },
   },
 
