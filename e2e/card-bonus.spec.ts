@@ -66,12 +66,12 @@ test.describe("card bonus", () => {
     await page.goto("/wallets");
     await openWalletSettings(page, "Everyday");
     const dialog = page.getByRole("dialog", { name: "Edit Everyday" });
-    await dialog.getByLabel("Bonus channel").selectOption({ label: "Online" });
-    await dialog.getByLabel("Cycle start day").fill("1");
-    await dialog.getByLabel("Max", { exact: true }).fill("100");
-    await dialog.getByRole("button", { name: "Save card terms" }).click();
-    // The dialog closes itself once the terms are saved.
-    await expect(dialog).toBeHidden();
+    await dialog.getByLabel("Bonus channel for Everyday").selectOption({ label: "Online" });
+    await dialog.getByLabel("Cycle start day for Everyday").fill("1");
+    await dialog.getByLabel("Max for Everyday").fill("100");
+    await dialog.getByRole("button", { name: "Save card terms for Everyday" }).click();
+    // The edit dialog stays open (it may hold unsaved edits) and says so.
+    await expect(dialog.getByText("Saved")).toBeVisible();
 
     // 2. A $30 Online expense at Uniqlo (Online is preselected by the card).
     await page.goto("/transactions/new");

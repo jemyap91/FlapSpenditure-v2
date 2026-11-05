@@ -33,7 +33,8 @@ export function WalletBonusForm({
     cycle_start_day: number | null;
     bonus_cap_minor: number | null;
   };
-  /** Called once after a save that returned no error. */
+  /** Called once after a save that returned no error. Leave it out where the
+   *  form sits beside other unsaved fields: the form then just says "Saved". */
   onSuccess?: () => void;
 }) {
   const [channel, setChannel] = useState<string>(wallet.bonus_channel ?? "");
@@ -44,6 +45,7 @@ export function WalletBonusForm({
       : formatAmountInput(wallet.bonus_cap_minor, minorUnitFor(wallet.currency_code)),
   );
   const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
   const [pending, startTransition] = useTransition();
   const channelId = useId();
   const dayId = useId();
@@ -52,6 +54,7 @@ export function WalletBonusForm({
   function save(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setSaved(false);
     startTransition(async () => {
       const result = await setWalletBonus({
         wallet_id: wallet.id,
@@ -60,7 +63,10 @@ export function WalletBonusForm({
         max: max.trim() === "" ? null : max.trim(),
       });
       if ("error" in result) setError(result.error);
-      else onSuccess?.();
+      else {
+        setSaved(true);
+        onSuccess?.();
+      }
     });
   }
 
@@ -73,8 +79,12 @@ export function WalletBonusForm({
         </label>
         <select
           id={channelId}
+          aria-label={`Bonus channel for ${wallet.name}`}
           value={channel}
-          onChange={(e) => setChannel(e.target.value)}
+          onChange={(e) => {
+            setChannel(e.target.value);
+            setSaved(false);
+          }}
           className={FIELD}
           style={FIELD_STYLE}
         >
@@ -92,12 +102,16 @@ export function WalletBonusForm({
         </label>
         <input
           id={dayId}
+          aria-label={`Cycle start day for ${wallet.name}`}
           type="number"
           min={1}
           max={31}
           inputMode="numeric"
           value={day}
-          onChange={(e) => setDay(e.target.value)}
+          onChange={(e) => {
+            setDay(e.target.value);
+            setSaved(false);
+          }}
           className={FIELD}
           style={FIELD_STYLE}
         />
@@ -108,10 +122,14 @@ export function WalletBonusForm({
         </label>
         <input
           id={maxId}
+          aria-label={`Max for ${wallet.name}`}
           type="text"
           inputMode="decimal"
           value={max}
-          onChange={(e) => setMax(e.target.value)}
+          onChange={(e) => {
+            setMax(e.target.value);
+            setSaved(false);
+          }}
           className={FIELD}
           style={FIELD_STYLE}
         />
@@ -124,9 +142,13 @@ export function WalletBonusForm({
           {error}
         </p>
       )}
+      <p role="status" className="text-sm empty:hidden" style={{ color: "var(--ink)" }}>
+        {saved ? "Saved" : ""}
+      </p>
       <button
         type="submit"
         disabled={pending}
+        aria-label={pending ? undefined : `Save card terms for ${wallet.name}`}
         className={`self-start rounded-md px-4 py-2 text-sm font-medium disabled:opacity-60 ${FOCUS_RING}`}
         style={{ background: "var(--cat-1)", color: "var(--surface)" }}
       >

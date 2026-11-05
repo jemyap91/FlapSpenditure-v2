@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { WalletList } from "./WalletList";
 import type { WalletWithBalance } from "./wallet-rows";
 import { archiveWallet } from "@/server/actions/wallets";
+import { setWalletBonus } from "@/server/actions/wallet-bonus";
 import {
   createWalletGroup,
   deleteWalletGroup,
@@ -1142,7 +1143,7 @@ describe("WalletList — card terms", () => {
     await user.click(screen.getByRole("button", { name: "Card terms for Shared" }));
 
     expect(screen.getByRole("dialog", { name: "Card terms for Shared" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Bonus channel")).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Bonus channel for /)).toBeInTheDocument();
     expect(screen.queryByLabelText("Name")).toBeNull();
   });
 
@@ -1172,8 +1173,39 @@ describe("WalletList — card terms", () => {
     await user.click(screen.getByRole("button", { name: "Edit Mine" }));
 
     expect(screen.getByLabelText("Name")).toBeInTheDocument();
-    expect(screen.getByLabelText("Bonus channel")).toBeInTheDocument();
-    expect(screen.getByLabelText("Cycle start day")).toBeInTheDocument();
-    expect(screen.getByLabelText("Max")).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Bonus channel for /)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Cycle start day for /)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Max for /)).toBeInTheDocument();
+  });
+
+  it("keeps the edit dialog and its unsaved edits open after the card terms save", async () => {
+    const user = userEvent.setup();
+    vi.mocked(setWalletBonus).mockResolvedValue({ ok: true });
+    render(
+      <WalletList
+        {...listProps([wallet("a", { name: "Mine" })])}
+        currentUserId={ME}
+        editActions={{ a: noopAction }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Edit Mine" }));
+    await user.type(screen.getByLabelText("Name"), " renamed");
+    await user.click(screen.getByRole("button", { name: "Save card terms for Mine" }));
+
+    expect(await screen.findByText("Saved")).toBeVisible();
+    expect(screen.getByRole("dialog", { name: "Edit Mine" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).toHaveValue("Mine renamed");
+  });
+
+  it("closes the card terms dialog once its save succeeds", async () => {
+    const user = userEvent.setup();
+    vi.mocked(setWalletBonus).mockResolvedValue({ ok: true });
+    render(<WalletList {...listProps([shared])} currentUserId={ME} editActions={{}} />);
+
+    await user.click(screen.getByRole("button", { name: "Card terms for Shared" }));
+    await user.click(screen.getByRole("button", { name: "Save card terms for Shared" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 });

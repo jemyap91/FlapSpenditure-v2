@@ -1134,7 +1134,9 @@ export function WalletList({
           {(dialog!.view === "edit" || dialog!.view === "terms") && (
             <WalletBonusForm
               wallet={dialogWallet}
-              onSuccess={() => setDialog(null)}
+              // Closing the edit dialog here would discard unsaved
+              // WalletForm edits above, so only the terms-only view closes.
+              onSuccess={dialog!.view === "terms" ? () => setDialog(null) : undefined}
             />
           )}
 

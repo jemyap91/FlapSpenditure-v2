@@ -28,16 +28,16 @@ describe("WalletBonusForm", () => {
   it("seeds from the wallet, showing the max as a decimal", () => {
     render(<WalletBonusForm wallet={wallet()} />);
 
-    expect(screen.getByLabelText("Bonus channel")).toHaveValue("online");
-    expect(screen.getByLabelText("Cycle start day")).toHaveValue(19);
-    expect(screen.getByLabelText("Max")).toHaveValue("1000.00");
+    expect(screen.getByLabelText("Bonus channel for Visa")).toHaveValue("online");
+    expect(screen.getByLabelText("Cycle start day for Visa")).toHaveValue(19);
+    expect(screen.getByLabelText("Max for Visa")).toHaveValue("1000.00");
   });
 
   it("saves the terms through setWalletBonus", async () => {
     const user = userEvent.setup();
     render(<WalletBonusForm wallet={wallet()} />);
 
-    await user.click(screen.getByRole("button", { name: "Save card terms" }));
+    await user.click(screen.getByRole("button", { name: "Save card terms for Visa" }));
 
     expect(setWalletBonus).toHaveBeenCalledWith({
       wallet_id: WALLET_ID,
@@ -51,10 +51,10 @@ describe("WalletBonusForm", () => {
     const user = userEvent.setup();
     render(<WalletBonusForm wallet={wallet()} />);
 
-    await user.selectOptions(screen.getByLabelText("Bonus channel"), "");
-    await user.clear(screen.getByLabelText("Cycle start day"));
-    await user.clear(screen.getByLabelText("Max"));
-    await user.click(screen.getByRole("button", { name: "Save card terms" }));
+    await user.selectOptions(screen.getByLabelText("Bonus channel for Visa"), "");
+    await user.clear(screen.getByLabelText("Cycle start day for Visa"));
+    await user.clear(screen.getByLabelText("Max for Visa"));
+    await user.click(screen.getByRole("button", { name: "Save card terms for Visa" }));
 
     expect(setWalletBonus).toHaveBeenCalledWith({
       wallet_id: WALLET_ID,
@@ -69,10 +69,22 @@ describe("WalletBonusForm", () => {
     const user = userEvent.setup();
     render(<WalletBonusForm wallet={wallet()} />);
 
-    await user.click(screen.getByRole("button", { name: "Save card terms" }));
+    await user.click(screen.getByRole("button", { name: "Save card terms for Visa" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Set a channel and cycle start day to use a max",
     );
+  });
+
+  it("confirms a save with a visible Saved, and drops it on the next edit", async () => {
+    const user = userEvent.setup();
+    render(<WalletBonusForm wallet={wallet()} />);
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Save card terms for Visa" }));
+    expect(await screen.findByText("Saved")).toBeVisible();
+
+    await user.type(screen.getByLabelText("Max for Visa"), "5");
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
   });
 });
