@@ -32,6 +32,11 @@ vi.mock("@/server/actions/categories", () => ({
   createCategory: vi.fn(),
 }));
 
+const { loadCardTracker } = vi.hoisted(() => ({ loadCardTracker: vi.fn() }));
+// `loadCardTracker` is covered by its own suite; here only the page's use of
+// it matters (and the real module imports "server-only").
+vi.mock("@/server/card-tracker", () => ({ loadCardTracker }));
+
 const { walletsData, rulesData, skipsData, transactionsData, rpcCalls } = vi.hoisted(() => ({
   rpcCalls: [] as { name: string; args: Record<string, unknown> }[],
   walletsData: [] as { id: string; currency_code: string; created_at: string }[],
@@ -162,6 +167,7 @@ beforeEach(() => {
   skipsData.length = 0;
   transactionsData.length = 0;
   rpcCalls.length = 0;
+  loadCardTracker.mockResolvedValue([]);
 
   walletsData.push({ id: WALLET_ID, currency_code: "SGD", created_at: "2026-01-01T00:00:00Z" });
   rulesData.push({
@@ -294,5 +300,48 @@ describe("DashboardPage — viewing another month (?month=)", () => {
       expect(rpcCalls.find((c) => c.name === "get_cash_flow")?.args).toMatchObject({ from_date: "2026-09-01" });
       unmount();
     }
+  });
+});
+
+describe("DashboardPage — card bonus tracker", () => {
+  const trackerRow = {
+    walletId: "w1",
+    walletName: "Citi Rewards",
+    currency: "USD",
+    bonusChannel: "Online",
+    capMinor: 100000,
+    from: "2026-08-19",
+    to: "2026-09-18",
+    spentMinor: 31000,
+    remainingMinor: 69000,
+    pace: "under",
+    mismatchCount: 0,
+  };
+
+  it("sits after the category breakdown and before cash flow", async () => {
+    loadCardTracker.mockResolvedValue([trackerRow]);
+    render(await DashboardPage());
+
+    const heading = (name: string) => screen.getByRole("heading", { name });
+    const before = (a: HTMLElement, b: HTMLElement) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    // Both neighbours are in their empty state here (the RPC mocks return no rows).
+    const breakdown = screen.getByText(/^No spending recorded/);
+    const cashFlow = screen.getByText(/^No cash flow recorded/);
+    expect(before(breakdown, heading("Card bonus"))).toBe(true);
+    expect(before(heading("Card bonus"), cashFlow)).toBe(true);
+  });
+
+  it("measures today's cycle even while browsing an earlier month", async () => {
+    await DashboardPage({ searchParams: Promise.resolve({ month: "2026-09" }) });
+    expect(loadCardTracker).toHaveBeenCalledWith(expect.anything(), { on: "2026-09-01", today: "2026-09-01" });
+    loadCardTracker.mockClear();
+    await DashboardPage({ searchParams: Promise.resolve({ month: "2026-08" }) });
+    expect(loadCardTracker).toHaveBeenCalledWith(expect.anything(), { on: "2026-09-01", today: "2026-09-01" });
+  });
+
+  it("fails the page when the tracker read fails", async () => {
+    loadCardTracker.mockRejectedValue(new Error("Failed to load card tracker"));
+    await expect(DashboardPage()).rejects.toThrow("Failed to load card tracker");
   });
 });
