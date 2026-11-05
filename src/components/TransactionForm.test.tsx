@@ -830,7 +830,7 @@ describe("TransactionForm — channel", () => {
     { id: WALLET_A, name: "Everyday", currency_code: "USD", space_id: SPACE, kind: "card" as const, color_slot: 1, bonus_channel: null, bonus_cap_minor: null },
     { id: WW, name: "Woman's World", currency_code: "USD", space_id: SPACE, kind: "card" as const, color_slot: 2, bonus_channel: "online" as const, bonus_cap_minor: 100000 },
   ];
-  const rules = [{ merchant_key: "uniqlo", channel: "in_store" as const }];
+  const rules = [{ space_id: SPACE, merchant_key: "uniqlo", channel: "in_store" as const }];
   const cardRows: CardTrackerRow[] = [
     {
       walletId: WW,
@@ -921,14 +921,53 @@ describe("TransactionForm — channel", () => {
     expect(createTransaction).toHaveBeenCalledWith(expect.objectContaining({ channel: null }));
   });
 
-  it("saves with the suggested channel without any interaction with the chips", async () => {
+  it("omits the channel on save while it is untouched, so the server suggests", async () => {
     const user = userEvent.setup();
     renderCreate({ walletId: WW });
+    expect(radio("Online")).toBeChecked();
     await user.click(screen.getByRole("button", { name: "5" }));
     await user.click(screen.getByRole("button", { name: "Groceries" }));
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(push).toHaveBeenCalled());
-    expect(createTransaction).toHaveBeenCalledWith(expect.objectContaining({ channel: "online" }));
+    expect(vi.mocked(createTransaction).mock.calls[0]![0]).not.toHaveProperty("channel");
+  });
+
+  it("sends a picked channel on create", async () => {
+    const user = userEvent.setup();
+    renderCreate({ walletId: WW });
+    await user.click(radio("Bill"));
+    await user.click(screen.getByRole("button", { name: "5" }));
+    await user.click(screen.getByRole("button", { name: "Groceries" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(push).toHaveBeenCalled());
+    expect(createTransaction).toHaveBeenCalledWith(expect.objectContaining({ channel: "bill" }));
+  });
+
+  it("uses the rule of the selected wallet's household when two households share a merchant key", async () => {
+    const user = userEvent.setup();
+    const OTHER_SPACE = "88888888-8888-4888-8888-888888888888";
+    const OTHER = "77777777-7777-4777-8777-777777777772";
+    const twoHouseholds = [
+      ...bonusWallets,
+      { id: OTHER, name: "Other house", currency_code: "USD", space_id: OTHER_SPACE, kind: "card" as const, color_slot: 3, bonus_channel: null, bonus_cap_minor: null },
+    ];
+    render(
+      <TransactionForm
+        wallets={twoHouseholds}
+        categories={categories}
+        defaultWalletId={WALLET_A}
+        merchantChannels={[
+          { space_id: SPACE, merchant_key: "uniqlo", channel: "in_store" },
+          { space_id: OTHER_SPACE, merchant_key: "uniqlo", channel: "overseas" },
+        ]}
+        cardRows={[]}
+      />,
+    );
+    await user.type(screen.getByLabelText("Merchant"), "Uniqlo");
+    expect(radio("In store")).toBeChecked();
+    await pickWallet(user, "Wallet", "Other house");
+    expect(radio("Overseas")).toBeChecked();
+    expect(radio("In store")).not.toBeChecked();
   });
 
   it("does not send a channel for income", async () => {
@@ -981,6 +1020,11 @@ describe("TransactionForm — channel", () => {
     expect(screen.getByRole("status", { name: /^Warnings/ })).toHaveTextContent(
       "This takes Woman's World past its $1,000.00 max for this cycle.",
     );
+  });
+
+  it("shows no max warning for a zero amount even when the card is already over its max", () => {
+    renderCreate({ walletId: WW, rows: [{ ...cardRows[0]!, spentMinor: 120000, remainingMinor: -20000 }] });
+    expect(screen.getByRole("status", { name: /^Warnings/ })).toBeEmptyDOMElement();
   });
 
   it("shows no max warning when the date is outside the card's cycle", async () => {

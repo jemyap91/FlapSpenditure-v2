@@ -135,15 +135,13 @@ export default async function NewTransactionPage({
     wallet && uuid.safeParse(wallet).success ? wallets.find((w) => w.id === wallet)?.id : undefined;
 
   const defaultWalletId = requestedWalletId ?? wallets[0]!.id;
-  const defaultSpaceId = wallets.find((w) => w.id === defaultWalletId)!.space_id;
 
-  // The household's remembered channel per merchant (RLS limits this to
-  // spaces the caller belongs to). A failed read only costs the suggestion,
+  // Every household's remembered channel per merchant (RLS limits this to
+  // spaces the caller belongs to); the form picks by the chosen wallet's space. A failed read only costs the suggestion,
   // never the expense.
   const { data: merchantChannels, error: merchantChannelsError } = await supabase
     .from("merchant_channels")
-    .select("merchant_key, channel")
-    .eq("space_id", defaultSpaceId);
+    .select("space_id, merchant_key, channel");
   if (merchantChannelsError) console.error("Could not load merchant channels", merchantChannelsError.message);
 
   // A tracker failure must never stop someone recording an expense: the form

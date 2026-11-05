@@ -39,7 +39,7 @@ type Wallet = PickerWallet & {
   bonus_cap_minor: number | null;
 };
 /** A household's remembered channel for a merchant, keyed by `merchantKey`. */
-type MerchantChannel = { merchant_key: string; channel: Channel };
+type MerchantChannel = { space_id: string; merchant_key: string; channel: Channel };
 type Kind = "expense" | "income" | "transfer";
 
 /**
@@ -327,8 +327,10 @@ export function TransactionForm(
    *  `create_transfer` (0005_transfer_fn.sql) has no such parameter. See the
    *  control's own comment below, and `transferInput`'s, for the asymmetry. */
   const [merchant, setMerchant] = useState(() => (edit ? edit.merchant : ""));
-  const ruleChannel = (text: string): Channel | null =>
-    merchantChannels.find((r) => r.merchant_key === merchantKey(text))?.channel ?? null;
+  // A merchant key can repeat across households, so a rule only counts for
+  // the wallet's own space.
+  const ruleChannel = (text: string, spaceId: string | undefined): Channel | null =>
+    merchantChannels.find((r) => r.space_id === spaceId && r.merchant_key === merchantKey(text))?.channel ?? null;
   const [channel, setChannel] = useState<Channel | null>(() => {
     if (edit) return edit.kind === "transfer" ? null : edit.channel;
     return suggestChannel(null, wallets.find((w) => w.id === defaultWalletId)?.bonus_channel ?? null);
@@ -485,7 +487,7 @@ export function TransactionForm(
     // `transactions_category_same_space` would refuse the save, and clearing
     // here is what stops the user from ever getting that far.
     if (!nextWallet || nextWallet.space_id !== wallet.space_id) setCategory(null);
-    if (!channelTouched) setChannel(suggestChannel(ruleChannel(merchant), nextWallet?.bonus_channel ?? null));
+    if (!channelTouched) setChannel(suggestChannel(ruleChannel(merchant, nextWallet?.space_id), nextWallet?.bonus_channel ?? null));
     // The wallet just changed currency (possibly to a different
     // `minorUnit`) — an amount already typed under the OLD currency's
     // precision can be over-precise for the new one (e.g. "1.505" typed
@@ -562,7 +564,7 @@ export function TransactionForm(
   function handleMerchantChange(next: string) {
     setMerchant(next);
     setError(null);
-    if (!channelTouched) setChannel(suggestChannel(ruleChannel(next), wallet.bonus_channel));
+    if (!channelTouched) setChannel(suggestChannel(ruleChannel(next, wallet.space_id), wallet.bonus_channel));
     // Prefill the category this merchant usually gets, but only when the
     // user has not chosen one on this entry, and only if that category is
     // one the form is offering right now: the same kind, and the selected
@@ -703,7 +705,10 @@ export function TransactionForm(
               // the control that feeds this does not render for a transfer
               // in create mode either, so this state is always "" there.
               merchant,
-              ...(kind === "expense" ? { channel } : {}),
+              // Untouched means "suggest": left out, the server picks the
+              // merchant's rule or the wallet's bonus channel. A touched
+              // channel, even one cleared to null, is the user's answer.
+              ...(kind === "expense" && channelTouched ? { channel } : {}),
             });
 
       if ("error" in res) {
@@ -736,6 +741,9 @@ export function TransactionForm(
   // that cycle has no running total to add this amount to.
   const cardRow = cardRows.find((r) => r.walletId === wallet.id);
   const inCycle = cardRow !== undefined && date >= cardRow.from && date <= cardRow.to;
+  // No amount (or a half-typed one) adds nothing to the total, so a card
+  // already over its max must not warn before anything is entered.
+  const amountMinor = safeAmountMinor(amount, minorUnitFor(wallet.currency_code));
   const warnings =
     kind === "expense" && wallet.bonus_channel
       ? expenseWarnings({
@@ -744,8 +752,8 @@ export function TransactionForm(
           capMinor: wallet.bonus_cap_minor,
           currency: wallet.currency_code,
           channel,
-          amountMinor: safeAmountMinor(amount, minorUnitFor(wallet.currency_code)),
-          spentBeforeMinor: inCycle ? cardRow.spentMinor : null,
+          amountMinor,
+          spentBeforeMinor: inCycle && amountMinor > 0 ? cardRow.spentMinor : null,
         })
       : [];
 

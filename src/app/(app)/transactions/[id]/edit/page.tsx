@@ -411,14 +411,6 @@ export default async function EditTransactionPage({
     channel: row.channel,
   };
 
-  // The household's remembered channel per merchant. A failed read only costs
-  // the suggestion, never the edit.
-  const { data: merchantChannels, error: merchantChannelsError } = await supabase
-    .from("merchant_channels")
-    .select("merchant_key, channel")
-    .eq("space_id", wallet.space_id);
-  if (merchantChannelsError) console.error("Could not load merchant channels", merchantChannelsError.message);
-
   // A tracker failure must never stop someone saving an edit: the form
   // simply shows no max warning. This row is left out so it is not counted
   // against itself.
@@ -444,7 +436,6 @@ export default async function EditTransactionPage({
         edit={edit}
         from={from}
         suggestions={suggestions ?? []}
-        merchantChannels={merchantChannels ?? []}
         cardRows={cardRows}
       />
       {row.kind === "expense" && (
