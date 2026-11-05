@@ -448,6 +448,42 @@ test.describe("wallets", () => {
    * single wallet), which is the cheapest path available through this
    * self-contained spec.
    */
+  test("press-and-hold reorders wallets and the order survives a reload", async ({ page }, testInfo) => {
+    test.skip(
+      testInfo.project.name !== "mobile",
+      "press-and-hold is the phone's route; desktop keeps the drag handle",
+    );
+
+    await signUpAndOnboard(page, "Everyday");
+    await addWallet(page, "Savings");
+    await page.goto("/wallets");
+
+    const everyday = (await page.getByRole("listitem", { name: "Everyday" }).boundingBox())!;
+    const savings = (await page.getByRole("listitem", { name: "Savings" }).boundingBox())!;
+    const x = everyday.x + 60;
+
+    /* Real touches through CDP, not dispatched events: what this has to prove
+       is that the browser hands the gesture over rather than scrolling, and
+       a synthetic event never reaches the browser's scroll handling. */
+    const cdp = await page.context().newCDPSession(page);
+    const touch = (type: string, y?: number) =>
+      cdp.send("Input.dispatchTouchEvent", {
+        type: type as "touchStart",
+        touchPoints: y === undefined ? [] : [{ x, y }],
+      });
+    await touch("touchStart", everyday.y + everyday.height / 2);
+    await page.waitForTimeout(500);
+    await touch("touchMove", savings.y + savings.height / 2);
+    await touch("touchEnd");
+
+    expect(await page.evaluate(() => scrollY)).toBe(0);
+    await expect(page).toHaveURL("/wallets");
+    const names = page.getByRole("listitem").filter({ has: page.getByRole("link") });
+    await expect(names.first()).toHaveAccessibleName("Savings");
+    await page.reload();
+    await expect(names.first()).toHaveAccessibleName("Savings");
+  });
+
   test("swipe-left archives a wallet, but only after confirming", async ({ page }, testInfo) => {
     test.skip(
       testInfo.project.name !== "mobile",

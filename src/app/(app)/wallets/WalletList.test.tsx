@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { WalletList } from "./WalletList";
 import type { WalletWithBalance } from "./wallet-rows";
@@ -1018,5 +1018,109 @@ describe("WalletList — the phone's more-actions menu", () => {
     fireEvent.touchEnd(trigger(), { changedTouches: [{ clientX: 50, clientY: 0 }] });
 
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+});
+
+describe("WalletList — reordering on a phone", () => {
+  const ROW_H = 50;
+  const wallets = [wallet("a", { name: "Savings" }), wallet("b", { name: "Holiday" })];
+  const row = (name: string) => screen.getByRole("listitem", { name });
+  const touch = (y: number, x = 100) => ({ clientX: x, clientY: y });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.mocked(setWalletOrder).mockReset();
+    vi.mocked(setWalletOrder).mockResolvedValue({ ok: true });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.tagName !== "LI") return new DOMRect();
+      const i = Array.from(this.parentElement?.children ?? []).indexOf(this);
+      return new DOMRect(0, i * ROW_H, 100, ROW_H);
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockRestore?.();
+  });
+
+  const hold = () => act(() => vi.advanceTimersByTime(400));
+
+  it("moves a row that was held and then dragged", () => {
+    render(<WalletList currentUserId={ME} {...listProps(wallets)} />);
+    const held = row("Savings");
+    fireEvent.touchStart(held, { touches: [touch(25)] });
+    hold();
+    fireEvent.touchMove(held, { touches: [touch(75)] });
+    fireEvent.touchEnd(held, { changedTouches: [touch(75)] });
+
+    expect(setWalletOrder).toHaveBeenCalledTimes(1);
+    expect(setWalletOrder).toHaveBeenCalledWith({ wallet_ids: ["b", "a"] });
+  });
+
+  it("stops a held row's drag from scrolling the page, and only then", () => {
+    render(<WalletList currentUserId={ME} {...listProps(wallets)} />);
+    const scroll = () => {
+      const e = new Event("touchmove", { bubbles: true, cancelable: true });
+      document.dispatchEvent(e);
+      return e.defaultPrevented;
+    };
+    expect(scroll()).toBe(false);
+
+    fireEvent.touchStart(row("Savings"), { touches: [touch(25)] });
+    hold();
+    expect(scroll()).toBe(true);
+  });
+
+  it("treats a finger that moved before the hold as a scroll, not a drag", () => {
+    render(<WalletList currentUserId={ME} {...listProps(wallets)} />);
+    const held = row("Savings");
+    fireEvent.touchStart(held, { touches: [touch(25)] });
+    fireEvent.touchMove(held, { touches: [touch(75)] });
+    hold();
+    fireEvent.touchEnd(held, { changedTouches: [touch(75)] });
+
+    expect(setWalletOrder).not.toHaveBeenCalled();
+  });
+
+  it("does not archive when a held row is dragged sideways", () => {
+    render(<WalletList currentUserId={ME} {...listProps(wallets)} />);
+    const held = row("Savings");
+    fireEvent.touchStart(held, { touches: [touch(25, 200)] });
+    hold();
+    fireEvent.touchEnd(held, { changedTouches: [touch(25, 50)] });
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("still archives on a quick swipe", () => {
+    render(<WalletList currentUserId={ME} {...listProps(wallets)} />);
+    const swiped = row("Savings");
+    fireEvent.touchStart(swiped, { touches: [touch(25, 200)] });
+    fireEvent.touchEnd(swiped, { changedTouches: [touch(25, 50)] });
+
+    expect(screen.getByRole("dialog", { name: "Archive Savings?" })).toBeInTheDocument();
+  });
+
+  it("does not lift a row under a derived sort", () => {
+    render(<WalletList currentUserId={ME} {...listProps(wallets)} sort="name" />);
+    const held = row("Savings");
+    fireEvent.touchStart(held, { touches: [touch(25)] });
+    hold();
+    fireEvent.touchMove(held, { touches: [touch(75)] });
+    fireEvent.touchEnd(held, { changedTouches: [touch(75)] });
+
+    expect(setWalletOrder).not.toHaveBeenCalled();
+  });
+
+  it("offers Move up and Move down in the menu, as far as the row can go", () => {
+    render(<WalletList currentUserId={ME} {...listProps(wallets)} />);
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Savings" }));
+    expect(screen.queryByRole("button", { name: "Move Savings up" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Move Savings down" }));
+
+    expect(setWalletOrder).toHaveBeenCalledWith({ wallet_ids: ["b", "a"] });
   });
 });

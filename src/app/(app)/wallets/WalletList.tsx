@@ -2,7 +2,16 @@
 
 import { useEffect, useId, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
-import { Landmark, CreditCard, Ellipsis, Settings, User, GripVertical } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  CreditCard,
+  EllipsisVertical,
+  GripVertical,
+  Landmark,
+  Settings,
+  User,
+} from "lucide-react";
 import type { WalletSort } from "@/lib/validation/wallet-group";
 import {
   createWalletGroup,
@@ -26,6 +35,17 @@ import type {
 /** How far a finger must travel left before it counts as a swipe rather
  *  than a tap that wandered. */
 const SWIPE_MIN_PX = 60;
+
+/** How long a finger rests on a row before the row lifts for reordering.
+ *  Under the ~500ms at which Android raises its long-press context menu. */
+const HOLD_MS = 350;
+
+/** How far a finger may drift during that hold. Any further and it is a
+ *  scroll or a swipe, which keep working exactly as they did. */
+const HOLD_SLOP_PX = 10;
+
+/** `drag.current.pointerId` for a press-and-hold, which has no pointer. */
+const TOUCH_DRAG = -1;
 
 /**
  * The row's trailing controls sit in one fixed-width column so the wallet
@@ -51,6 +71,9 @@ const SWIPE_MIN_PX = 60;
  */
 const ROW_CONTROL = "h-11 w-9";
 const ROW_GRIP = "h-11 w-7";
+/** The phone's one trailing control, as narrow as the 24px minimum allows
+ *  with room to spare, because every pixel here comes out of the name. */
+const ROW_MORE = "h-11 w-7";
 
 const FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
@@ -195,6 +218,27 @@ export function WalletList({
   /** Mirrors `drag` for rendering only. A ref cannot re-render, and the
    *  dragged row needs to look picked up. */
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /**
+   * Stops a held row's drag from also scrolling the page.
+   *
+   * Native and always attached, because neither shortcut works: React
+   * registers `touchmove` as passive, so `preventDefault` there is ignored,
+   * and `touch-action` is read when the touch begins, before anyone knows it
+   * will become a hold. Nothing is prevented unless a drag is live, so
+   * ordinary scrolling is untouched.
+   */
+  useEffect(() => {
+    function onTouchMove(e: TouchEvent) {
+      if (drag.current?.pointerId === TOUCH_DRAG) e.preventDefault();
+    }
+    document.addEventListener("touchmove", onTouchMove, { passive: false });
+    return () => {
+      document.removeEventListener("touchmove", onTouchMove);
+      if (holdTimer.current !== null) clearTimeout(holdTimer.current);
+    };
+  }, []);
 
   // Flattened once for the guards that reason about the whole list — the
   // last-wallet check, whether a search box is worth showing, and the empty
@@ -342,6 +386,10 @@ export function WalletList({
    * `touch-action: none` on the handle stops the browser claiming the
    * gesture as a scroll before the first pointermove arrives.
    *
+   * Phones have no handle, so the row itself lifts on press-and-hold. That
+   * keeps the gesture clear of the swipe: a finger that moves before
+   * HOLD_MS is a swipe or a scroll, and one that held still is a drag.
+   *
    * Rows swap live as the pointer crosses their midpoints, so the list you
    * see while dragging is the list you get. Nothing is persisted until
    * pointerup: a drag across five rows is one write, not five.
@@ -358,40 +406,45 @@ export function WalletList({
     };
   }
 
+  /** One step of a drag, shared by the handle and press-and-hold. */
+  function dragOver(sec: WalletSection, y: number) {
+    const d = drag.current;
+    if (!d || d.key !== sectionKey(sec)) return;
+
+    const current = orderedWallets(sec);
+
+    // Which row is the pointer over now? Measured every move rather than
+    // cached: the rows physically move as they swap, so a cached geometry
+    // would be describing a layout that no longer exists after the first
+    // swap.
+    let target = d.index;
+    for (let i = 0; i < current.length; i++) {
+      const el = rowEls.current.get(current[i]!.id);
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      // jsdom reports every rect as zero, so this loop finds nothing and
+      // the drag is inert there — which is why the keyboard path below is
+      // what the tests actually exercise.
+      if (r.height === 0) continue;
+      if (y >= r.top && y <= r.bottom) {
+        target = i;
+        break;
+      }
+    }
+    if (target === d.index) return;
+
+    const next = [...current];
+    const [moved] = next.splice(d.index, 1);
+    next.splice(target, 0, moved!);
+    d.index = target;
+    // Local only. Persisting here would issue a write per row crossed.
+    setOrderOverride((prev) => ({ ...prev, [d.key]: next.map((w) => w.id) }));
+  }
+
   function onHandlePointerMove(sec: WalletSection) {
     return (e: React.PointerEvent<HTMLButtonElement>) => {
-      const d = drag.current;
-      if (!d || d.pointerId !== e.pointerId || d.key !== sectionKey(sec)) return;
-
-      const current = orderedWallets(sec);
-      const y = e.clientY;
-
-      // Which row is the pointer over now? Measured every move rather than
-      // cached: the rows physically move as they swap, so a cached geometry
-      // would be describing a layout that no longer exists after the first
-      // swap.
-      let target = d.index;
-      for (let i = 0; i < current.length; i++) {
-        const el = rowEls.current.get(current[i]!.id);
-        if (!el) continue;
-        const r = el.getBoundingClientRect();
-        // jsdom reports every rect as zero, so this loop finds nothing and
-        // the drag is inert there — which is why the keyboard path below is
-        // what the tests actually exercise.
-        if (r.height === 0) continue;
-        if (y >= r.top && y <= r.bottom) {
-          target = i;
-          break;
-        }
-      }
-      if (target === d.index) return;
-
-      const next = [...current];
-      const [moved] = next.splice(d.index, 1);
-      next.splice(target, 0, moved!);
-      d.index = target;
-      // Local only. Persisting here would issue a write per row crossed.
-      setOrderOverride((prev) => ({ ...prev, [d.key]: next.map((w) => w.id) }));
+      if (drag.current?.pointerId !== e.pointerId) return;
+      dragOver(sec, e.clientY);
     };
   }
 
@@ -405,6 +458,20 @@ export function WalletList({
       // persists exactly what the user is looking at.
       commitOrder(sec, orderedWallets(sec));
     };
+  }
+
+  function cancelHold() {
+    if (holdTimer.current !== null) clearTimeout(holdTimer.current);
+    holdTimer.current = null;
+  }
+
+  /** Ends a press-and-hold drag. Persists what is on screen, the same as
+   *  `onHandlePointerUp`. */
+  function finishTouchDrag(sec: WalletSection) {
+    drag.current = null;
+    touchStart.current = null;
+    setDraggingId(null);
+    commitOrder(sec, orderedWallets(sec));
   }
 
   /** Which group a wallet is currently filed under, read back out of the
@@ -539,6 +606,7 @@ export function WalletList({
       {sections.map((section) => {
         const inOrder = orderedWallets(section);
         const rows = q ? inOrder.filter((w) => w.name.toLowerCase().includes(q)) : inOrder;
+        const canReorder = sort === "manual" && !q && rows.length > 1;
         // A section with nothing matching the search is hidden entirely
         // rather than rendered as an empty heading — during a search the
         // headings are noise, and an "Everyday (empty)" line would read as
@@ -606,8 +674,48 @@ export function WalletList({
               onTouchStart={(e) => {
                 const t = e.touches[0]!;
                 touchStart.current = { x: t.clientX, y: t.clientY };
+                if (!canReorder) return;
+                cancelHold();
+                holdTimer.current = setTimeout(() => {
+                  holdTimer.current = null;
+                  drag.current = { key: sectionKey(section), index: rowIndex, pointerId: TOUCH_DRAG };
+                  setDraggingId(w.id);
+                  // The row lifting is the cue; this adds to it where
+                  // supported. iOS Safari has no `vibrate`.
+                  navigator.vibrate?.(10);
+                }, HOLD_MS);
+              }}
+              onTouchMove={(e) => {
+                const t = e.touches[0]!;
+                if (drag.current?.pointerId === TOUCH_DRAG) {
+                  dragOver(section, t.clientY);
+                  return;
+                }
+                const from = touchStart.current;
+                if (
+                  from &&
+                  Math.hypot(t.clientX - from.x, t.clientY - from.y) > HOLD_SLOP_PX
+                ) {
+                  cancelHold();
+                }
+              }}
+              onTouchCancel={() => {
+                cancelHold();
+                if (drag.current?.pointerId === TOUCH_DRAG) finishTouchDrag(section);
+              }}
+              // Android's long-press menu would otherwise open over the
+              // row at the moment it lifts.
+              onContextMenu={(e) => {
+                if (canReorder && touchStart.current) e.preventDefault();
               }}
               onTouchEnd={(e) => {
+                cancelHold();
+                if (drag.current?.pointerId === TOUCH_DRAG) {
+                  // Or the release lands as a tap on the wallet's link.
+                  e.preventDefault();
+                  finishTouchDrag(section);
+                  return;
+                }
                 const from = touchStart.current;
                 touchStart.current = null;
                 if (!from) return;
@@ -618,9 +726,11 @@ export function WalletList({
                 if (Math.abs(dy) > Math.abs(dx)) return;
                 requestArchive(w);
               }}
-              className="mb-2 flex items-center gap-2 rounded-lg border px-3 py-2 transition-opacity"
+              className="mb-2 flex select-none items-center gap-2 rounded-lg border py-2 pl-3 transition-opacity md:select-auto md:px-3"
               style={{
                 borderColor: "var(--grid)",
+                // iOS's own long-press preview of the wallet's link.
+                WebkitTouchCallout: "none",
                 opacity: archiving ? 0.5 : 1,
                 // The row being dragged is lifted off the list. Without a
                 // visible "picked up" state the rows shuffling underneath
@@ -686,7 +796,7 @@ export function WalletList({
                   h-11 w-11 is a 44px target — the size WCAG 2.5.8 and both
                   platform guidelines ask for, and a real improvement on the
                   ~16px text links these replace. */}
-              <div className="flex shrink-0 items-center gap-0.5">
+              <div className="-ml-1 flex shrink-0 items-center gap-0.5 md:ml-0">
               {/* Reordering is offered only under "My order". Under name or
                   date the position is derived, so a move would either be
                   ignored or silently switch the whole list back to manual —
@@ -705,11 +815,13 @@ export function WalletList({
                   `aria-label` carries the position because a screen reader
                   otherwise announces an identical "Reorder" on every row
                   with nothing to say where it is or whether it moved. */}
-              {sort === "manual" && !q && rows.length > 1 && (
+              {canReorder && (
                 <button
                   type="button"
                   aria-label={`Reorder ${w.name}, ${rowIndex + 1} of ${rows.length}. Use arrow keys to move, or drag.`}
                   disabled={arranging}
+                  // A touch here is the handle's, not the row's hold.
+                  onTouchStart={(e) => e.stopPropagation()}
                   onPointerDown={onHandlePointerDown(section, rowIndex, w.id)}
                   onPointerMove={onHandlePointerMove(section)}
                   onPointerUp={onHandlePointerUp(section)}
@@ -720,7 +832,7 @@ export function WalletList({
                     e.preventDefault();
                     move(section, rowIndex, e.key === "ArrowUp" ? -1 : 1);
                   }}
-                  className={`grid ${ROW_GRIP} shrink-0 cursor-grab place-items-center rounded-md disabled:opacity-30 ${FOCUS_RING}`}
+                  className={`hidden ${ROW_GRIP} shrink-0 cursor-grab place-items-center rounded-md disabled:opacity-30 md:grid ${FOCUS_RING}`}
                   style={{
                     color: "var(--ink-2)",
                     // Stops the browser treating the first finger movement
@@ -736,9 +848,17 @@ export function WalletList({
                   the name and balance keep the width two icons were using.
                   Both layouts stay in the DOM and CSS picks one, at the same
                   `md` the shell itself switches on. */}
-              {(editActions?.[w.id] || memberSections?.[w.id]) ? (
+              {(editActions?.[w.id] || memberSections?.[w.id] || canReorder) ? (
                 <RowMoreMenu
                   walletName={w.name}
+                  onMoveUp={
+                    canReorder && rowIndex > 0 ? () => move(section, rowIndex, -1) : undefined
+                  }
+                  onMoveDown={
+                    canReorder && rowIndex < rows.length - 1
+                      ? () => move(section, rowIndex, 1)
+                      : undefined
+                  }
                   onEdit={
                     editActions?.[w.id]
                       ? () => setDialog({ walletId: w.id, view: "edit" })
@@ -752,7 +872,7 @@ export function WalletList({
                 />
               ) : (
                 (editActions || memberSections) && (
-                  <span aria-hidden className={`block ${ROW_CONTROL} md:hidden`} />
+                  <span aria-hidden className={`block ${ROW_MORE} md:hidden`} />
                 )
               )}
 
@@ -1062,15 +1182,22 @@ export function WalletList({
  *
  * A handler left undefined drops that item, for the same reason the desktop
  * icons are absent rather than disabled.
+ *
+ * Move up and Move down are the phone's alternative to press-and-hold, which
+ * WCAG 2.2 §2.5.7 requires of any drag and which nothing on the row suggests.
  */
 function RowMoreMenu({
   walletName,
   onEdit,
   onMembers,
+  onMoveUp,
+  onMoveDown,
 }: {
   walletName: string;
   onEdit?: () => void;
   onMembers?: () => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const panelId = useId();
@@ -1128,10 +1255,10 @@ function RowMoreMenu({
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
         onClick={() => setOpen((o) => !o)}
-        className={`grid ${ROW_CONTROL} shrink-0 place-items-center rounded-md ${FOCUS_RING}`}
+        className={`grid ${ROW_MORE} shrink-0 place-items-center rounded-md ${FOCUS_RING}`}
         style={{ color: "var(--ink-2)" }}
       >
-        <Ellipsis size={18} aria-hidden />
+        <EllipsisVertical size={18} aria-hidden />
       </button>
       {open && (
         <div
@@ -1165,6 +1292,34 @@ function RowMoreMenu({
             >
               <User size={18} aria-hidden style={{ color: "var(--ink-2)" }} />
               Members
+            </button>
+          )}
+          {onMoveUp && (
+            <button
+              type="button"
+              aria-label={`Move ${walletName} up`}
+              onClick={() => {
+                close();
+                onMoveUp();
+              }}
+              className={item}
+            >
+              <ArrowUp size={18} aria-hidden style={{ color: "var(--ink-2)" }} />
+              Move up
+            </button>
+          )}
+          {onMoveDown && (
+            <button
+              type="button"
+              aria-label={`Move ${walletName} down`}
+              onClick={() => {
+                close();
+                onMoveDown();
+              }}
+              className={item}
+            >
+              <ArrowDown size={18} aria-hidden style={{ color: "var(--ink-2)" }} />
+              Move down
             </button>
           )}
         </div>
