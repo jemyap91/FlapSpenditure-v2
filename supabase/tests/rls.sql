@@ -5190,6 +5190,27 @@ commit;
 
 begin;
   set local role authenticated;
+  set local request.jwt.claims = '{"sub":"c4a00000-0000-4000-8000-000000000012","email":"ch-member@x.io"}';
+  do $$
+  declare v_tx uuid;
+  begin
+    insert into transactions (wallet_id, created_by, kind, amount_minor, currency_code, occurred_on, channel)
+      values ('c4a00000-0000-4000-8000-000000000021', 'c4a00000-0000-4000-8000-000000000012',
+              'expense', -500, 'USD', current_date, 'in_store')
+      returning id into v_tx;
+    assert (select public.channel_mismatch(t) from transactions t where t.id = v_tx),
+      'channel_mismatch is false for an in-store expense on an online wallet';
+
+    perform public.set_wallet_bonus('c4a00000-0000-4000-8000-000000000021', 'in_store', 15::smallint, 50000);
+    assert not (select public.channel_mismatch(t) from transactions t where t.id = v_tx),
+      'channel_mismatch did not flip after set_wallet_bonus changed the wallet';
+
+    perform public.set_wallet_bonus('c4a00000-0000-4000-8000-000000000021', 'online', 15::smallint, 50000);
+  end $$;
+commit;
+
+begin;
+  set local role authenticated;
   set local request.jwt.claims = '{"sub":"c4a00000-0000-4000-8000-000000000013","email":"ch-outsider@x.io"}';
   do $$ begin
     assert (select auth.uid()) = 'c4a00000-0000-4000-8000-000000000013'::uuid, 'impersonation failed: auth.uid()';

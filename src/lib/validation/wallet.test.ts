@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { walletInput, CURRENCY_CODES, WALLET_ICONS } from "./wallet";
+import { walletInput, walletBonusInput, CURRENCY_CODES, WALLET_ICONS } from "./wallet";
 import { MINOR_UNITS } from "@/lib/money";
 
 const valid = {
@@ -149,5 +149,55 @@ describe("CURRENCY_CODES", () => {
 describe("WALLET_ICONS", () => {
   it("has exactly the two icons onboarding offers", () => {
     expect(WALLET_ICONS).toEqual(["landmark", "credit-card"]);
+  });
+});
+
+describe("walletBonusInput", () => {
+  const WALLET_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+  it("accepts a full set of terms", () => {
+    expect(
+      walletBonusInput.safeParse({
+        wallet_id: WALLET_ID,
+        bonus_channel: "online",
+        cycle_start_day: 19,
+        max: "1000",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("accepts all-null as clearing the terms", () => {
+    expect(
+      walletBonusInput.safeParse({
+        wallet_id: WALLET_ID,
+        bonus_channel: null,
+        cycle_start_day: null,
+        max: null,
+      }).success,
+    ).toBe(true);
+  });
+
+  it("refuses a max without a channel or cycle day", () => {
+    const result = walletBonusInput.safeParse({
+      wallet_id: WALLET_ID,
+      bonus_channel: null,
+      cycle_start_day: null,
+      max: "1000",
+    });
+    expect(result.success).toBe(false);
+    expect(!result.success && result.error.issues[0]!.message).toBe(
+      "Set a channel and cycle start day to use a max",
+    );
+  });
+
+  it("refuses day 32", () => {
+    expect(
+      walletBonusInput.safeParse({
+        wallet_id: WALLET_ID,
+        bonus_channel: "online",
+        cycle_start_day: 32,
+        max: null,
+      }).success,
+    ).toBe(false);
   });
 });
