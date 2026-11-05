@@ -1438,6 +1438,61 @@ describe("updateTransaction — moving between wallets", () => {
     );
   });
 
+  it("writes a posted channel after move_transaction, which has no channel parameter", async () => {
+    const order: string[] = [];
+    rpcSpy.mockImplementationOnce(() => void order.push("rpc"));
+    updateSpy.mockImplementationOnce(() => void order.push("update"));
+    const result = await updateTransaction(
+      edit({ wallet_id: OTHER_WALLET, category_id: OTHER_CATEGORY, channel: "in_store" }),
+    );
+    expect(result).toEqual({ ok: true });
+    expect(order).toEqual(["rpc", "update"]);
+    expect(updateSpy).toHaveBeenCalledWith({ channel: "in_store" });
+    expect(eqSpy).toHaveBeenCalledWith("transactions", "id", TXN_ID);
+    expect(rpcSpy.mock.calls[0]![1]).not.toHaveProperty("p_channel");
+  });
+
+  it("writes no second statement on a move that leaves the channel out", async () => {
+    await updateTransaction(edit({ wallet_id: OTHER_WALLET, category_id: OTHER_CATEGORY }));
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("remembers a moved row's channel against the target wallet's household", async () => {
+    const TARGET_SPACE = "abababab-abab-4bab-8bab-abababababab";
+    walletLookupResult.data = {
+      archived_at: null,
+      currency_code: "USD",
+      space_id: TARGET_SPACE,
+      bonus_channel: "online",
+    };
+    await updateTransaction(
+      edit({
+        wallet_id: OTHER_WALLET,
+        category_id: OTHER_CATEGORY,
+        merchant: "UNIQLO",
+        channel: "in_store",
+      }),
+    );
+    expect(eqSpy).toHaveBeenCalledWith("merchant_channels", "space_id", TARGET_SPACE);
+    expect(upsertSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ space_id: TARGET_SPACE, merchant_key: "uniqlo", channel: "in_store" }),
+      expect.anything(),
+    );
+    expect(eqSpy).not.toHaveBeenCalledWith("merchant_channels", "space_id", SPACE_ID);
+  });
+
+  it("reports a failed channel write after a landed move with the existing message", async () => {
+    // The move succeeded, so only the second statement fails.
+    updateSpy.mockImplementationOnce(() => {
+      updateResult.error = { message: "boom" };
+    });
+    const result = await updateTransaction(
+      edit({ wallet_id: OTHER_WALLET, category_id: OTHER_CATEGORY, channel: "in_store" }),
+    );
+    expect(result).toEqual({ error: "Moved, but could not save the channel. Please try again." });
+    expect(upsertSpy).not.toHaveBeenCalled();
+  });
+
   it("explains a refused move rather than reporting a generic failure", async () => {
     updateResult.error = {
       message: "moving this would hide it from 1 other member(s) of the wallet it is in",
