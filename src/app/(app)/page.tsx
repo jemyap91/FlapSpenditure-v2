@@ -4,10 +4,12 @@ import { createClient } from "@/lib/supabase/server";
 import { CategoryBreakdown, type BreakdownRow } from "@/components/CategoryBreakdown";
 import { CashFlow, type FlowRow } from "@/components/CashFlow";
 import { BudgetSummary } from "@/components/BudgetSummary";
+import { CardTracker } from "@/components/CardTracker";
 import { DueList } from "@/components/DueList";
 import { formatMoney } from "@/lib/money";
 import { monthRange, monthRangeOf, parseMonthParam, shiftMonth } from "@/lib/month-range";
 import { todayLocalDate } from "@/lib/today";
+import { loadCardTracker } from "@/server/card-tracker";
 import { MONTH_NAME } from "@/lib/month-names";
 import type { BudgetStatusRow } from "@/lib/budget-status";
 import { buildDueRows, type DueRuleInput, type HandledOccurrence } from "./due-rows";
@@ -224,6 +226,7 @@ export default async function DashboardPage(props: { searchParams?: Promise<Sear
     { data: dueRuleRows, error: dueRulesError },
     { data: dueSkipRows, error: dueSkipsError },
     { data: dueRecordedRows, error: dueRecordedError },
+    cardTrackerRows,
   ] = await Promise.all([
     // `wallets!recurring_rules_wallet_id_fkey`: 0022 added a second FK from
     // recurring_rules to wallets (recurring_rules_wallet_same_space), so an
@@ -260,6 +263,9 @@ export default async function DashboardPage(props: { searchParams?: Promise<Sear
       .not("recurring_id", "is", null)
       .is("deleted_at", null)
       .gte("recurring_occurrence_on", dueFloor),
+    // Always today's cycle, even under `?month=`: a card's bonus cycle is not
+    // a calendar month. `loadCardTracker` throws on a failed read itself.
+    loadCardTracker(supabase, { on: today, today }),
   ]);
   // Same "error is not emptiness" rule as every other read on this page.
   if (dueRulesError) throw new Error("Failed to load recurring rules");
@@ -420,6 +426,7 @@ export default async function DashboardPage(props: { searchParams?: Promise<Sear
         </p>
       </header>
       <CategoryBreakdown rows={rows} currencyCode={currency} total={spent} periodLabel={periodLabel} />
+      <CardTracker rows={cardTrackerRows} />
       <CashFlow
         rows={flowRows}
         currencyCode={currency}

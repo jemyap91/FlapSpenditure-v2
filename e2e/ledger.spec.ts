@@ -322,7 +322,8 @@ test.describe("wallets", () => {
     await page.goto("/transactions/new");
     // The Transfer chip does not exist at one wallet (TransactionForm's
     // `canTransfer`), so its presence is itself the assertion.
-    const transferChip = page.getByRole("radio", { name: "Transfer" });
+    // `exact`: the Channel row's "PayNow or transfer" chip also contains the word.
+    const transferChip = page.getByRole("radio", { name: "Transfer", exact: true });
     await expect(transferChip).toBeAttached();
     // Clicked via the visible chip, not `.check()` on the radio: the radio
     // is `peer sr-only` (styling is driven off it by its sibling <div>), so

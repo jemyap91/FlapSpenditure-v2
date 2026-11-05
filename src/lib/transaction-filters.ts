@@ -18,6 +18,10 @@ export type TransactionFilters = {
   /** Inclusive `YYYY-MM-DD` bounds on `occurred_on`. */
   from?: string;
   to?: string;
+  /** Only this wallet's rows (`?wallet=<uuid>`). */
+  walletId?: string;
+  /** Only expenses tagged with a channel their wallet earns no bonus on (`?mismatch=1`). */
+  mismatch?: true;
 };
 
 export const SEARCH_MAX_LENGTH = 120;
@@ -48,6 +52,11 @@ export function parseTransactionFilters(params: RawParams): TransactionFilters {
   const category = z.uuid().safeParse(first(params.category));
   if (category.success) out.categoryId = category.data;
 
+  const wallet = z.uuid().safeParse(first(params.wallet));
+  if (wallet.success) out.walletId = wallet.data;
+
+  if (first(params.mismatch) === "1") out.mismatch = true;
+
   const from = isoDate.safeParse(first(params.from));
   const to = isoDate.safeParse(first(params.to));
   // An inverted range reads as a typo, not a choice — dropping both is
@@ -60,7 +69,14 @@ export function parseTransactionFilters(params: RawParams): TransactionFilters {
 }
 
 export function hasAnyFilter(f: TransactionFilters): boolean {
-  return f.q !== undefined || f.categoryId !== undefined || f.from !== undefined || f.to !== undefined;
+  return (
+    f.q !== undefined ||
+    f.categoryId !== undefined ||
+    f.from !== undefined ||
+    f.to !== undefined ||
+    f.walletId !== undefined ||
+    f.mismatch !== undefined
+  );
 }
 
 /**

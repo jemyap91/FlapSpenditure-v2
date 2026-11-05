@@ -25,6 +25,9 @@ import { render, screen } from "@testing-library/react";
 // doc comment. Outside a real Next router this throws "invariant expected
 // app router to be mounted", exactly the same reason
 // src/components/TransactionList.test.tsx mocks this module.
+// The page reaches the transaction actions, which import server-only code.
+vi.mock("server-only", () => ({}));
+
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }),
 }));
@@ -332,5 +335,17 @@ describe("WalletDetailPage", () => {
       screen.getByText("This wallet is archived, so new transactions can’t be added to it."),
     ).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Add a transaction/ })).not.toBeInTheDocument();
+  });
+
+  it("tags a row with its channel and No bonus when it earns none", async () => {
+    walletsById.set(WALLET_A, wallet(WALLET_A));
+    transactionsData.push(
+      txn("t1", WALLET_A, { note: "Uniqlo", channel: "in_store", channel_mismatch: true }),
+    );
+
+    render(await WalletDetailPage({ params: Promise.resolve({ id: WALLET_A }) }));
+
+    expect(screen.getByText(/In store/)).toBeInTheDocument();
+    expect(screen.getByText(/No bonus/)).toBeInTheDocument();
   });
 });

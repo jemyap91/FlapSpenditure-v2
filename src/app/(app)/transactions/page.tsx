@@ -165,7 +165,7 @@ export default async function TransactionsPage({
   let query = supabase
     .from("transactions")
     .select(
-      "id, kind, amount_minor, currency_code, occurred_on, note, merchant, created_by, wallet_id, wallets!transactions_wallet_id_fkey(name), categories!transactions_category_id_fkey(name, color_slot, icon), repaid_expense(merchant, note, categories!transactions_category_id_fkey(name, color_slot, icon))",
+      "id, kind, amount_minor, currency_code, occurred_on, note, merchant, created_by, wallet_id, channel, channel_mismatch, wallets!transactions_wallet_id_fkey(name), categories!transactions_category_id_fkey(name, color_slot, icon), repaid_expense(merchant, note, categories!transactions_category_id_fkey(name, color_slot, icon))",
       { count: "exact" },
     )
     .is("deleted_at", null);
@@ -182,6 +182,9 @@ export default async function TransactionsPage({
   // repayments against it. `.filter` rather than `.eq`: it is a PostgREST
   // computed field, not a column the generated types know about.
   if (filters.categoryId) query = query.filter("effective_category_id", "eq", filters.categoryId);
+  if (filters.walletId) query = query.eq("wallet_id", filters.walletId);
+  // A computed field again, so `.filter`; null channels never flag.
+  if (filters.mismatch) query = query.filter("channel_mismatch", "eq", true);
   if (filters.from) query = query.gte("occurred_on", filters.from);
   if (filters.to) query = query.lte("occurred_on", filters.to);
 
@@ -238,6 +241,8 @@ export default async function TransactionsPage({
     merchant: string | null;
     created_by: string | null;
     wallet_id: string;
+    channel: Row["channel"];
+    channel_mismatch: boolean | null;
     wallets: { name: string } | null;
     categories: { name: string; color_slot: number; icon: string } | null;
     repaid_expense: {
@@ -270,6 +275,8 @@ export default async function TransactionsPage({
     })(),
     repays: repaysLabel(r),
     created_by_name: r.created_by_name,
+    channel: r.channel,
+    channel_mismatch: r.channel_mismatch === true,
   }));
 
   // Page-level: whether attribution is worth considering AT ALL for this

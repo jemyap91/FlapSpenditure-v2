@@ -9,6 +9,7 @@ import {
   EllipsisVertical,
   GripVertical,
   Landmark,
+  Percent,
   Settings,
   User,
 } from "lucide-react";
@@ -26,6 +27,7 @@ import { formatAmountInput, formatMoney, minorUnitFor } from "@/lib/money";
 import { slotVar } from "@/lib/palette";
 import { Modal } from "@/components/Modal";
 import { WalletForm } from "@/components/WalletForm";
+import { WalletBonusForm } from "@/components/WalletBonusForm";
 import type {
   WalletWithBalance,
   WalletSection,
@@ -174,7 +176,7 @@ export function WalletList({
    *  which the user could reach. */
   const [dialog, setDialog] = useState<{
     walletId: string;
-    view: "members" | "edit" | "archive";
+    view: "members" | "edit" | "terms" | "archive";
   } | null>(null);
   const [query, setQuery] = useState("");
   /** Where the current touch began, per row. A ref, not state: this changes
@@ -646,6 +648,9 @@ export function WalletList({
             )}
       <ul className="flex flex-col">
         {rows.map((w, rowIndex) => {
+          // A row the viewer cannot edit still lets them set card terms; an
+          // owner reaches the same fields in the edit dialog.
+          const canTerms = !!editActions && !editActions[w.id];
           const Icon = WALLET_ICON_COMPONENTS[w.icon as keyof typeof WALLET_ICON_COMPONENTS] ??
             (w.kind === "card" ? CreditCard : Landmark);
           // The confirmation dialog closes as soon as Archive is pressed,
@@ -848,7 +853,7 @@ export function WalletList({
                   the name and balance keep the width two icons were using.
                   Both layouts stay in the DOM and CSS picks one, at the same
                   `md` the shell itself switches on. */}
-              {(editActions?.[w.id] || memberSections?.[w.id] || canReorder) ? (
+              {(editActions?.[w.id] || canTerms || memberSections?.[w.id] || canReorder) ? (
                 <RowMoreMenu
                   walletName={w.name}
                   onMoveUp={
@@ -863,6 +868,9 @@ export function WalletList({
                     editActions?.[w.id]
                       ? () => setDialog({ walletId: w.id, view: "edit" })
                       : undefined
+                  }
+                  onTerms={
+                    canTerms ? () => setDialog({ walletId: w.id, view: "terms" }) : undefined
                   }
                   onMembers={
                     memberSections?.[w.id]
@@ -883,8 +891,16 @@ export function WalletList({
                   that all break at different points is markedly harder to
                   scan than one that breaks at the same place. Nothing is
                   reserved when the page passes no editActions at all. */}
-              {editActions && !editActions[w.id] && (
-                <span aria-hidden className={`block ${ROW_CONTROL}`} />
+              {canTerms && (
+                <button
+                  type="button"
+                  aria-label={`Card terms for ${w.name}`}
+                  onClick={() => setDialog({ walletId: w.id, view: "terms" })}
+                  className={`grid ${ROW_CONTROL} shrink-0 place-items-center rounded-md ${FOCUS_RING}`}
+                  style={{ color: "var(--ink-2)" }}
+                >
+                  <Percent size={18} aria-hidden />
+                </button>
               )}
               {editActions?.[w.id] && (
                 <button
@@ -1034,7 +1050,9 @@ export function WalletList({
               ? `Edit ${dialogWallet.name}`
               : dialog!.view === "archive"
                 ? `Archive ${dialogWallet.name}?`
-                : `Members of ${dialogWallet.name}`
+                : dialog!.view === "terms"
+                  ? `Card terms for ${dialogWallet.name}`
+                  : `Members of ${dialogWallet.name}`
           }
           onClose={() => setDialog(null)}
         >
@@ -1113,6 +1131,15 @@ export function WalletList({
               just the owner — arranging your own screen is not an ownership
               decision, which is exactly why Archive below is gated and this
               is not. */}
+          {(dialog!.view === "edit" || dialog!.view === "terms") && (
+            <WalletBonusForm
+              wallet={dialogWallet}
+              // Closing the edit dialog here would discard unsaved
+              // WalletForm edits above, so only the terms-only view closes.
+              onSuccess={dialog!.view === "terms" ? () => setDialog(null) : undefined}
+            />
+          )}
+
           {dialog!.view === "edit" && (
             <div className="mt-4 flex flex-col gap-1">
               <label htmlFor={groupSelectId} className="text-sm" style={{ color: "var(--ink-2)" }}>
@@ -1189,12 +1216,14 @@ export function WalletList({
 function RowMoreMenu({
   walletName,
   onEdit,
+  onTerms,
   onMembers,
   onMoveUp,
   onMoveDown,
 }: {
   walletName: string;
   onEdit?: () => void;
+  onTerms?: () => void;
   onMembers?: () => void;
   onMoveUp?: () => void;
   onMoveDown?: () => void;
@@ -1278,6 +1307,20 @@ function RowMoreMenu({
             >
               <Settings size={18} aria-hidden style={{ color: "var(--ink-2)" }} />
               Settings
+            </button>
+          )}
+          {onTerms && (
+            <button
+              type="button"
+              aria-label={`Card terms for ${walletName}`}
+              onClick={() => {
+                close();
+                onTerms();
+              }}
+              className={item}
+            >
+              <Percent size={18} aria-hidden style={{ color: "var(--ink-2)" }} />
+              Card terms
             </button>
           )}
           {onMembers && (

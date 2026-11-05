@@ -3,6 +3,8 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { TransactionForm } from "@/components/TransactionForm";
 import type { Category } from "@/components/CategoryPicker";
+import { loadCardTracker, type CardTrackerRow } from "@/server/card-tracker";
+import { todayLocalDate } from "@/lib/today";
 
 const uuid = z.uuid();
 
@@ -83,7 +85,7 @@ export default async function NewTransactionPage({
   ] = await Promise.all([
     supabase
       .from("wallets")
-      .select("id, name, currency_code, space_id, kind, color_slot")
+      .select("id, name, currency_code, space_id, kind, color_slot, bonus_channel, bonus_cap_minor")
       .is("archived_at", null)
       .order("created_at"),
     supabase
@@ -132,6 +134,26 @@ export default async function NewTransactionPage({
   const requestedWalletId =
     wallet && uuid.safeParse(wallet).success ? wallets.find((w) => w.id === wallet)?.id : undefined;
 
+  const defaultWalletId = requestedWalletId ?? wallets[0]!.id;
+
+  // Every household's remembered channel per merchant (RLS limits this to
+  // spaces the caller belongs to); the form picks by the chosen wallet's space. A failed read only costs the suggestion,
+  // never the expense.
+  const { data: merchantChannels, error: merchantChannelsError } = await supabase
+    .from("merchant_channels")
+    .select("space_id, merchant_key, channel");
+  if (merchantChannelsError) console.error("Could not load merchant channels", merchantChannelsError.message);
+
+  // A tracker failure must never stop someone recording an expense: the form
+  // simply shows no max warning.
+  const today = todayLocalDate();
+  let cardRows: CardTrackerRow[] = [];
+  try {
+    cardRows = await loadCardTracker(supabase, { on: today, today });
+  } catch (e) {
+    console.error("Could not load card tracker", e);
+  }
+
   return (
     <>
       {/* This screen had no level-one heading, so its outline started at
@@ -148,9 +170,11 @@ export default async function NewTransactionPage({
       <TransactionForm
         wallets={wallets}
         categories={categories ?? ([] satisfies Category[])}
-        defaultWalletId={requestedWalletId ?? wallets[0]!.id}
+        defaultWalletId={defaultWalletId}
         from={from}
         suggestions={suggestions ?? []}
+        merchantChannels={merchantChannels ?? []}
+        cardRows={cardRows}
       />
     </>
   );

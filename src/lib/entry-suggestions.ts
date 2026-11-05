@@ -19,7 +19,7 @@ export type EntrySuggestion = {
   last_used: string;
 };
 
-function key(value: string | null | undefined): string {
+export function merchantKey(value: string | null | undefined): string {
   return (value ?? "").trim().toLowerCase();
 }
 
@@ -28,7 +28,7 @@ function byMerchant(rows: EntrySuggestion[]) {
   const map = new Map<string, { merchant: string; uses: number; last_used: string }>();
   for (const r of rows) {
     if (!r.merchant) continue;
-    const k = key(r.merchant);
+    const k = merchantKey(r.merchant);
     const cur = map.get(k);
     if (!cur) {
       map.set(k, { merchant: r.merchant, uses: r.uses, last_used: r.last_used });
@@ -53,13 +53,13 @@ export function merchantOptions(rows: EntrySuggestion[]): string[] {
  * with no merchant still gets its usual descriptions.
  */
 export function noteOptions(rows: EntrySuggestion[], merchant: string): string[] {
-  const k = key(merchant);
+  const k = merchantKey(merchant);
   const known = k !== "" && byMerchant(rows).has(k);
-  const pool = known ? rows.filter((r) => key(r.merchant) === k) : rows;
+  const pool = known ? rows.filter((r) => merchantKey(r.merchant) === k) : rows;
   const seen = new Map<string, { note: string; uses: number; last_used: string }>();
   for (const r of pool) {
     if (!r.note) continue;
-    const nk = key(r.note);
+    const nk = merchantKey(r.note);
     const cur = seen.get(nk);
     if (!cur) seen.set(nk, { note: r.note, uses: r.uses, last_used: r.last_used });
     else {
@@ -74,11 +74,11 @@ export function noteOptions(rows: EntrySuggestion[], merchant: string): string[]
 
 /** The category used most with this merchant across all its notes, or null. */
 export function usualCategoryId(rows: EntrySuggestion[], merchant: string): string | null {
-  const k = key(merchant);
+  const k = merchantKey(merchant);
   if (k === "") return null;
   const totals = new Map<string, number>();
   for (const r of rows) {
-    if (key(r.merchant) !== k || !r.category_id) continue;
+    if (merchantKey(r.merchant) !== k || !r.category_id) continue;
     totals.set(r.category_id, (totals.get(r.category_id) ?? 0) + r.uses);
   }
   let best: string | null = null;

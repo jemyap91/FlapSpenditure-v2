@@ -5,7 +5,11 @@ vi.mock("server-only", () => ({}));
 
 const { callTool, toolList } = vi.hoisted(() => ({
   callTool: vi.fn(),
-  toolList: vi.fn(() => [{ name: "list_wallets", description: "d", inputSchema: { type: "object" } }]),
+  toolList: vi.fn(() => [
+    { name: "list_wallets", description: "d", inputSchema: { type: "object" } },
+    { name: "get_card_tracker", description: "d", inputSchema: { type: "object" } },
+    { name: "update_wallet_bonus", description: "d", inputSchema: { type: "object" } },
+  ]),
 }));
 vi.mock("@/server/mcp/tools", () => ({ callTool, toolList }));
 
@@ -29,6 +33,12 @@ describe("handleMessage", () => {
     expect(reply).toMatchObject({ result: { instructions: expect.stringMatching(/ask .*merchant/i) } });
   });
 
+  it("tells the client to relay warnings and how to find card progress", async () => {
+    const reply = await handleMessage({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    expect(reply).toMatchObject({ result: { instructions: expect.stringMatching(/warnings/i) } });
+    expect(reply).toMatchObject({ result: { instructions: expect.stringMatching(/get_card_tracker/) } });
+  });
+
   it("answers an unknown protocol version with its own latest", async () => {
     const reply = await handleMessage({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "1999-01-01" } });
     expect(reply).toMatchObject({ result: { protocolVersion: SUPPORTED_PROTOCOL_VERSIONS[0] } });
@@ -42,6 +52,8 @@ describe("handleMessage", () => {
   it("lists tools", async () => {
     const reply = await handleMessage({ jsonrpc: "2.0", id: "a", method: "tools/list" });
     expect(reply).toEqual({ jsonrpc: "2.0", id: "a", result: { tools: toolList() } });
+    const names = (reply as { result: { tools: { name: string }[] } }).result.tools.map((t) => t.name);
+    expect(names).toEqual(expect.arrayContaining(["get_card_tracker", "update_wallet_bonus"]));
   });
 
   it("returns a tool's data as text content", async () => {

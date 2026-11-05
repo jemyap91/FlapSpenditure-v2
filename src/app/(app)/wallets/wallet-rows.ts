@@ -1,3 +1,4 @@
+import type { Channel } from "@/lib/channels";
 import { CURRENCY_CODES, type WalletInput } from "@/lib/validation/wallet";
 
 export type WalletRow = {
@@ -17,6 +18,11 @@ export type WalletRow = {
    *  `starting_balance_minor + sum(transactions)` and only the opening half
    *  is editable, so the form cannot derive it from the displayed total. */
   starting_balance_minor: number;
+  /** Card bonus terms (0033). Carried to the UI so the terms form can seed
+   *  itself; any member may set them, owner or not. */
+  bonus_channel: Channel | null;
+  cycle_start_day: number | null;
+  bonus_cap_minor: number | null;
 };
 
 export type BalanceRow = {

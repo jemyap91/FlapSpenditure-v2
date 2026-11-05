@@ -14,6 +14,8 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { loadCardTracker } from "@/server/card-tracker";
+import { todayLocalDate } from "@/lib/today";
 
 // TransactionForm calls `useRouter()` unconditionally (its post-save
 // redirect) — outside a real Next router this throws "invariant expected
@@ -47,6 +49,10 @@ vi.mock("@/server/actions/categories", () => ({
   createCategory: vi.fn(),
 }));
 
+vi.mock("@/server/card-tracker", () => ({
+  loadCardTracker: vi.fn(),
+}));
+
 vi.mock("./RepaymentsSection", () => ({
   RepaymentsSection: (p: { expenseId: string; spaceId: string }) => (
     <div data-testid="repayments" data-expense={p.expenseId} data-space={p.spaceId} />
@@ -59,8 +65,9 @@ vi.mock("./RefundEditSection", () => ({
 // `vi.mock` factories are hoisted above this file's own top-level `const`s
 // (same reason `/wallets/[id]/page.test.tsx` wraps its fixtures in
 // `vi.hoisted`), so every fixture map has to live in here too.
-const { txnById, legsByTransferId, walletsById, categoriesBySpaceId, categoryById, UUID_RE } = vi.hoisted(
+const { rulesData, txnById, legsByTransferId, walletsById, categoriesBySpaceId, categoryById, UUID_RE } = vi.hoisted(
   () => ({
+    rulesData: [] as { merchant_key: string; channel: string }[],
     txnById: new Map<string, Record<string, unknown>>(),
     legsByTransferId: new Map<string, Record<string, unknown>[]>(),
     walletsById: new Map<string, Record<string, unknown>>(),
@@ -219,6 +226,15 @@ vi.mock("@/lib/supabase/server", () => ({
         };
         return builder;
       }
+      if (table === "merchant_channels") {
+        const builder = {
+          select: () => builder,
+          eq: () => builder,
+          then: (resolve: (v: { data: typeof rulesData; error: null }) => void) =>
+            resolve({ data: rulesData, error: null }),
+        };
+        return builder;
+      }
       throw new Error(`unexpected table ${table}`);
     },
   }),
@@ -248,6 +264,7 @@ function txn(id: string, over: Record<string, unknown> = {}) {
     note: "weekly shop",
     merchant: "Tesco",
     transfer_id: null,
+    channel: null,
     ...over,
   };
 }
@@ -281,6 +298,9 @@ beforeEach(() => {
   walletsById.clear();
   categoriesBySpaceId.clear();
   categoryById.clear();
+  rulesData.length = 0;
+  vi.mocked(loadCardTracker).mockReset();
+  vi.mocked(loadCardTracker).mockResolvedValue([]);
 });
 
 describe("EditTransactionPage — 404 collapse", () => {
@@ -650,5 +670,51 @@ describe("EditTransactionPage — repayments", () => {
 
     expect(screen.getByRole("heading", { name: "This transaction can’t be edited" })).toBeInTheDocument();
     expect(screen.queryByTestId("refund-edit")).not.toBeInTheDocument();
+  });
+});
+
+describe("EditTransactionPage — channel and card bonus", () => {
+  function seedExpense(over: Record<string, unknown> = {}) {
+    txnById.set(TXN_A, txn(TXN_A, over));
+    walletsById.set(WALLET_A, wallet(WALLET_A, { bonus_channel: "online", bonus_cap_minor: null }));
+    categoriesBySpaceId.set(SPACE, [category(CATEGORY_A)]);
+  }
+  const open = () =>
+    EditTransactionPage({ params: Promise.resolve({ id: TXN_A }), searchParams: Promise.resolve({}) });
+
+  it("seeds the stored channel instead of suggesting one", async () => {
+    seedExpense({ channel: "in_store" });
+    rulesData.push({ merchant_key: "tesco", channel: "bill" });
+    render(await open());
+    expect(screen.getByRole("radio", { name: "In store" })).toBeChecked();
+  });
+
+  it("seeds a blank channel as blank, not as the wallet's bonus channel", async () => {
+    seedExpense({ channel: null });
+    render(await open());
+    expect(screen.getByRole("radio", { name: "Online" })).not.toBeChecked();
+  });
+
+  it("loads the card tracker for today, leaving this transaction out of the spend", async () => {
+    seedExpense();
+    await open();
+    const today = todayLocalDate();
+    expect(loadCardTracker).toHaveBeenCalledWith(expect.anything(), {
+      on: today,
+      today,
+      excludeTransactionId: TXN_A,
+    });
+  });
+
+  it("still renders the form, and logs, when the card tracker fails to load", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(loadCardTracker).mockRejectedValue(new Error("Failed to load card tracker"));
+    seedExpense();
+
+    render(await open());
+
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
+    expect(log).toHaveBeenCalledWith("Could not load card tracker", expect.any(Error));
+    log.mockRestore();
   });
 });

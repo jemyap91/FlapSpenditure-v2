@@ -22,6 +22,9 @@ const wallet = (id: string, over: Partial<WalletRow> = {}): WalletRow => ({
   color_slot: 1,
   icon: "landmark",
   starting_balance_minor: 0,
+  bonus_channel: null,
+  cycle_start_day: null,
+  bonus_cap_minor: null,
   ...over,
 });
 

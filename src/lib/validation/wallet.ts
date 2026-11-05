@@ -92,3 +92,33 @@ export type WalletInput = z.infer<typeof walletInput>;
  * hand-declared, so a schema field rename can't silently fall out of sync
  * with this type. */
 export type WalletField = keyof WalletInput;
+
+/**
+ * A wallet's card bonus terms. All three null clears them. `max` is a
+ * decimal string in the wallet's currency, converted to minor units by the
+ * action (which knows the currency); a max without a channel and cycle day
+ * has nothing to measure against, so it is refused here.
+ */
+export const walletBonusInput = z
+  .object({
+    wallet_id: z.string().uuid(),
+    bonus_channel: z.enum(Constants.public.Enums.expense_channel).nullable(),
+    cycle_start_day: z
+      .number()
+      .int("Enter a day from 1 to 31")
+      .min(1, "Enter a day from 1 to 31")
+      .max(31, "Enter a day from 1 to 31")
+      .nullable(),
+    max: z.string().trim().nullable(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.max && (data.bonus_channel === null || data.cycle_start_day === null)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["max"],
+        message: "Set a channel and cycle start day to use a max",
+      });
+    }
+  });
+
+export type WalletBonusInput = z.infer<typeof walletBonusInput>;

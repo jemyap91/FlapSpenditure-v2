@@ -18,6 +18,8 @@ import type {
   TransferEditInput,
 } from "@/lib/validation/transaction";
 import { parseAmountInput, minorUnitFor } from "@/lib/money";
+import { suggestChannel } from "@/lib/card-bonus";
+import { lookupMerchantChannel, rememberMerchantChannel } from "@/server/merchant-channels";
 
 export type TransactionResult = { id: string } | { error: string };
 export type TransferResult = { transferId: string } | { error: string };
@@ -90,7 +92,8 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
   } = await supabase.auth.getUser();
   if (!user) return { error: "Not signed in" };
 
-  const { wallet_id, kind, amount, category_id, occurred_on, note, merchant } = parsed.data;
+  const { wallet_id, kind, amount, category_id, occurred_on, note, merchant, channel } = parsed.data;
+  if (kind !== "expense" && channel) return { error: "Only expenses have a channel" };
 
   // `wallets_select` RLS (is_wallet_member) already means this SELECT comes
   // back empty for a wallet the caller doesn't belong to — no separate
@@ -113,7 +116,7 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
   // make its own decision.
   const { data: wallet } = await supabase
     .from("wallets")
-    .select("currency_code, archived_at, space_id")
+    .select("currency_code, archived_at, space_id, bonus_channel")
     .eq("id", wallet_id)
     .single();
   if (!wallet || wallet.archived_at) return { error: "Wallet not found" };
@@ -170,6 +173,14 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
   }
   if (magnitude === 0) return { error: "Enter an amount greater than zero" };
 
+  // undefined means "suggest": the merchant's remembered channel, else the
+  // wallet's bonus channel. null is a deliberate blank, so no suggestion.
+  const suggested =
+    kind === "expense"
+      ? suggestChannel(await lookupMerchantChannel(supabase, wallet.space_id, merchant), wallet.bonus_channel)
+      : null;
+  const storedChannel = kind === "expense" ? (channel === undefined ? suggested : channel) : null;
+
   const { data, error } = await supabase
     .from("transactions")
     .insert({
@@ -203,6 +214,7 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
       // `transferInput`'s own comment (src/lib/validation/transaction.ts)
       // for the full asymmetry.
       merchant,
+      channel: storedChannel,
     })
     .select("id")
     .single();
@@ -213,6 +225,8 @@ export async function createTransaction(input: TransactionInput): Promise<Transa
   // implementation detail, never useful guidance, so it is never forwarded
   // (same convention as src/server/actions/wallets.ts).
   if (error) return { error: "Could not save transaction. Please try again." };
+
+  if (channel) await rememberMerchantChannel(supabase, wallet.space_id, merchant, channel, suggested);
 
   revalidatePath("/", "layout");
   return { id: data.id };
@@ -253,7 +267,7 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
   } = await supabase.auth.getUser();
   if (!user) return { error: "Not signed in" };
 
-  const { id, wallet_id: requestedWalletId, amount, occurred_on, category_id, note, merchant } = parsed.data;
+  const { id, wallet_id: requestedWalletId, amount, occurred_on, category_id, note, merchant, channel } = parsed.data;
 
   // Load the row first to learn its wallet_id, kind and CURRENT category —
   // a posted wallet_id/kind is never trusted, and there is no such field on
@@ -273,7 +287,7 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
   // instead of a stray write to a row the user believes is gone.
   const { data: existing } = await supabase
     .from("transactions")
-    .select("wallet_id, kind, category_id, currency_code, recurring_id")
+    .select("wallet_id, kind, category_id, currency_code, recurring_id, channel")
     .eq("id", id)
     .is("deleted_at", null)
     .single();
@@ -284,6 +298,7 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
     category_id: currentCategoryId,
     currency_code: txnCurrency,
     recurring_id,
+    channel: currentChannel,
   } = existing;
 
   // Absent means "leave it where it is" — the common edit changes a note or
@@ -305,6 +320,9 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
     return { error: "This is a transfer — edit it from the transfer, not the transaction" };
   }
 
+  // kind isn't editable, so an update can't turn this row into an expense.
+  if (kind !== "expense" && channel) return { error: "Only expenses have a channel" };
+
   // A refund's category is its expense's (spec §4.2); it stores none.
   // 0030's refund_shape would reject the write anyway — this says why.
   if (kind === "refund" && category_id) {
@@ -313,7 +331,7 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
 
   const { data: wallet } = await supabase
     .from("wallets")
-    .select("currency_code, archived_at, space_id")
+    .select("currency_code, archived_at, space_id, bonus_channel")
     .eq("id", wallet_id)
     .single();
   if (!wallet) return { error: "Wallet not found" };
@@ -429,6 +447,17 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
   // (0004_rls.sql, never revoked by 0016) — the schema's omission plus this
   // explicit, named payload are the only two things keeping it out of the
   // statement.
+  // A newly chosen channel that differs from what would have been suggested
+  // becomes the merchant's rule. Best-effort, after the row is saved.
+  const rememberChannelChange = async () => {
+    if (!channel || channel === currentChannel) return;
+    const suggested = suggestChannel(
+      await lookupMerchantChannel(supabase, wallet.space_id, merchant),
+      wallet.bonus_channel,
+    );
+    await rememberMerchantChannel(supabase, wallet.space_id, merchant, channel, suggested);
+  };
+
   // A move goes through `move_transaction` (0020_transaction_wallet_move.sql)
   // rather than this action's own UPDATE, because `wallet_id` is deliberately
   // NOT in the column grant and stays that way — a raw PATCH cannot re-file a
@@ -474,6 +503,17 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
       if (moveError.message.includes("not found")) return { error: "Transaction not found" };
       return { error: "Could not move that transaction. Please try again." };
     }
+    // move_transaction has no channel parameter, so a posted channel is
+    // written as a second statement once the move has landed.
+    if (channel !== undefined) {
+      const { error: channelError } = await supabase
+        .from("transactions")
+        .update({ channel })
+        .eq("id", id)
+        .is("deleted_at", null);
+      if (channelError) return { error: "Moved, but could not save the channel. Please try again." };
+    }
+    await rememberChannelChange();
     revalidatePath("/", "layout");
     return { ok: true };
   }
@@ -486,6 +526,8 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
       occurred_on,
       note,
       merchant,
+      // Left out when undefined: absent means keep the stored channel.
+      ...(channel !== undefined && { channel }),
       updated_at: new Date().toISOString(),
     })
     .eq("id", id)
@@ -499,6 +541,7 @@ export async function updateTransaction(input: TransactionEditInput): Promise<Mu
   // before.
   if (!updated || updated.length === 0) return { error: "Transaction not found" };
 
+  await rememberChannelChange();
   revalidatePath("/", "layout");
   return { ok: true };
 }

@@ -80,7 +80,7 @@ describe("RecurringForm in create mode", () => {
 
     // Switching the wallet select changes the derived currency.
     await user.selectOptions(screen.getByRole("combobox", { name: /wallet/i }), "wallet-sgd");
-    await user.click(screen.getByRole("button", { name: "Add rule" }));
+    await user.click(await screen.findByRole("button", { name: "Add rule" }));
     expect(seen[1]!.get("wallet_id")).toBe("wallet-sgd");
     expect(seen[1]!.get("currency_code")).toBe("SGD");
   });
@@ -159,7 +159,7 @@ describe("RecurringForm in create mode", () => {
     // The category selection is state, not a form field: it must clear too.
     // `aria-pressed`/selected styling aside, the cheapest observable is what
     // the NEXT submission carries.
-    await user.click(screen.getByRole("button", { name: "Add rule" }));
+    await user.click(await screen.findByRole("button", { name: "Add rule" }));
     const second = vi.mocked(action).mock.calls[1]![1] as FormData;
     expect(second.get("category_id")).toBe("");
     expect(second.get("interval_unit")).toBe("monthly");

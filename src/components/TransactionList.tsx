@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowRightLeft } from "lucide-react";
 import { formatMoney } from "@/lib/money";
+import { CHANNEL_LABELS, type Channel } from "@/lib/channels";
 import { slotVar } from "@/lib/palette";
 import { CATEGORY_ICON_COMPONENTS } from "@/lib/category-icons";
 import type { CategoryIcon } from "@/lib/validation/category";
@@ -64,6 +65,12 @@ export type Row = {
    *  bothered to resolve it. Either way, rendering is driven by
    *  `showAttribution`, not by whether this happens to be non-null. */
   created_by_name: string | null;
+  /** Where the expense was made (`transactions.channel`); null for income,
+   *  transfers and anything recorded before channels existed. */
+  channel: Channel | null;
+  /** The computed `channel_mismatch` column: the row's wallet has a bonus
+   *  channel and this expense's channel is a different one. */
+  channel_mismatch: boolean;
 };
 
 const FOCUS_RING =
@@ -504,7 +511,8 @@ export function TransactionList({
                           `created_by_name: null` and must render with no
                           "added by" segment at all, not a blank/"undefined"
                           one. */}
-                      <span className="block truncate text-xs" style={{ color: "var(--ink-2)" }}>
+                      <span className="flex items-baseline gap-2 text-xs" style={{ color: "var(--ink-2)" }}>
+                        <span className="min-w-0 flex-1 truncate">
                         {[
                           r.kind === "refund" && (merchantOf(r) || noteOf(r))
                             ? r.repays ? `Repayment for ${r.repays}` : "Repayment"
@@ -512,10 +520,19 @@ export function TransactionList({
                           merchantOf(r) && noteOf(r) ? noteOf(r) : null,
                           (merchantOf(r) || noteOf(r)) && r.category_name ? r.category_name : null,
                           r.wallet_name,
+                          r.channel ? CHANNEL_LABELS[r.channel] : null,
                           showAttribution && r.created_by_name ? `added by ${r.created_by_name}` : null,
                         ]
                           .filter(Boolean)
                           .join(" · ")}
+                        </span>
+                        {/* Text, not just colour: a spend that earns no
+                            bonus is named in words. */}
+                        {r.channel_mismatch && (
+                          <span className="shrink-0 font-medium" style={{ color: "var(--neg)" }}>
+                            <span aria-hidden="true">⚠ </span>No bonus
+                          </span>
+                        )}
                       </span>
                     </span>
                     {/* Sign is always rendered (`−12.50`/`+3,200.00`);

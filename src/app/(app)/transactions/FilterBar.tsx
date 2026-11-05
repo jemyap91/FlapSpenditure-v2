@@ -73,6 +73,10 @@ export function FilterBar({
     if (next.categoryId) params.set("category", next.categoryId);
     if (next.from) params.set("from", next.from);
     if (next.to) params.set("to", next.to);
+    // No control sets these: they arrive in a link (a card's mismatch
+    // spend) and must survive every other change to the bar.
+    if (next.walletId) params.set("wallet", next.walletId);
+    if (next.mismatch) params.set("mismatch", "1");
     const qs = params.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname);
   }

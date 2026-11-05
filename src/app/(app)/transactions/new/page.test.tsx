@@ -29,6 +29,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createTransaction } from "@/server/actions/transactions";
+import { loadCardTracker } from "@/server/card-tracker";
+import { todayLocalDate } from "@/lib/today";
 
 const push = vi.fn();
 vi.mock("next/navigation", () => ({
@@ -48,8 +50,15 @@ vi.mock("@/server/actions/categories", () => ({
   createCategory: vi.fn(),
 }));
 
-const { walletsData, categoriesData } = vi.hoisted(() => ({
-  walletsData: [] as { id: string; name: string; currency_code: string; kind: "card" | "bank"; color_slot: number }[],
+// The tracker is its own module (and server-only); a failed read there must
+// never stop someone recording an expense, so tests drive it directly.
+vi.mock("@/server/card-tracker", () => ({
+  loadCardTracker: vi.fn(),
+}));
+
+const { walletsData, rulesData, categoriesData } = vi.hoisted(() => ({
+  walletsData: [] as { id: string; name: string; currency_code: string; kind: "card" | "bank"; color_slot: number; space_id: string; bonus_channel: string | null; bonus_cap_minor: number | null }[],
+  rulesData: [] as { space_id: string; merchant_key: string; channel: string }[],
   categoriesData: [] as Record<string, unknown>[],
 }));
 
@@ -80,6 +89,15 @@ vi.mock("@/lib/supabase/server", () => ({
         };
         return builder;
       }
+      if (table === "merchant_channels") {
+        const builder = {
+          select: () => builder,
+          eq: () => builder,
+          then: (resolve: (v: { data: typeof rulesData; error: null }) => void) =>
+            resolve({ data: rulesData, error: null }),
+        };
+        return builder;
+      }
       throw new Error(`unexpected table ${table}`);
     },
   }),
@@ -89,15 +107,19 @@ import NewTransactionPage from "./page";
 
 const WALLET_A = "11111111-1111-4111-8111-111111111111";
 const WALLET_B = "22222222-2222-4222-8222-222222222222";
+const SPACE = "99999999-9999-4999-8999-999999999999";
 const NOT_MINE = "33333333-3333-4333-8333-333333333333";
 
 beforeEach(() => {
   walletsData.length = 0;
   categoriesData.length = 0;
   walletsData.push(
-    { id: WALLET_A, name: "Everyday", currency_code: "USD", kind: "card", color_slot: 1 },
-    { id: WALLET_B, name: "Savings", currency_code: "USD", kind: "bank", color_slot: 2 },
+    { id: WALLET_A, name: "Everyday", currency_code: "USD", kind: "card", color_slot: 1, space_id: SPACE, bonus_channel: null, bonus_cap_minor: null },
+    { id: WALLET_B, name: "Savings", currency_code: "USD", kind: "bank", color_slot: 2, space_id: SPACE, bonus_channel: null, bonus_cap_minor: null },
   );
+  rulesData.length = 0;
+  vi.mocked(loadCardTracker).mockReset();
+  vi.mocked(loadCardTracker).mockResolvedValue([]);
   push.mockClear();
   vi.mocked(createTransaction).mockReset();
   vi.mocked(createTransaction).mockResolvedValue({ id: "t1" });
@@ -137,7 +159,7 @@ describe("NewTransactionPage — ?wallet preselects, but only from the caller's 
       kind: "expense",
       color_slot: 1,
       icon: "circle",
-      wallet_id: WALLET_A,
+      space_id: SPACE,
     });
 
     const ui = await NewTransactionPage({
@@ -222,7 +244,7 @@ describe("NewTransactionPage — array-valued search params do not crash (Task 4
       kind: "expense",
       color_slot: 1,
       icon: "circle",
-      wallet_id: WALLET_A,
+      space_id: SPACE,
     });
   });
 
@@ -267,7 +289,7 @@ describe("NewTransactionPage — threads `from` into TransactionForm (Task 4 rev
       kind: "expense",
       color_slot: 1,
       icon: "circle",
-      wallet_id: WALLET_A,
+      space_id: SPACE,
     });
   });
 
@@ -279,5 +301,40 @@ describe("NewTransactionPage — threads `from` into TransactionForm (Task 4 rev
     await saveAnExpenseThroughThePage();
 
     expect(push).toHaveBeenCalledWith(`/wallets/${WALLET_B}`);
+  });
+});
+
+describe("NewTransactionPage — channel and card bonus", () => {
+  it("loads the card tracker for today", async () => {
+    await NewTransactionPage({ searchParams: Promise.resolve({}) });
+    const today = todayLocalDate();
+    expect(loadCardTracker).toHaveBeenCalledWith(expect.anything(), { on: today, today });
+  });
+
+  it("suggests the default wallet's bonus channel", async () => {
+    walletsData[0]!.bonus_channel = "online";
+    const ui = await NewTransactionPage({ searchParams: Promise.resolve({}) });
+    render(ui);
+    expect(screen.getByRole("radio", { name: "Online" })).toBeChecked();
+  });
+
+  it("applies the household's merchant rules", async () => {
+    rulesData.push({ space_id: SPACE, merchant_key: "uniqlo", channel: "in_store" });
+    const ui = await NewTransactionPage({ searchParams: Promise.resolve({}) });
+    render(ui);
+    await userEvent.setup().type(screen.getByLabelText("Merchant"), "Uniqlo");
+    expect(screen.getByRole("radio", { name: "In store" })).toBeChecked();
+  });
+
+  it("still renders the form, and logs, when the card tracker fails to load", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(loadCardTracker).mockRejectedValue(new Error("Failed to load card tracker"));
+
+    const ui = await NewTransactionPage({ searchParams: Promise.resolve({}) });
+    render(ui);
+
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(log).toHaveBeenCalledWith("Could not load card tracker", expect.any(Error));
+    log.mockRestore();
   });
 });

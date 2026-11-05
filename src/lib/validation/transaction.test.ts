@@ -298,3 +298,22 @@ describe("refunds", () => {
     expect(Object.keys(refundInput.shape)).not.toContain("category_id");
   });
 });
+
+describe("channel on the save schemas", () => {
+  it("leaves channel undefined when absent, so the action can suggest one", () => {
+    expect(transactionInput.parse(baseCreate).channel).toBeUndefined();
+    expect(transactionEditInput.parse(baseEdit).channel).toBeUndefined();
+  });
+
+  it("accepts every channel and an explicit null", () => {
+    for (const channel of ["online", "in_store", "bill", "paynow_transfer", "overseas", null]) {
+      expect(transactionInput.parse({ ...baseCreate, channel }).channel).toBe(channel);
+      expect(transactionEditInput.parse({ ...baseEdit, channel }).channel).toBe(channel);
+    }
+  });
+
+  it("refuses an unknown channel", () => {
+    expect(transactionInput.safeParse({ ...baseCreate, channel: "cash" }).success).toBe(false);
+    expect(transactionEditInput.safeParse({ ...baseEdit, channel: "cash" }).success).toBe(false);
+  });
+});

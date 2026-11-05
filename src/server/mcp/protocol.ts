@@ -26,7 +26,10 @@ const INSTRUCTIONS =
   "Tools for the user's expense ledger. Amounts are positive decimal strings in the wallet's currency; " +
   "whether money went out or came in is the transaction's kind. To change a transaction, find its id " +
   "with list_transactions first, then call update_transaction with only the fields that change. " +
-  "Before recording a new expense or income, ask the user for the merchant if they didn't say who it was.";
+  "Before recording a new expense or income, ask the user for the merchant if they didn't say who it was. " +
+  "Saved expenses may return warnings; always tell the user each one. Leave channel out to use the " +
+  "suggested one. Use get_card_tracker for card bonus progress, and list_transactions with mismatch " +
+  "true to see expenses that earned no bonus.";
 
 function isRequest(value: unknown): value is JsonRpcRequest {
   return (

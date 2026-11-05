@@ -58,6 +58,7 @@ const { getUser, readResult, countResult, updateResult, updateSpy, fromSpy, eqSp
     revalidatePath: vi.fn(),
   }));
 
+vi.mock("server-only", () => ({}));
 vi.mock("next/cache", () => ({ revalidatePath }));
 
 vi.mock("@/lib/supabase/server", () => ({
