@@ -43,7 +43,11 @@ function expense(over: Row = {}): Row {
  * only if the query asked for the right rows -- not because the fixture
  * was pre-filtered.
  */
-function fakeClient(db: { wallets: Row[]; transactions: Row[] }) {
+function fakeClient(db: {
+  wallets: Row[];
+  transactions: Row[];
+  failing?: "wallets" | "transactions" | "transaction";
+}) {
   return {
     from(table: "wallets" | "transactions") {
       let rows = [...db[table]];
@@ -63,8 +67,18 @@ function fakeClient(db: { wallets: Row[]; transactions: Row[] }) {
           rows.sort((a, b) => String(a[c]).localeCompare(String(b[c])));
           return builder;
         },
-        maybeSingle: () => Promise.resolve({ data: rows[0] ?? null, error: null }),
-        then: (resolve: (v: unknown) => void) => resolve({ data: rows, error: null }),
+        maybeSingle: () =>
+          Promise.resolve(
+            db.failing === "transaction" && table === "transactions"
+              ? { data: null, error: { message: "boom" } }
+              : { data: rows[0] ?? null, error: null },
+          ),
+        then: (resolve: (v: unknown) => void) =>
+          resolve(
+            db.failing === table
+              ? { data: null, error: { message: "boom" } }
+              : { data: rows, error: null },
+          ),
       };
       return builder;
     },
@@ -205,6 +219,33 @@ describe("loadCardTracker", () => {
   });
 });
 
+describe("loadCardTracker errors and pace", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  it("rejects when the wallets read fails", async () => {
+    const supabase = fakeClient({ wallets: [wallet()], transactions: [], failing: "wallets" });
+    await expect(loadCardTracker(supabase, ON)).rejects.toThrow("Failed to load card tracker");
+  });
+
+  it("rejects when the expenses read fails", async () => {
+    const supabase = fakeClient({ wallets: [wallet()], transactions: [], failing: "transactions" });
+    await expect(loadCardTracker(supabase, ON)).rejects.toThrow("Failed to load card tracker");
+  });
+
+  it("passes opts.today to paceFor", async () => {
+    const supabase = fakeClient({
+      wallets: [wallet()],
+      transactions: [expense({ amount_minor: 70000 })],
+    });
+    const [late] = await loadCardTracker(supabase, { on: "2026-11-05", today: "2026-11-05" });
+    const [early] = await loadCardTracker(supabase, { on: "2026-11-05", today: "2026-10-19" });
+    expect(late!.pace).toBe("on_pace");
+    expect(early!.pace).toBe("under");
+  });
+});
+
 describe("warningsFor", () => {
   beforeEach(() => {
     n = 0;
@@ -252,6 +293,24 @@ describe("warningsFor", () => {
       tx.id as string,
     );
     expect(res).toEqual({ channel: "online", warnings: [] });
+  });
+
+  it("rejects when the transaction read fails", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const tx = expense();
+    await expect(
+      warningsFor(
+        fakeClient({ wallets: [wallet()], transactions: [tx], failing: "transaction" }),
+        tx.id as string,
+      ),
+    ).rejects.toThrow("Failed to load warnings");
+  });
+
+  it("returns the empty result for a transaction that does not exist", async () => {
+    expect(await warningsFor(fakeClient({ wallets: [wallet()], transactions: [] }), "nope")).toEqual({
+      channel: null,
+      warnings: [],
+    });
   });
 
   it("warns for nothing but expenses", async () => {

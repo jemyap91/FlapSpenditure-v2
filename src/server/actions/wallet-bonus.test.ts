@@ -86,4 +86,42 @@ describe("setWalletBonus", () => {
     expect("error" in result).toBe(true);
     expect(rpc).not.toHaveBeenCalled();
   });
+
+  it("refuses a caller who is not signed in", async () => {
+    getUser.mockResolvedValue({ data: { user: null } });
+    const result = await setWalletBonus({
+      wallet_id: WALLET_ID,
+      bonus_channel: "online",
+      cycle_start_day: 19,
+      max: "1000",
+    });
+    expect(result).toEqual({ error: "Not signed in" });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("reports a wallet the caller cannot see", async () => {
+    walletRow.data = null;
+    const result = await setWalletBonus({
+      wallet_id: WALLET_ID,
+      bonus_channel: "online",
+      cycle_start_day: 19,
+      max: "1000",
+    });
+    expect(result).toEqual({ error: "Wallet not found" });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["abc", "Max is not a valid amount"],
+    ["0", "Max must be more than zero"],
+  ])("refuses a max of %s", async (max, message) => {
+    const result = await setWalletBonus({
+      wallet_id: WALLET_ID,
+      bonus_channel: "online",
+      cycle_start_day: 19,
+      max,
+    });
+    expect(result).toEqual({ error: message });
+    expect(rpc).not.toHaveBeenCalled();
+  });
 });

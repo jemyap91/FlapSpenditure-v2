@@ -23,6 +23,12 @@ export type CardTrackerRow = {
 const asChannel = (value: string | null): Channel | null =>
   CHANNELS.find((c) => c === value) ?? null;
 
+/** A failed read must not look like a card with nothing spent. */
+function fail(log: string, error: { message: string }, message = "Failed to load card tracker"): never {
+  console.error(log, error.message);
+  throw new Error(message);
+}
+
 /**
  * Bonus progress for every card with a max, measured over the cycle that
  * contains `on`. The only place tracker figures are calculated. Plain table
@@ -32,12 +38,13 @@ export async function loadCardTracker(
   supabase: SupabaseServerClient,
   opts: { on: string; today: string; excludeTransactionId?: string },
 ): Promise<CardTrackerRow[]> {
-  const { data: wallets } = await supabase
+  const { data: wallets, error: walletsError } = await supabase
     .from("wallets")
     .select("id, name, currency_code, bonus_channel, cycle_start_day, bonus_cap_minor")
     .is("archived_at", null)
     .not("bonus_cap_minor", "is", null)
     .order("name");
+  if (walletsError) fail("Could not load card wallets", walletsError);
 
   const rows: CardTrackerRow[] = [];
   for (const w of wallets ?? []) {
@@ -54,7 +61,8 @@ export async function loadCardTracker(
       .gte("occurred_on", from)
       .lte("occurred_on", to);
     if (opts.excludeTransactionId) query = query.neq("id", opts.excludeTransactionId);
-    const { data: expenses } = await query;
+    const { data: expenses, error: expensesError } = await query;
+    if (expensesError) fail("Could not load card expenses", expensesError);
 
     let spentMinor = 0;
     let mismatchCount = 0;
@@ -97,18 +105,20 @@ export async function warningsFor(
 ): Promise<{ channel: Channel | null; warnings: string[] }> {
   const none = { channel: null, warnings: [] };
 
-  const { data: tx } = await supabase
+  const { data: tx, error: txError } = await supabase
     .from("transactions")
     .select("kind, wallet_id, channel, amount_minor, occurred_on")
     .eq("id", transactionId)
     .maybeSingle();
+  if (txError) fail("Could not load transaction for warnings", txError, "Failed to load warnings");
   if (!tx || tx.kind !== "expense") return none;
 
-  const { data: wallet } = await supabase
+  const { data: wallet, error: walletError } = await supabase
     .from("wallets")
     .select("name, currency_code, bonus_channel, bonus_cap_minor")
     .eq("id", tx.wallet_id)
     .maybeSingle();
+  if (walletError) fail("Could not load wallet for warnings", walletError, "Failed to load warnings");
   if (!wallet) return none;
 
   const tracker = await loadCardTracker(supabase, {
