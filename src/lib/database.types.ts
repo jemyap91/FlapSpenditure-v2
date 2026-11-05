@@ -1107,9 +1107,9 @@ export type Database = {
       }
       set_wallet_bonus: {
         Args: {
-          p_cap_minor: number
-          p_channel: Database["public"]["Enums"]["expense_channel"]
-          p_cycle_start_day: number
+          p_cap_minor?: number
+          p_channel?: Database["public"]["Enums"]["expense_channel"]
+          p_cycle_start_day?: number
           p_wallet_id: string
         }
         Returns: undefined

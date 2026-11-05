@@ -39,13 +39,15 @@ alter table wallets
 -- UPDATE on wallets is column-scoped since 0022 and owner-only by RLS. The
 -- bonus columns are deliberately left out of that grant: a wallet MEMBER (not
 -- just the owner) sets them, through set_wallet_bonus below, which is their
--- only write route.
+-- only route for UPDATING them. (INSERT on wallets is a table-level grant, so
+-- an owner can still set terms when inserting their own new wallet.) Every
+-- argument defaults to null, so calling it with only the wallet clears them.
 
 create function set_wallet_bonus(
   p_wallet_id       uuid,
-  p_channel         expense_channel,
-  p_cycle_start_day smallint,
-  p_cap_minor       bigint
+  p_channel         expense_channel default null,
+  p_cycle_start_day smallint        default null,
+  p_cap_minor       bigint          default null
 ) returns void
   language plpgsql security definer set search_path = '' as $$
 begin

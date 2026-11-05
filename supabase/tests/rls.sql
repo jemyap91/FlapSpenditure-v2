@@ -5150,6 +5150,12 @@ begin;
     assert (select name from wallets where id = 'c4a00000-0000-4000-8000-000000000021') = 'Channel Shared',
       'LEAK: a non-owner changed the wallet name';
 
+    perform public.set_wallet_bonus('c4a00000-0000-4000-8000-000000000021');
+    assert (select bonus_channel is null and cycle_start_day is null and bonus_cap_minor is null
+              from wallets where id = 'c4a00000-0000-4000-8000-000000000021'),
+      'set_wallet_bonus with only the wallet did not clear the terms';
+    perform public.set_wallet_bonus('c4a00000-0000-4000-8000-000000000021', 'online', 15::smallint, 50000);
+
     insert into merchant_channels (space_id, merchant_key, channel) values (v_space, 'grab', 'online');
     update merchant_channels set channel = 'in_store' where space_id = v_space and merchant_key = 'grab';
     assert (select channel from merchant_channels where space_id = v_space and merchant_key = 'grab') = 'in_store',
