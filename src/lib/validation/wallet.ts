@@ -103,7 +103,12 @@ export const walletBonusInput = z
   .object({
     wallet_id: z.string().uuid(),
     bonus_channel: z.enum(Constants.public.Enums.expense_channel).nullable(),
-    cycle_start_day: z.number().int().min(1).max(31).nullable(),
+    cycle_start_day: z
+      .number()
+      .int("Enter a day from 1 to 31")
+      .min(1, "Enter a day from 1 to 31")
+      .max(31, "Enter a day from 1 to 31")
+      .nullable(),
     max: z.string().trim().nullable(),
   })
   .superRefine((data, ctx) => {

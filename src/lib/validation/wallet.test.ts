@@ -190,14 +190,14 @@ describe("walletBonusInput", () => {
     );
   });
 
-  it("refuses day 32", () => {
-    expect(
-      walletBonusInput.safeParse({
-        wallet_id: WALLET_ID,
-        bonus_channel: "online",
-        cycle_start_day: 32,
-        max: null,
-      }).success,
-    ).toBe(false);
+  it.each([0, 32, 1.5, -3])("refuses day %s with a readable message", (day) => {
+    const result = walletBonusInput.safeParse({
+      wallet_id: WALLET_ID,
+      bonus_channel: "online",
+      cycle_start_day: day,
+      max: null,
+    });
+    expect(result.success).toBe(false);
+    expect(!result.success && result.error.issues[0]!.message).toBe("Enter a day from 1 to 31");
   });
 });
