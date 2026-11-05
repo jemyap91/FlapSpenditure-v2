@@ -145,6 +145,10 @@ export function precisionError(
  */
 const amountField = z.string().trim().min(1, "Enter an amount");
 
+// Absent means "suggest one on create, keep the stored one on edit"; null is
+// a deliberate blank.
+const channelField = z.enum(Constants.public.Enums.expense_channel).nullable().optional();
+
 /**
  * Stricter than a `\d{4}-\d{2}-\d{2}` regex: z.iso.date() rejects
  * calendar-invalid strings like "2023-02-30" (verified — JS's own
@@ -218,6 +222,7 @@ export const transactionInput = z.object({
    * own comment for the asymmetry and why it is intended.
    */
   merchant: editableText(120, "Merchant is too long"),
+  channel: channelField,
 });
 
 export const transferInput = z
@@ -325,6 +330,7 @@ export const transactionEditInput = z.object({
   category_id: z.uuid("Choose a category").nullable(),
   note: editableText(280, "Note is too long"),
   merchant: editableText(120, "Merchant is too long"),
+  channel: channelField,
 });
 
 /**

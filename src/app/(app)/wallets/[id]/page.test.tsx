@@ -25,6 +25,9 @@ import { render, screen } from "@testing-library/react";
 // doc comment. Outside a real Next router this throws "invariant expected
 // app router to be mounted", exactly the same reason
 // src/components/TransactionList.test.tsx mocks this module.
+// The page reaches the transaction actions, which import server-only code.
+vi.mock("server-only", () => ({}));
+
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }),
 }));

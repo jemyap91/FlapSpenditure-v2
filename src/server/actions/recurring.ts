@@ -558,7 +558,7 @@ export async function recordOccurrence(ruleId: string, occurrenceOn: string): Pr
 
   const { data: wallet } = await supabase
     .from("wallets")
-    .select("currency_code, archived_at")
+    .select("currency_code, archived_at, bonus_channel")
     .eq("id", rule.wallet_id)
     .single();
   if (!wallet) return { error: "Could not look up this rule's wallet. Please try again." };
@@ -601,6 +601,9 @@ export async function recordOccurrence(ruleId: string, occurrenceOn: string): Pr
     // diverge later, via a separate edit to occurred_on.
     recurring_occurrence_on: occurrenceOn,
     note: null,
+    // A rule has no merchant, so the wallet's bonus channel is the only
+    // suggestion; only expenses carry a channel.
+    channel: kind === "expense" ? wallet.bonus_channel : null,
   });
   if (error) {
     if (error.code === "23505") return { error: "This occurrence is already recorded." };

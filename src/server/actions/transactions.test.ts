@@ -18,6 +18,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // {wallets,recurring}.test.ts use — so this suite exercises
 // `updateTransaction`'s real logic against a fake client rather than a
 // stand-in for the action itself.
+import type { Channel } from "@/lib/channels";
 import { signedAmount, precisionError } from "@/lib/validation/transaction";
 import {
   createTransaction,
@@ -103,7 +104,15 @@ const {
   eqSpy,
   isSpy,
   revalidatePath,
+  merchantRuleResult,
+  upsertSpy,
+  upsertResult,
 } = vi.hoisted(() => ({
+  // merchant_channels: the remembered rule lookup, and the upsert that
+  // remembers a correction.
+  merchantRuleResult: { data: null as { channel: string } | null },
+  upsertSpy: vi.fn(),
+  upsertResult: { error: null as unknown },
   getUser: vi.fn(),
   // Shared by updateTransaction's initial
   // `.select("wallet_id, kind, category_id")` lookup — the row it's told to
@@ -122,10 +131,16 @@ const {
       // the current wallet and does not move).
       currency_code?: string;
       recurring_id?: string | null;
+      channel?: string | null;
     } | null,
   },
   walletLookupResult: {
-    data: null as { archived_at: string | null; currency_code: string; space_id?: string } | null,
+    data: null as {
+      archived_at: string | null;
+      currency_code: string;
+      space_id?: string;
+      bonus_channel?: string | null;
+    } | null,
   },
   categoryResult: { data: null as { kind: string; archived_at: string | null } | null },
   // updateTransfer's pre-flight lookup — the transfer's own legs, keyed by
@@ -170,6 +185,7 @@ const {
   revalidatePath: vi.fn(),
 }));
 
+vi.mock("server-only", () => ({}));
 vi.mock("next/cache", () => ({ revalidatePath }));
 
 vi.mock("@/lib/supabase/server", () => ({
@@ -198,6 +214,22 @@ vi.mock("@/lib/supabase/server", () => ({
           single: () => builder,
           then: (resolve: (v: unknown) => void) =>
             resolve(usedIn ? legWalletsResult : walletLookupResult),
+        };
+        return builder;
+      }
+      if (table === "merchant_channels") {
+        const builder: Record<string, unknown> = {
+          select: () => builder,
+          eq: (col: string, val: unknown) => {
+            eqSpy(table, col, val);
+            return builder;
+          },
+          maybeSingle: () => builder,
+          upsert: (payload: unknown, opts: unknown) => {
+            upsertSpy(payload, opts);
+            return Promise.resolve(upsertResult);
+          },
+          then: (resolve: (v: unknown) => void) => resolve(merchantRuleResult),
         };
         return builder;
       }
@@ -293,7 +325,7 @@ beforeEach(() => {
   // a category" path, and a test wanting the "KEEPS its own" path has to say
   // so explicitly.
   txnLookupResult.data = { wallet_id: WALLET_ID, kind: "expense", category_id: ROW_CATEGORY_ID };
-  walletLookupResult.data = { archived_at: null, currency_code: "SGD", space_id: SPACE_ID };
+  walletLookupResult.data = { archived_at: null, currency_code: "SGD", space_id: SPACE_ID, bonus_channel: null };
   categoryResult.data = { kind: "expense", archived_at: null };
   legsLookupResult.data = [
     { wallet_id: WALLET_ID, amount_minor: -4250, currency_code: "SGD" },
@@ -309,6 +341,8 @@ beforeEach(() => {
   updateResult.error = null;
   insertResult.data = { id: TXN_ID };
   insertResult.error = null;
+  merchantRuleResult.data = null;
+  upsertResult.error = null;
 });
 
 /**
@@ -330,6 +364,7 @@ function create(
     occurred_on: string;
     note: string;
     merchant: string | null;
+    channel: Channel | null;
   }> = {},
 ) {
   return {
@@ -353,6 +388,7 @@ function edit(
     category_id: string | null;
     note: string | null;
     merchant: string | null;
+    channel: Channel | null;
   }> = {},
 ) {
   return {
@@ -1447,5 +1483,111 @@ describe("deleting and restoring with repayments", () => {
     updateResult.data = null;
     updateResult.error = { message: "the repaid expense was deleted", code: "P0001" };
     expect(await restoreTransaction(TXN_ID)).toEqual({ error: "The expense this repaid was deleted." });
+  });
+});
+
+describe("channel on the save path", () => {
+  // Typed loosely: the schema's Channel enum is checked at runtime by zod.
+  const createWith = (o: Record<string, unknown>) => createTransaction(create(o as never));
+  const editWith = (o: Record<string, unknown>) => updateTransaction(edit(o as never));
+
+  it("stores the merchant rule's channel over the wallet's when channel is undefined", async () => {
+    walletLookupResult.data = { archived_at: null, currency_code: "SGD", space_id: SPACE_ID, bonus_channel: "online" };
+    merchantRuleResult.data = { channel: "in_store" };
+    await createWith({});
+    expect(insertSpy).toHaveBeenCalledWith(expect.objectContaining({ channel: "in_store" }));
+  });
+
+  it("stores the wallet's bonus_channel when there is no rule", async () => {
+    walletLookupResult.data = { archived_at: null, currency_code: "SGD", space_id: SPACE_ID, bonus_channel: "online" };
+    await createWith({});
+    expect(insertSpy).toHaveBeenCalledWith(expect.objectContaining({ channel: "online" }));
+  });
+
+  it("stores null when there is neither a rule nor a wallet channel", async () => {
+    await createWith({});
+    const payload = insertSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.channel).toBeNull();
+  });
+
+  it("stores an explicit null as null, applying no suggestion", async () => {
+    walletLookupResult.data = { archived_at: null, currency_code: "SGD", space_id: SPACE_ID, bonus_channel: "online" };
+    merchantRuleResult.data = { channel: "in_store" };
+    await createWith({ channel: null });
+    const payload = insertSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.channel).toBeNull();
+    expect(upsertSpy).not.toHaveBeenCalled();
+  });
+
+  it("upserts a rule when the explicit channel differs from the suggestion", async () => {
+    walletLookupResult.data = { archived_at: null, currency_code: "SGD", space_id: SPACE_ID, bonus_channel: "online" };
+    await createWith({ merchant: " UNIQLO ", channel: "in_store" });
+    expect(upsertSpy).toHaveBeenCalledTimes(1);
+    const [row, opts] = upsertSpy.mock.calls[0]!;
+    expect(row).toEqual(
+      expect.objectContaining({ space_id: SPACE_ID, merchant_key: "uniqlo", channel: "in_store" }),
+    );
+    expect(row.updated_at).toEqual(expect.any(String));
+    expect(opts).toEqual({ onConflict: "space_id,merchant_key" });
+  });
+
+  it("writes no rule when the explicit channel equals the suggestion", async () => {
+    walletLookupResult.data = { archived_at: null, currency_code: "SGD", space_id: SPACE_ID, bonus_channel: "online" };
+    await createWith({ merchant: "UNIQLO", channel: "online" });
+    expect(upsertSpy).not.toHaveBeenCalled();
+  });
+
+  it("writes no rule for a blank merchant", async () => {
+    await createWith({ merchant: "  ", channel: "in_store" });
+    expect(upsertSpy).not.toHaveBeenCalled();
+  });
+
+  it("still returns the id when the rule upsert fails", async () => {
+    upsertResult.error = { message: "boom" };
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await createWith({ merchant: "UNIQLO", channel: "in_store" });
+    expect(res).toEqual({ id: TXN_ID });
+    spy.mockRestore();
+  });
+
+  it("stores null for income, and refuses an explicit channel on it", async () => {
+    categoryResult.data = { kind: "income", archived_at: null };
+    walletLookupResult.data = { archived_at: null, currency_code: "SGD", space_id: SPACE_ID, bonus_channel: "online" };
+    await createWith({ kind: "income" });
+    expect((insertSpy.mock.calls[0]![0] as Record<string, unknown>).channel).toBeNull();
+
+    insertSpy.mockClear();
+    const res = await createWith({ kind: "income", channel: "online" });
+    expect(res).toEqual({ error: "Only expenses have a channel" });
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
+
+  it("updateTransaction leaves the channel column out when channel is undefined", async () => {
+    await editWith({});
+    expect(updateSpy.mock.calls[0]![0]).not.toHaveProperty("channel");
+    expect(upsertSpy).not.toHaveBeenCalled();
+  });
+
+  it("updateTransaction writes a changed channel and remembers it", async () => {
+    txnLookupResult.data = { wallet_id: WALLET_ID, kind: "expense", category_id: ROW_CATEGORY_ID, channel: "online" } as never;
+    await editWith({ merchant: "UNIQLO", channel: "in_store" });
+    expect(updateSpy).toHaveBeenCalledWith(expect.objectContaining({ channel: "in_store" }));
+    expect(upsertSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ merchant_key: "uniqlo", channel: "in_store" }),
+      expect.anything(),
+    );
+  });
+
+  it("updateTransaction writes an explicit null to clear the channel", async () => {
+    await editWith({ channel: null });
+    expect(updateSpy).toHaveBeenCalledWith(expect.objectContaining({ channel: null }));
+  });
+
+  it("updateTransaction refuses an explicit channel on a non-expense row", async () => {
+    txnLookupResult.data = { wallet_id: WALLET_ID, kind: "income", category_id: ROW_CATEGORY_ID } as never;
+    categoryResult.data = { kind: "income", archived_at: null };
+    const res = await editWith({ channel: "online" });
+    expect(res).toEqual({ error: "Only expenses have a channel" });
+    expect(updateSpy).not.toHaveBeenCalled();
   });
 });

@@ -97,7 +97,12 @@ const {
   // lookup itself failing (a distinct scenario from "found but archived" —
   // fix round 1, Minor finding: the production code used to conflate them).
   walletLookupResult: {
-    data: null as { archived_at: string | null; currency_code: string; space_id?: string } | null,
+    data: null as {
+      archived_at: string | null;
+      currency_code: string;
+      space_id?: string;
+      bonus_channel?: string | null;
+    } | null,
   },
   categoryResult: { data: null as { kind: string; archived_at: string | null } | null },
   fromSpy: vi.fn(),
@@ -658,6 +663,21 @@ describe("archiveRule", () => {
 });
 
 describe("recordOccurrence", () => {
+  it("inserts the wallet's bonus_channel for an expense rule", async () => {
+    walletLookupResult.data = { archived_at: null, currency_code: "SGD", space_id: SPACE_ID, bonus_channel: "bill" };
+    await recordOccurrence(RULE_ID, "2026-07-01");
+    expect(insertSpy).toHaveBeenCalledWith(expect.objectContaining({ channel: "bill" }));
+  });
+
+  it("inserts a null channel for an income rule", async () => {
+    walletLookupResult.data = { archived_at: null, currency_code: "SGD", space_id: SPACE_ID, bonus_channel: "bill" };
+    ruleLookupResult.data = { ...ruleLookupResult.data!, kind: "income", amount_minor: 150000 };
+    categoryResult.data = { kind: "income", archived_at: null };
+    await recordOccurrence(RULE_ID, "2026-07-01");
+    const payload = insertSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.channel).toBeNull();
+  });
+
   it("dates the transaction to the OCCURRENCE, not to today, and returns success", async () => {
     // The whole of spec §1.3 rests on this. Recording July's rent in
     // September must produce a 1 July transaction, or "each lands on its
