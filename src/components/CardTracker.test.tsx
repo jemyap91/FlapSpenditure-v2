@@ -13,6 +13,7 @@ const row = (over: Partial<CardTrackerRow> = {}): CardTrackerRow => ({
   currency: "USD",
   bonusChannel: "online",
   capMinor: 100000,
+  countsAllSpend: false,
   from: "2026-10-19",
   to: "2026-11-18",
   spentMinor: 31000,

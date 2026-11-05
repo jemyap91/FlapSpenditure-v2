@@ -49,6 +49,7 @@ describe("setWalletBonus", () => {
       p_channel: "online",
       p_cycle_start_day: 19,
       p_cap_minor: 100000,
+      p_counts_all_spend: false,
     });
     expect(revalidatePath).toHaveBeenCalledTimes(1);
     expect(revalidatePath).toHaveBeenCalledWith("/", "layout");
@@ -61,7 +62,30 @@ describe("setWalletBonus", () => {
       p_channel: undefined,
       p_cycle_start_day: undefined,
       p_cap_minor: undefined,
+      p_counts_all_spend: false,
     });
+  });
+
+  it("passes 'every expense counts' through, and refuses it without a max", async () => {
+    await setWalletBonus({
+      wallet_id: WALLET_ID,
+      bonus_channel: "bill",
+      cycle_start_day: 2,
+      max: "500",
+      counts_all_spend: true,
+    });
+    expect(rpc).toHaveBeenCalledWith("set_wallet_bonus", expect.objectContaining({ p_cap_minor: 50000, p_counts_all_spend: true }));
+
+    rpc.mockClear();
+    const refused = await setWalletBonus({
+      wallet_id: WALLET_ID,
+      bonus_channel: "bill",
+      cycle_start_day: 2,
+      max: null,
+      counts_all_spend: true,
+    });
+    expect(refused).toEqual({ error: "Set a max for every expense to count toward" });
+    expect(rpc).not.toHaveBeenCalled();
   });
 
   it("returns a generic error when the RPC fails", async () => {

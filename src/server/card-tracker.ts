@@ -12,6 +12,8 @@ export type CardTrackerRow = {
   currency: string;
   bonusChannel: Channel;
   capMinor: number;
+  /** Every expense counts toward the max, not just the bonus channel's (0034). */
+  countsAllSpend: boolean;
   from: string;
   to: string;
   spentMinor: number;
@@ -40,7 +42,7 @@ export async function loadCardTracker(
 ): Promise<CardTrackerRow[]> {
   const { data: wallets, error: walletsError } = await supabase
     .from("wallets")
-    .select("id, name, currency_code, bonus_channel, cycle_start_day, bonus_cap_minor")
+    .select("id, name, currency_code, bonus_channel, cycle_start_day, bonus_cap_minor, bonus_counts_all_spend")
     .is("archived_at", null)
     .not("bonus_cap_minor", "is", null)
     .order("name");
@@ -64,12 +66,16 @@ export async function loadCardTracker(
     const { data: expenses, error: expensesError } = await query;
     if (expensesError) fail("Could not load card expenses", expensesError);
 
+    // A quota card counts every expense toward its max, whatever the
+    // channel; one on another channel still earns no bonus itself, so it is
+    // still counted as a mismatch.
+    const countsAllSpend = w.bonus_counts_all_spend;
     let spentMinor = 0;
     let mismatchCount = 0;
     for (const e of expenses ?? []) {
       const channel = asChannel(e.channel);
-      if (channel === bonusChannel) spentMinor += Math.abs(e.amount_minor);
-      else if (isMismatch(channel, bonusChannel)) mismatchCount += 1;
+      if (countsAllSpend || channel === bonusChannel) spentMinor += Math.abs(e.amount_minor);
+      if (isMismatch(channel, bonusChannel)) mismatchCount += 1;
     }
 
     rows.push({
@@ -78,6 +84,7 @@ export async function loadCardTracker(
       currency: w.currency_code,
       bonusChannel,
       capMinor: w.bonus_cap_minor,
+      countsAllSpend,
       from,
       to,
       spentMinor,
@@ -115,7 +122,7 @@ export async function warningsFor(
 
   const { data: wallet, error: walletError } = await supabase
     .from("wallets")
-    .select("name, currency_code, bonus_channel, bonus_cap_minor")
+    .select("name, currency_code, bonus_channel, bonus_cap_minor, bonus_counts_all_spend")
     .eq("id", tx.wallet_id)
     .maybeSingle();
   if (walletError) fail("Could not load wallet for warnings", walletError, "Failed to load warnings");
@@ -139,6 +146,7 @@ export async function warningsFor(
       channel,
       amountMinor: Math.abs(tx.amount_minor),
       spentBeforeMinor: row ? row.spentMinor : null,
+      countsAllSpend: wallet.bonus_counts_all_spend,
     }),
   };
 }

@@ -85,7 +85,7 @@ export default async function NewTransactionPage({
   ] = await Promise.all([
     supabase
       .from("wallets")
-      .select("id, name, currency_code, space_id, kind, color_slot, bonus_channel, bonus_cap_minor")
+      .select("id, name, currency_code, space_id, kind, color_slot, bonus_channel, bonus_cap_minor, bonus_counts_all_spend")
       .is("archived_at", null)
       .order("created_at"),
     supabase

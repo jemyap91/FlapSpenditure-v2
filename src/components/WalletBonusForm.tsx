@@ -32,6 +32,8 @@ export function WalletBonusForm({
     bonus_channel: Channel | null;
     cycle_start_day: number | null;
     bonus_cap_minor: number | null;
+    /** Absent reads as false: the card's max is bonus-channel spend only. */
+    bonus_counts_all_spend?: boolean;
   };
   /** Called once after a save that returned no error. Leave it out where the
    *  form sits beside other unsaved fields: the form then just says "Saved". */
@@ -44,12 +46,14 @@ export function WalletBonusForm({
       ? ""
       : formatAmountInput(wallet.bonus_cap_minor, minorUnitFor(wallet.currency_code)),
   );
+  const [countsAll, setCountsAll] = useState(wallet.bonus_counts_all_spend ?? false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [pending, startTransition] = useTransition();
   const channelId = useId();
   const dayId = useId();
   const maxId = useId();
+  const countsAllId = useId();
 
   function save(e: React.FormEvent) {
     e.preventDefault();
@@ -61,6 +65,8 @@ export function WalletBonusForm({
         bonus_channel: channel === "" ? null : channel,
         cycle_start_day: day.trim() === "" ? null : Number(day),
         max: max.trim() === "" ? null : max.trim(),
+        // Only meaningful with a max; clearing the max clears it too.
+        counts_all_spend: max.trim() !== "" && countsAll,
       });
       if ("error" in result) setError(result.error);
       else {
@@ -134,8 +140,30 @@ export function WalletBonusForm({
           style={FIELD_STYLE}
         />
         <p className="text-xs" style={{ color: "var(--ink-2)" }}>
-          The most spend in {wallet.currency_code} that earns the bonus each cycle.
+          {countsAll
+            ? `The spend in ${wallet.currency_code} to reach each cycle.`
+            : `The most spend in ${wallet.currency_code} that earns the bonus each cycle.`}
         </p>
+      </div>
+      <div className="flex items-start gap-2">
+        <input
+          id={countsAllId}
+          type="checkbox"
+          aria-label={`Every expense counts toward the max for ${wallet.name}`}
+          checked={countsAll}
+          onChange={(e) => {
+            setCountsAll(e.target.checked);
+            setSaved(false);
+          }}
+          className={`mt-1 ${FOCUS_RING}`}
+        />
+        <label htmlFor={countsAllId} className="text-sm" style={{ color: "var(--ink)" }}>
+          Every expense counts toward the max
+          <span className="block text-xs" style={{ color: "var(--ink-2)" }}>
+            For a card with a minimum spend, where in-store and other purchases count even
+            though only the bonus channel earns the bonus.
+          </span>
+        </label>
       </div>
       {error && (
         <p role="alert" className="text-sm" style={{ color: "var(--neg)" }}>

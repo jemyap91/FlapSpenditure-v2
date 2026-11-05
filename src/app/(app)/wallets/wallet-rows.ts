@@ -23,6 +23,9 @@ export type WalletRow = {
   bonus_channel: Channel | null;
   cycle_start_day: number | null;
   bonus_cap_minor: number | null;
+  /** Every expense counts toward the max (0034). Optional so a read that
+   *  doesn't select it reads as the default, false. */
+  bonus_counts_all_spend?: boolean;
 };
 
 export type BalanceRow = {

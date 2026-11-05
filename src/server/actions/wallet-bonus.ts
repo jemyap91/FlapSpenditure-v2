@@ -10,7 +10,7 @@ import { parseAmountInput, minorUnitFor } from "@/lib/money";
  * any member of the wallet may call -- unlike `wallets_write`, which is
  * owner-only, and which a plain UPDATE of these columns is refused by.
  * Re-validates like every Server Function, since it is reachable by direct
- * POST. Omitting all three values clears the terms.
+ * POST. Omitting every value clears the terms.
  */
 export async function setWalletBonus(raw: unknown): Promise<{ ok: true } | { error: string }> {
   const parsed = walletBonusInput.safeParse(raw);
@@ -22,7 +22,7 @@ export async function setWalletBonus(raw: unknown): Promise<{ ok: true } | { err
   } = await supabase.auth.getUser();
   if (!user) return { error: "Not signed in" };
 
-  const { wallet_id, bonus_channel, cycle_start_day, max } = parsed.data;
+  const { wallet_id, bonus_channel, cycle_start_day, max, counts_all_spend } = parsed.data;
 
   // The cap is in the wallet's own currency, so its minor unit comes from
   // the wallet row (RLS hides one the caller is not a member of).
@@ -48,6 +48,7 @@ export async function setWalletBonus(raw: unknown): Promise<{ ok: true } | { err
     p_channel: bonus_channel ?? undefined,
     p_cycle_start_day: cycle_start_day ?? undefined,
     p_cap_minor: capMinor ?? undefined,
+    p_counts_all_spend: counts_all_spend,
   });
   if (error) return { error: "Could not save card terms. Please try again." };
 

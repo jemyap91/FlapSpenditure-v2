@@ -37,6 +37,8 @@ type Wallet = PickerWallet & {
   space_id: string;
   bonus_channel: Channel | null;
   bonus_cap_minor: number | null;
+  /** Every expense counts toward the max (0034); absent reads as false. */
+  bonus_counts_all_spend?: boolean;
 };
 /** A household's remembered channel for a merchant, keyed by `merchantKey`. */
 type MerchantChannel = { space_id: string; merchant_key: string; channel: Channel };
@@ -754,6 +756,7 @@ export function TransactionForm(
           channel,
           amountMinor,
           spentBeforeMinor: inCycle && amountMinor > 0 ? cardRow.spentMinor : null,
+          countsAllSpend: wallet.bonus_counts_all_spend,
         })
       : [];
 

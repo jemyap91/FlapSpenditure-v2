@@ -131,6 +131,12 @@ const walletBonusInput = z.object({
   bonus_channel: z.enum(CHANNELS).nullable().optional().describe("Channel that earns the bonus. null clears it; leave out to keep it"),
   cycle_start_day: z.number().int().min(1).max(31).nullable().optional().describe("Day of the month the card's cycle starts. null clears it; leave out to keep it"),
   max: amount.nullable().optional().describe("Most spend that earns the bonus per cycle. null clears it; leave out to keep it"),
+  counts_all_spend: z
+    .boolean()
+    .optional()
+    .describe(
+      "true: every expense on the card counts toward the max, whatever its channel (a minimum-spend card such as UOB One, where in-store spend counts but only the bonus channel earns). Needs a max. Leave out to keep it",
+    ),
 });
 
 const idInput = z.object({ id: uuid });
@@ -212,7 +218,7 @@ export const TOOLS: Record<string, Tool> = {
       const supabase = await createClient();
       const { data, error } = await supabase
         .from("wallets")
-        .select("id, name, kind, currency_code, bonus_channel, cycle_start_day, bonus_cap_minor")
+        .select("id, name, kind, currency_code, bonus_channel, cycle_start_day, bonus_cap_minor, bonus_counts_all_spend")
         .is("archived_at", null)
         .order("name");
       if (error) return { ok: false, error: "Could not load wallets" };
@@ -226,6 +232,7 @@ export const TOOLS: Record<string, Tool> = {
           bonus_channel: w.bonus_channel,
           cycle_start_day: w.cycle_start_day,
           max: w.bonus_cap_minor === null ? null : formatAmountInput(w.bonus_cap_minor, minorUnitFor(w.currency_code)),
+          counts_all_spend: w.bonus_counts_all_spend,
         })),
       };
     },
@@ -449,7 +456,7 @@ export const TOOLS: Record<string, Tool> = {
 
   get_card_tracker: {
     description:
-      "Bonus progress for each card with a monthly max: spend that earned the bonus, what is left, whether it is on pace to reach the max, and how many expenses used another channel. Measured over the cycle containing `on` (default today).",
+      "Bonus progress for each card with a monthly max: spend that counts toward the max (the bonus channel's, or every expense when counts_all_spend is true), what is left, whether it is on pace to reach the max, and how many expenses used another channel and so earned no bonus themselves. Measured over the cycle containing `on` (default today).",
     input: cardTrackerInput,
     run: async (args: z.output<typeof cardTrackerInput>) => {
       const today = todayLocalDate();
@@ -463,6 +470,7 @@ export const TOOLS: Record<string, Tool> = {
               wallet: { id: r.walletId, name: r.walletName },
               currency: r.currency,
               bonus_channel: r.bonusChannel,
+              counts_all_spend: r.countsAllSpend,
               from: r.from,
               to: r.to,
               spent: formatAmountInput(r.spentMinor, unit),
@@ -481,13 +489,13 @@ export const TOOLS: Record<string, Tool> = {
 
   update_wallet_bonus: {
     description:
-      "Set a card wallet's bonus terms: the channel that earns the bonus, the day its cycle starts, and the max spend per cycle. Only the fields you pass change; null clears one. A max needs a channel and a cycle start day.",
+      "Set a card wallet's bonus terms: the channel that earns the bonus, the day its cycle starts, the max spend per cycle, and whether every expense counts toward that max. Only the fields you pass change; null clears one. A max needs a channel and a cycle start day.",
     input: walletBonusInput,
     run: async (args: z.output<typeof walletBonusInput>) => {
       const supabase = await createClient();
       const { data: current } = await supabase
         .from("wallets")
-        .select("currency_code, bonus_channel, cycle_start_day, bonus_cap_minor")
+        .select("currency_code, bonus_channel, cycle_start_day, bonus_cap_minor, bonus_counts_all_spend")
         .eq("id", args.wallet_id)
         .maybeSingle();
       if (!current) return { ok: false, error: "Wallet not found" };
@@ -502,8 +510,12 @@ export const TOOLS: Record<string, Tool> = {
               ? null
               : formatAmountInput(current.bonus_cap_minor, minorUnitFor(current.currency_code)),
       };
-      const result = await setWalletBonus({ wallet_id: args.wallet_id, ...terms });
-      return fromAction(result, { wallet_id: args.wallet_id, ...terms });
+      // Kept unless passed -- but clearing the max quietly clears it too,
+      // since it means nothing without one.
+      const counts_all_spend =
+        args.counts_all_spend ?? (terms.max === null ? false : current.bonus_counts_all_spend);
+      const result = await setWalletBonus({ wallet_id: args.wallet_id, ...terms, counts_all_spend });
+      return fromAction(result, { wallet_id: args.wallet_id, ...terms, counts_all_spend });
     },
   },
 

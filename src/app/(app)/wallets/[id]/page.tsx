@@ -138,12 +138,13 @@ export default async function WalletDetailPage({
     bonus_channel: WalletRow["bonus_channel"];
     cycle_start_day: number | null;
     bonus_cap_minor: number | null;
+    bonus_counts_all_spend: boolean;
   };
 
   const { data, error: walletError } = await supabase
     .from("wallets")
     .select(
-      "id, name, kind, currency_code, color_slot, icon, owner_id, archived_at, starting_balance_minor, bonus_channel, cycle_start_day, bonus_cap_minor",
+      "id, name, kind, currency_code, color_slot, icon, owner_id, archived_at, starting_balance_minor, bonus_channel, cycle_start_day, bonus_cap_minor, bonus_counts_all_spend",
     )
     .eq("id", id)
     .maybeSingle();

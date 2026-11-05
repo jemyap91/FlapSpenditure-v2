@@ -294,12 +294,12 @@ describe("list_transactions channel", () => {
 describe("list_wallets bonus terms", () => {
   it("returns the channel, cycle day and max as a decimal string, or null", async () => {
     stored.list = [
-      { id: WALLET_ID, name: "Card", kind: "card", currency_code: "SGD", bonus_channel: "online", cycle_start_day: 5, bonus_cap_minor: 80000 },
-      { id: OTHER_WALLET_ID, name: "Cash", kind: "cash", currency_code: "SGD", bonus_channel: null, cycle_start_day: null, bonus_cap_minor: null },
+      { id: WALLET_ID, name: "Card", kind: "card", currency_code: "SGD", bonus_channel: "online", cycle_start_day: 5, bonus_cap_minor: 80000, bonus_counts_all_spend: true },
+      { id: OTHER_WALLET_ID, name: "Cash", kind: "cash", currency_code: "SGD", bonus_channel: null, cycle_start_day: null, bonus_cap_minor: null, bonus_counts_all_spend: false },
     ];
     const rows = ((await callTool("list_wallets", {})) as { data: Record<string, unknown>[] }).data;
-    expect(rows[0]).toMatchObject({ bonus_channel: "online", cycle_start_day: 5, max: "800.00" });
-    expect(rows[1]).toMatchObject({ bonus_channel: null, cycle_start_day: null, max: null });
+    expect(rows[0]).toMatchObject({ bonus_channel: "online", cycle_start_day: 5, max: "800.00", counts_all_spend: true });
+    expect(rows[1]).toMatchObject({ bonus_channel: null, cycle_start_day: null, max: null, counts_all_spend: false });
   });
 });
 
@@ -310,6 +310,7 @@ describe("get_card_tracker", () => {
     currency: "SGD",
     bonusChannel: "online",
     capMinor: 80000,
+    countsAllSpend: false,
     from: "2026-09-05",
     to: "2026-10-04",
     spentMinor: 12345,
@@ -329,6 +330,7 @@ describe("get_card_tracker", () => {
           wallet: { id: WALLET_ID, name: "Card" },
           currency: "SGD",
           bonus_channel: "online",
+          counts_all_spend: false,
           from: "2026-09-05",
           to: "2026-10-04",
           spent: "123.45",
@@ -360,7 +362,13 @@ describe("get_card_tracker", () => {
 
 describe("update_wallet_bonus", () => {
   beforeEach(() => {
-    stored.row = { currency_code: "SGD", bonus_channel: "online", cycle_start_day: 5, bonus_cap_minor: 80000 };
+    stored.row = {
+      currency_code: "SGD",
+      bonus_channel: "online",
+      cycle_start_day: 5,
+      bonus_cap_minor: 80000,
+      bonus_counts_all_spend: true,
+    };
     bonus.setWalletBonus.mockResolvedValue({ ok: true });
   });
 
@@ -371,18 +379,25 @@ describe("update_wallet_bonus", () => {
       bonus_channel: "online",
       cycle_start_day: 12,
       max: "800.00",
+      counts_all_spend: true,
     });
     expect(result.ok).toBe(true);
   });
 
-  it("clears a field passed as null", async () => {
+  it("clears a field passed as null, and 'every expense counts' with the max", async () => {
     await callTool("update_wallet_bonus", { wallet_id: WALLET_ID, max: null });
     expect(bonus.setWalletBonus).toHaveBeenCalledWith({
       wallet_id: WALLET_ID,
       bonus_channel: "online",
       cycle_start_day: 5,
       max: null,
+      counts_all_spend: false,
     });
+  });
+
+  it("sets 'every expense counts' when passed", async () => {
+    await callTool("update_wallet_bonus", { wallet_id: WALLET_ID, counts_all_spend: false });
+    expect(bonus.setWalletBonus).toHaveBeenCalledWith(expect.objectContaining({ max: "800.00", counts_all_spend: false }));
   });
 
   it("reports a wallet it can't see without saving", async () => {

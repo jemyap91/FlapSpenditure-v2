@@ -19,6 +19,7 @@ function wallet(over: Row = {}): Row {
     bonus_channel: "online",
     cycle_start_day: 19,
     bonus_cap_minor: 100000,
+    bonus_counts_all_spend: false,
     ...over,
   };
 }
@@ -217,6 +218,28 @@ describe("loadCardTracker", () => {
     [row] = await loadCardTracker(fakeClient(db), ON);
     expect(row).toMatchObject({ spentMinor: 2000, mismatchCount: 1 });
   });
+
+  it("counts every expense toward a quota card's max, still flagging the off-channel ones", async () => {
+    // UOB One: bills earn the bonus, but groceries in store count toward
+    // the $500 a cycle too.
+    const supabase = fakeClient({
+      wallets: [
+        wallet({ name: "UOB One", bonus_channel: "bill", cycle_start_day: 2, bonus_cap_minor: 50000, bonus_counts_all_spend: true }),
+      ],
+      transactions: [
+        expense({ channel: "bill", amount_minor: 12000 }),
+        expense({ channel: "in_store", amount_minor: 8600 }),
+        expense({ channel: null, amount_minor: 1400 }),
+      ],
+    });
+    const [row] = await loadCardTracker(supabase, ON);
+    expect(row).toMatchObject({
+      countsAllSpend: true,
+      spentMinor: 22000,
+      remainingMinor: 28000,
+      mismatchCount: 1,
+    });
+  });
 });
 
 describe("loadCardTracker errors and pace", () => {
@@ -311,6 +334,23 @@ describe("warningsFor", () => {
       channel: null,
       warnings: [],
     });
+  });
+
+  it("says an off-channel expense still counts on a quota card, and never warns about passing the max", async () => {
+    const quota = wallet({ name: "UOB One", bonus_channel: "bill", bonus_cap_minor: 50000, bonus_counts_all_spend: true });
+    const prior = expense({ channel: "bill", amount_minor: 45000 });
+    const groceries = expense({ channel: "in_store", amount_minor: 9000 });
+    const res = await warningsFor(
+      fakeClient({ wallets: [quota], transactions: [prior, groceries] }),
+      groceries.id as string,
+    );
+    expect(res.warnings).toEqual([
+      `UOB One earns its bonus Bill, so this won't earn it, but it still counts toward the ${formatMoney(50000, "SGD")} max.`,
+    ]);
+
+    const bill = expense({ channel: "bill", amount_minor: 9000 });
+    const res2 = await warningsFor(fakeClient({ wallets: [quota], transactions: [prior, bill] }), bill.id as string);
+    expect(res2.warnings).toEqual([]);
   });
 
   it("warns for nothing but expenses", async () => {

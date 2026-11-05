@@ -5154,7 +5154,14 @@ begin;
     assert (select bonus_channel is null and cycle_start_day is null and bonus_cap_minor is null
               from wallets where id = 'c4a00000-0000-4000-8000-000000000021'),
       'set_wallet_bonus with only the wallet did not clear the terms';
+
+    -- 0034: a member sets "every expense counts", and leaving it out clears it.
+    perform public.set_wallet_bonus('c4a00000-0000-4000-8000-000000000021', 'bill', 2::smallint, 50000, true);
+    assert (select bonus_counts_all_spend from wallets where id = 'c4a00000-0000-4000-8000-000000000021'),
+      'PERMISSION BROKEN: a non-owner wallet member cannot set bonus_counts_all_spend';
     perform public.set_wallet_bonus('c4a00000-0000-4000-8000-000000000021', 'online', 15::smallint, 50000);
+    assert (select not bonus_counts_all_spend from wallets where id = 'c4a00000-0000-4000-8000-000000000021'),
+      'set_wallet_bonus without p_counts_all_spend did not clear it';
 
     insert into merchant_channels (space_id, merchant_key, channel) values (v_space, 'grab', 'online');
     update merchant_channels set channel = 'in_store' where space_id = v_space and merchant_key = 'grab';

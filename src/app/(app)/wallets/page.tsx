@@ -71,7 +71,7 @@ export default async function WalletsPage() {
     supabase
       .from("wallets")
       .select(
-        "id, name, kind, currency_code, color_slot, icon, owner_id, starting_balance_minor, bonus_channel, cycle_start_day, bonus_cap_minor, created_at, space_id, shared_with_household",
+        "id, name, kind, currency_code, color_slot, icon, owner_id, starting_balance_minor, bonus_channel, cycle_start_day, bonus_cap_minor, bonus_counts_all_spend, created_at, space_id, shared_with_household",
       )
       .is("archived_at", null)
       .order("created_at"),

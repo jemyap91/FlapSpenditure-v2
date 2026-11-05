@@ -310,6 +310,7 @@ describe("DashboardPage — card bonus tracker", () => {
     currency: "USD",
     bonusChannel: "Online",
     capMinor: 100000,
+    countsAllSpend: false,
     from: "2026-08-19",
     to: "2026-09-18",
     spentMinor: 31000,

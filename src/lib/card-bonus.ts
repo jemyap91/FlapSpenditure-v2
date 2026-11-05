@@ -73,14 +73,21 @@ export function expenseWarnings(a: {
   channel: Channel | null;
   amountMinor: number;
   spentBeforeMinor: number | null;
+  /** The max is a quota every expense counts toward (0034), not a ceiling
+   *  on bonus-channel spend: passing it is the goal, never a warning. */
+  countsAllSpend?: boolean;
 }): string[] {
   const warnings: string[] = [];
+  const quota = a.countsAllSpend === true && a.capMinor !== null;
   if (a.bonusChannel && isMismatch(a.channel, a.bonusChannel)) {
     warnings.push(
-      `${a.walletName} earns its bonus ${CHANNEL_LABELS[a.bonusChannel]}, so this won't earn it.`,
+      quota
+        ? `${a.walletName} earns its bonus ${CHANNEL_LABELS[a.bonusChannel]}, so this won't earn it, but it still counts toward the ${formatMoney(a.capMinor!, a.currency)} max.`
+        : `${a.walletName} earns its bonus ${CHANNEL_LABELS[a.bonusChannel]}, so this won't earn it.`,
     );
   }
   if (
+    !quota &&
     a.channel !== null &&
     a.channel === a.bonusChannel &&
     a.capMinor !== null &&

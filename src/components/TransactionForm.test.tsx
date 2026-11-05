@@ -838,6 +838,7 @@ describe("TransactionForm — channel", () => {
       currency: "USD",
       bonusChannel: "online",
       capMinor: 100000,
+      countsAllSpend: false,
       from: "2026-11-01",
       to: "2026-11-30",
       spentMinor: 99000,

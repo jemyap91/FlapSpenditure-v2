@@ -110,6 +110,10 @@ export const walletBonusInput = z
       .max(31, "Enter a day from 1 to 31")
       .nullable(),
     max: z.string().trim().nullable(),
+    /** Every expense counts toward the max, not just the bonus channel's
+     *  (0034). Defaults to false so a caller that predates it keeps the
+     *  old meaning. */
+    counts_all_spend: z.boolean().default(false),
   })
   .superRefine((data, ctx) => {
     if (data.max && (data.bonus_channel === null || data.cycle_start_day === null)) {
@@ -117,6 +121,13 @@ export const walletBonusInput = z
         code: "custom",
         path: ["max"],
         message: "Set a channel and cycle start day to use a max",
+      });
+    }
+    if (data.counts_all_spend && !data.max) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["counts_all_spend"],
+        message: "Set a max for every expense to count toward",
       });
     }
   });

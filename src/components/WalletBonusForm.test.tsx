@@ -44,7 +44,30 @@ describe("WalletBonusForm", () => {
       bonus_channel: "online",
       cycle_start_day: 19,
       max: "1000.00",
+      counts_all_spend: false,
     });
+  });
+
+  it("saves 'every expense counts' when ticked, and seeds it from the wallet", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<WalletBonusForm wallet={wallet()} />);
+
+    await user.click(screen.getByLabelText("Every expense counts toward the max for Visa"));
+    await user.click(screen.getByRole("button", { name: "Save card terms for Visa" }));
+    expect(setWalletBonus).toHaveBeenCalledWith(expect.objectContaining({ counts_all_spend: true }));
+    unmount();
+
+    render(<WalletBonusForm wallet={wallet({ bonus_counts_all_spend: true })} />);
+    expect(screen.getByLabelText("Every expense counts toward the max for Visa")).toBeChecked();
+  });
+
+  it("never sends 'every expense counts' without a max", async () => {
+    const user = userEvent.setup();
+    render(<WalletBonusForm wallet={wallet({ bonus_counts_all_spend: true })} />);
+
+    await user.clear(screen.getByLabelText("Max for Visa"));
+    await user.click(screen.getByRole("button", { name: "Save card terms for Visa" }));
+    expect(setWalletBonus).toHaveBeenCalledWith(expect.objectContaining({ max: null, counts_all_spend: false }));
   });
 
   it("sends nulls for No channel and cleared fields", async () => {
@@ -61,6 +84,7 @@ describe("WalletBonusForm", () => {
       bonus_channel: null,
       cycle_start_day: null,
       max: null,
+      counts_all_spend: false,
     });
   });
 

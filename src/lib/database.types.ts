@@ -803,6 +803,7 @@ export type Database = {
           archived_at: string | null
           bonus_cap_minor: number | null
           bonus_channel: Database["public"]["Enums"]["expense_channel"] | null
+          bonus_counts_all_spend: boolean
           color_slot: number
           created_at: string
           currency_code: string
@@ -821,6 +822,7 @@ export type Database = {
           archived_at?: string | null
           bonus_cap_minor?: number | null
           bonus_channel?: Database["public"]["Enums"]["expense_channel"] | null
+          bonus_counts_all_spend?: boolean
           color_slot: number
           created_at?: string
           currency_code: string
@@ -839,6 +841,7 @@ export type Database = {
           archived_at?: string | null
           bonus_cap_minor?: number | null
           bonus_channel?: Database["public"]["Enums"]["expense_channel"] | null
+          bonus_counts_all_spend?: boolean
           color_slot?: number
           created_at?: string
           currency_code?: string
@@ -1109,6 +1112,7 @@ export type Database = {
         Args: {
           p_cap_minor?: number
           p_channel?: Database["public"]["Enums"]["expense_channel"]
+          p_counts_all_spend?: boolean
           p_cycle_start_day?: number
           p_wallet_id: string
         }
