@@ -135,12 +135,15 @@ export default async function WalletDetailPage({
        WalletRow, and a cast that omits one of its fields is a claim about
        this row that is not true. */
     starting_balance_minor: number;
+    bonus_channel: WalletRow["bonus_channel"];
+    cycle_start_day: number | null;
+    bonus_cap_minor: number | null;
   };
 
   const { data, error: walletError } = await supabase
     .from("wallets")
     .select(
-      "id, name, kind, currency_code, color_slot, icon, owner_id, archived_at, starting_balance_minor",
+      "id, name, kind, currency_code, color_slot, icon, owner_id, archived_at, starting_balance_minor, bonus_channel, cycle_start_day, bonus_cap_minor",
     )
     .eq("id", id)
     .maybeSingle();

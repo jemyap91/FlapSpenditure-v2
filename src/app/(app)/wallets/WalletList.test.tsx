@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act, render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { WalletList } from "./WalletList";
 import type { WalletWithBalance } from "./wallet-rows";
@@ -36,6 +36,8 @@ vi.mock("@/server/actions/wallet-groups", () => ({
   setWalletSort: vi.fn(),
 }));
 
+vi.mock("@/server/actions/wallet-bonus", () => ({ setWalletBonus: vi.fn() }));
+
 /** The signed-in user for every render below, unless a case deliberately
  *  lists a wallet somebody else owns. */
 const ME = "11111111-1111-4111-8111-111111111111";
@@ -54,6 +56,9 @@ const wallet = (id: string, over: Partial<WalletWithBalance> = {}): WalletWithBa
   color_slot: 1,
   icon: "landmark",
   starting_balance_minor: 0,
+  bonus_channel: null,
+  cycle_start_day: null,
+  bonus_cap_minor: null,
   owner_id: ME,
   balanceMinor: 0,
   ...over,
@@ -1122,5 +1127,53 @@ describe("WalletList — reordering on a phone", () => {
     fireEvent.click(screen.getByRole("button", { name: "Move Savings down" }));
 
     expect(setWalletOrder).toHaveBeenCalledWith({ wallet_ids: ["b", "a"] });
+  });
+});
+
+
+describe("WalletList — card terms", () => {
+  const shared = wallet("a", { name: "Shared", owner_id: PARTNER });
+
+  it("offers a partner's wallet only the card terms fields, from the desktop icon", async () => {
+    const user = userEvent.setup();
+    render(<WalletList {...listProps([shared])} currentUserId={ME} editActions={{}} />);
+
+    expect(screen.queryByRole("button", { name: "Edit Shared" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Card terms for Shared" }));
+
+    expect(screen.getByRole("dialog", { name: "Card terms for Shared" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Bonus channel")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Name")).toBeNull();
+  });
+
+  it("offers the same from the phone menu", async () => {
+    const user = userEvent.setup();
+    render(<WalletList {...listProps([shared])} currentUserId={ME} editActions={{}} />);
+
+    const more = screen.getByRole("button", { name: "More actions for Shared" });
+    await user.click(more);
+    await user.click(within(more.parentElement!).getByRole("button", { name: "Card terms for Shared" }));
+
+    expect(screen.getByRole("dialog", { name: "Card terms for Shared" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Name")).toBeNull();
+  });
+
+  it("puts the card terms fields in an owner's edit dialog", async () => {
+    const user = userEvent.setup();
+    render(
+      <WalletList
+        {...listProps([wallet("a", { name: "Mine" })])}
+        currentUserId={ME}
+        editActions={{ a: noopAction }}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Card terms for Mine" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Edit Mine" }));
+
+    expect(screen.getByLabelText("Name")).toBeInTheDocument();
+    expect(screen.getByLabelText("Bonus channel")).toBeInTheDocument();
+    expect(screen.getByLabelText("Cycle start day")).toBeInTheDocument();
+    expect(screen.getByLabelText("Max")).toBeInTheDocument();
   });
 });
