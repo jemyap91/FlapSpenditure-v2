@@ -17,11 +17,12 @@
 // `@/server/actions/categories` (its own "use server" module) to inline-
 // create a category — that has to be mocked here too, for the same reason.
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { TransactionForm, type EditSeed } from "./TransactionForm";
 import { createTransaction, updateTransaction, updateTransfer } from "@/server/actions/transactions";
 import type { Category } from "./CategoryPicker";
+import type { CardTrackerRow } from "@/server/card-tracker";
 
 const push = vi.fn();
 vi.mock("next/navigation", () => ({
@@ -47,7 +48,7 @@ const TXN_ID = "55555555-5555-4555-8555-555555555555";
 const TRANSFER_ID = "66666666-6666-4666-8666-666666666666";
 const SPACE = "99999999-9999-4999-8999-999999999999";
 
-const wallets = [{ id: WALLET_A, name: "Everyday", currency_code: "USD", space_id: SPACE, kind: "card" as const, color_slot: 1 }];
+const wallets = [{ id: WALLET_A, name: "Everyday", currency_code: "USD", space_id: SPACE, kind: "card" as const, color_slot: 1, bonus_channel: null, bonus_cap_minor: null }];
 const categories: Category[] = [
   { id: "cat-1", name: "Groceries", kind: "expense", color_slot: 1, icon: "circle", space_id: SPACE },
 ];
@@ -57,9 +58,9 @@ const categories: Category[] = [
 // same-currency/cross-currency transfer-edit tests below share one wallets
 // array rather than each building its own.
 const editWallets = [
-  { id: WALLET_A, name: "Everyday", currency_code: "USD", space_id: SPACE, kind: "card" as const, color_slot: 1 },
-  { id: WALLET_B, name: "Savings", currency_code: "USD", space_id: SPACE, kind: "bank" as const, color_slot: 2 },
-  { id: WALLET_EUR, name: "Holiday", currency_code: "EUR", space_id: SPACE, kind: "bank" as const, color_slot: 3 },
+  { id: WALLET_A, name: "Everyday", currency_code: "USD", space_id: SPACE, kind: "card" as const, color_slot: 1, bonus_channel: null, bonus_cap_minor: null },
+  { id: WALLET_B, name: "Savings", currency_code: "USD", space_id: SPACE, kind: "bank" as const, color_slot: 2, bonus_channel: null, bonus_cap_minor: null },
+  { id: WALLET_EUR, name: "Holiday", currency_code: "EUR", space_id: SPACE, kind: "bank" as const, color_slot: 3, bonus_channel: null, bonus_cap_minor: null },
 ];
 
 /** Fills the minimum a save needs (a nonzero amount, a category) and clicks
@@ -259,6 +260,7 @@ describe("TransactionForm — edit mode (Task 6)", () => {
     occurredOn: "2026-08-01",
     note: "weekly shop",
     merchant: "Tesco",
+    channel: null,
   };
 
   const editTransferSameCurrency: EditSeed = {
@@ -341,7 +343,7 @@ describe("TransactionForm — edit mode (Task 6)", () => {
     // transfer; WalletList renders no Archive for a non-owner).
     render(<TransactionForm mode="edit" wallets={wallets} categories={categories} edit={editTxnSeed} />);
     expect(screen.queryByRole("combobox", { name: /Wallet/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: /^(Expense|Income|Transfer)$/ })).not.toBeInTheDocument();
   });
 
   it("offers no category control when editing a transfer", () => {
@@ -407,6 +409,7 @@ describe("TransactionForm — edit mode (Task 6)", () => {
       occurred_on: "2026-08-01",
       note: "weekly shop",
       merchant: "Tesco",
+      channel: null,
     });
     // updateTransfer must never be called for a non-transfer edit — this is
     // the dispatch-on-kind contract, not just "some save happened."
@@ -540,6 +543,7 @@ describe("TransactionForm — edit mode (Task 6)", () => {
       occurred_on: "2026-08-01",
       note: "corrected note",
       merchant: "Tesco",
+      channel: null,
     });
   });
 
@@ -618,10 +622,11 @@ describe("TransactionForm — moving a transaction between wallets", () => {
     occurredOn: "2026-08-01",
     note: "",
     merchant: "",
+    channel: null,
   };
   const bothWallets = [
-    { id: WALLET_A, name: "Everyday", currency_code: "USD", space_id: SPACE, kind: "card" as const, color_slot: 1 },
-    { id: WALLET_B, name: "Savings", currency_code: "USD", space_id: SPACE, kind: "bank" as const, color_slot: 2 },
+    { id: WALLET_A, name: "Everyday", currency_code: "USD", space_id: SPACE, kind: "card" as const, color_slot: 1, bonus_channel: null, bonus_cap_minor: null },
+    { id: WALLET_B, name: "Savings", currency_code: "USD", space_id: SPACE, kind: "bank" as const, color_slot: 2, bonus_channel: null, bonus_cap_minor: null },
   ];
   const cats: Category[] = [
     { id: "cat-1", name: "Groceries", kind: "expense", color_slot: 1, icon: "circle", space_id: SPACE },
@@ -816,5 +821,222 @@ describe("TransactionForm — suggestions from past entries", () => {
     render(<TransactionForm wallets={wallets} categories={categories} defaultWalletId={WALLET_A} />);
     expect(screen.getByRole("textbox", { name: "Merchant" })).not.toHaveAttribute("list");
     expect(screen.getByRole("textbox", { name: "Note" })).not.toHaveAttribute("list");
+  });
+});
+
+describe("TransactionForm — channel", () => {
+  const WW = "77777777-7777-4777-8777-777777777771";
+  const bonusWallets = [
+    { id: WALLET_A, name: "Everyday", currency_code: "USD", space_id: SPACE, kind: "card" as const, color_slot: 1, bonus_channel: null, bonus_cap_minor: null },
+    { id: WW, name: "Woman's World", currency_code: "USD", space_id: SPACE, kind: "card" as const, color_slot: 2, bonus_channel: "online" as const, bonus_cap_minor: 100000 },
+  ];
+  const rules = [{ merchant_key: "uniqlo", channel: "in_store" as const }];
+  const cardRows: CardTrackerRow[] = [
+    {
+      walletId: WW,
+      walletName: "Woman's World",
+      currency: "USD",
+      bonusChannel: "online",
+      capMinor: 100000,
+      from: "2026-11-01",
+      to: "2026-11-30",
+      spentMinor: 99000,
+      remainingMinor: 1000,
+      pace: "on_pace",
+      mismatchCount: 0,
+    },
+  ];
+
+  const radio = (name: string) => screen.getByRole("radio", { name });
+
+  function renderCreate(extra: { walletId?: string; rows?: CardTrackerRow[] } = {}) {
+    return render(
+      <TransactionForm
+        wallets={bonusWallets}
+        categories={categories}
+        defaultWalletId={extra.walletId ?? WALLET_A}
+        merchantChannels={rules}
+        cardRows={extra.rows ?? cardRows}
+      />,
+    );
+  }
+
+  function setDate(value: string) {
+    fireEvent.change(screen.getByLabelText("Date"), { target: { value } });
+  }
+
+  it("shows the channel group for an expense but not for income or a transfer", async () => {
+    const user = userEvent.setup();
+    renderCreate();
+    expect(screen.getByRole("group", { name: /^Channel/ })).toBeInTheDocument();
+    expect(screen.getAllByRole("radio", { name: /Online|In store|Bill|PayNow or transfer|Overseas/ })).toHaveLength(5);
+
+    await user.click(screen.getByRole("radio", { name: "Income" }));
+    expect(screen.queryByRole("group", { name: /^Channel/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: "Transfer" }));
+    expect(screen.queryByRole("group", { name: /^Channel/ })).not.toBeInTheDocument();
+  });
+
+  it("names the channel group after the wallet", () => {
+    renderCreate({ walletId: WW });
+    expect(screen.getByRole("group", { name: "Channel for Woman's World" })).toBeInTheDocument();
+  });
+
+  it("selects the wallet's bonus channel when that wallet is chosen", async () => {
+    const user = userEvent.setup();
+    renderCreate();
+    expect(radio("Online")).not.toBeChecked();
+    await pickWallet(user, "Wallet", "Woman's World");
+    expect(radio("Online")).toBeChecked();
+  });
+
+  it("selects a merchant rule's channel, ignoring case and spaces", async () => {
+    const user = userEvent.setup();
+    renderCreate({ walletId: WW });
+    expect(radio("Online")).toBeChecked();
+    await user.type(screen.getByLabelText("Merchant"), "  UNIQLO ");
+    expect(radio("In store")).toBeChecked();
+  });
+
+  it("leaves a picked channel alone when the merchant or wallet changes", async () => {
+    const user = userEvent.setup();
+    renderCreate();
+    await user.click(radio("Bill"));
+    await user.type(screen.getByLabelText("Merchant"), "Uniqlo");
+    expect(radio("Bill")).toBeChecked();
+    await pickWallet(user, "Wallet", "Woman's World");
+    expect(radio("Bill")).toBeChecked();
+  });
+
+  it("clears the channel when the selected chip is tapped again, and Save sends null", async () => {
+    const user = userEvent.setup();
+    renderCreate({ walletId: WW });
+    await user.click(radio("Online"));
+    expect(radio("Online")).not.toBeChecked();
+    await user.click(screen.getByRole("button", { name: "5" }));
+    await user.click(screen.getByRole("button", { name: "Groceries" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(push).toHaveBeenCalled());
+    expect(createTransaction).toHaveBeenCalledWith(expect.objectContaining({ channel: null }));
+  });
+
+  it("saves with the suggested channel without any interaction with the chips", async () => {
+    const user = userEvent.setup();
+    renderCreate({ walletId: WW });
+    await user.click(screen.getByRole("button", { name: "5" }));
+    await user.click(screen.getByRole("button", { name: "Groceries" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(push).toHaveBeenCalled());
+    expect(createTransaction).toHaveBeenCalledWith(expect.objectContaining({ channel: "online" }));
+  });
+
+  it("does not send a channel for income", async () => {
+    const user = userEvent.setup();
+    render(
+      <TransactionForm
+        wallets={bonusWallets}
+        categories={[
+          ...categories,
+          { id: "cat-in", name: "Salary", kind: "income", color_slot: 2, icon: "circle", space_id: SPACE },
+        ]}
+        defaultWalletId={WW}
+        merchantChannels={rules}
+        cardRows={cardRows}
+      />,
+    );
+    await user.click(screen.getByRole("radio", { name: "Income" }));
+    await user.click(screen.getByRole("button", { name: "5" }));
+    await user.click(screen.getByRole("button", { name: "Salary" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(push).toHaveBeenCalled());
+    expect(createTransaction).toHaveBeenCalledWith(expect.not.objectContaining({ channel: expect.anything() }));
+    expect(vi.mocked(createTransaction).mock.calls[0]![0]).not.toHaveProperty("channel");
+  });
+
+  it("warns that the card won't earn its bonus, and Save stays enabled", async () => {
+    const user = userEvent.setup();
+    renderCreate({ walletId: WW });
+    await user.click(radio("In store"));
+    expect(screen.getByRole("status", { name: /^Warnings/ })).toHaveTextContent(
+      "Woman's World earns its bonus Online, so this won't earn it.",
+    );
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  it("shows no warning while the channel matches or is blank", async () => {
+    const user = userEvent.setup();
+    renderCreate({ walletId: WW });
+    expect(screen.getByRole("status", { name: /^Warnings/ })).toBeEmptyDOMElement();
+    await user.click(radio("Online"));
+    expect(screen.getByRole("status", { name: /^Warnings/ })).toBeEmptyDOMElement();
+  });
+
+  it("warns when the amount takes the card past its max for the cycle", async () => {
+    const user = userEvent.setup();
+    renderCreate({ walletId: WW });
+    setDate("2026-11-10");
+    await user.click(screen.getByRole("button", { name: "2" }));
+    await user.click(screen.getByRole("button", { name: "0" }));
+    expect(screen.getByRole("status", { name: /^Warnings/ })).toHaveTextContent(
+      "This takes Woman's World past its $1,000.00 max for this cycle.",
+    );
+  });
+
+  it("shows no max warning when the date is outside the card's cycle", async () => {
+    const user = userEvent.setup();
+    renderCreate({ walletId: WW });
+    setDate("2026-12-05");
+    await user.click(screen.getByRole("button", { name: "2" }));
+    await user.click(screen.getByRole("button", { name: "0" }));
+    expect(screen.getByRole("status", { name: /^Warnings/ })).toBeEmptyDOMElement();
+  });
+
+  describe("edit mode", () => {
+    const seed = (channel: "in_store" | null): EditSeed => ({
+      kind: "expense",
+      id: TXN_ID,
+      walletId: WW,
+      amount: "12.50",
+      categoryId: "cat-1",
+      occurredOn: "2026-11-10",
+      note: "",
+      merchant: "",
+      channel,
+    });
+
+    it("seeds the stored channel and does not re-suggest on load", () => {
+      render(
+        <TransactionForm mode="edit" wallets={bonusWallets} categories={categories} edit={seed("in_store")} merchantChannels={rules} cardRows={cardRows} />,
+      );
+      expect(radio("In store")).toBeChecked();
+      expect(radio("Online")).not.toBeChecked();
+    });
+
+    it("seeds a deliberately blank channel and keeps it through a merchant change", async () => {
+      const user = userEvent.setup();
+      render(
+        <TransactionForm mode="edit" wallets={bonusWallets} categories={categories} edit={seed(null)} merchantChannels={rules} cardRows={cardRows} />,
+      );
+      expect(screen.getAllByRole("radio").filter((r) => (r as HTMLInputElement).checked)).toHaveLength(0);
+      await user.type(screen.getByLabelText("Merchant"), "Uniqlo");
+      expect(radio("In store")).not.toBeChecked();
+    });
+
+    it("sends the channel on save, and null once cleared", async () => {
+      const user = userEvent.setup();
+      render(
+        <TransactionForm mode="edit" wallets={bonusWallets} categories={categories} edit={seed("in_store")} merchantChannels={rules} cardRows={cardRows} />,
+      );
+      await user.click(screen.getByRole("button", { name: "Save changes" }));
+      await waitFor(() => expect(push).toHaveBeenCalled());
+      expect(updateTransaction).toHaveBeenLastCalledWith(expect.objectContaining({ channel: "in_store" }));
+
+      push.mockClear();
+      await user.click(radio("In store"));
+      await user.click(screen.getByRole("button", { name: "Save changes" }));
+      await waitFor(() => expect(push).toHaveBeenCalled());
+      expect(updateTransaction).toHaveBeenLastCalledWith(expect.objectContaining({ channel: null }));
+    });
   });
 });

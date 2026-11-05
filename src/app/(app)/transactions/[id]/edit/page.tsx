@@ -2,6 +2,9 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { TransactionForm, type EditSeed } from "@/components/TransactionForm";
 import type { Category } from "@/components/CategoryPicker";
+import { loadCardTracker, type CardTrackerRow } from "@/server/card-tracker";
+import { todayLocalDate } from "@/lib/today";
+import type { Channel } from "@/lib/channels";
 import { RepaymentsSection } from "./RepaymentsSection";
 import { RefundEditSection } from "./RefundEditSection";
 import { TransactionNotFound } from "./TransactionNotFound";
@@ -169,13 +172,14 @@ export default async function EditTransactionPage({
      *  rule lives in the current wallet and rules do not move, which
      *  `transactions_recurring_same_wallet` enforces regardless. */
     recurring_id: string | null;
+    channel: Channel | null;
   };
 
   const [{ data, error: rowError }, { data: suggestions, error: suggestionsError }] = await Promise.all([
     supabase
       .from("transactions")
       .select(
-        "id, kind, wallet_id, amount_minor, currency_code, category_id, occurred_on, note, merchant, transfer_id, recurring_id",
+        "id, kind, wallet_id, amount_minor, currency_code, category_id, occurred_on, note, merchant, transfer_id, recurring_id, channel",
       )
       .eq("id", id)
       .is("deleted_at", null)
@@ -253,7 +257,7 @@ export default async function EditTransactionPage({
       // `archived_at` (task 8, item 2): `updateTransfer` requires BOTH legs'
       // wallets to be active, so both are checked here rather than only the
       // leg the user happened to tap.
-      .select("id, name, currency_code, archived_at, space_id, kind, color_slot")
+      .select("id, name, currency_code, archived_at, space_id, kind, color_slot, bonus_channel, bonus_cap_minor")
       .in("id", [outLeg.wallet_id, inLeg.wallet_id]);
     if (legWalletsError) throw new Error("Failed to load wallets");
 
@@ -316,7 +320,7 @@ export default async function EditTransactionPage({
     // `archived_at` (task 8, item 2) — see this file's doc comment. Without
     // it this page rendered a fully interactive form whose Save
     // `updateTransaction` was always going to refuse.
-    .select("id, name, currency_code, archived_at, space_id, kind, color_slot")
+    .select("id, name, currency_code, archived_at, space_id, kind, color_slot, bonus_channel, bonus_cap_minor")
     .eq("id", row.wallet_id)
     .maybeSingle();
   if (walletError) throw new Error("Failed to load wallet");
@@ -351,7 +355,7 @@ export default async function EditTransactionPage({
     ? { data: [wallet], error: null }
     : await supabase
         .from("wallets")
-        .select("id, name, currency_code, archived_at, space_id, kind, color_slot")
+        .select("id, name, currency_code, archived_at, space_id, kind, color_slot, bonus_channel, bonus_cap_minor")
         .eq("currency_code", row.currency_code)
         .is("archived_at", null);
   if (candidatesError) throw new Error("Failed to load wallets");
@@ -404,7 +408,27 @@ export default async function EditTransactionPage({
     occurredOn: row.occurred_on,
     note: row.note ?? "",
     merchant: row.merchant ?? "",
+    channel: row.channel,
   };
+
+  // The household's remembered channel per merchant. A failed read only costs
+  // the suggestion, never the edit.
+  const { data: merchantChannels, error: merchantChannelsError } = await supabase
+    .from("merchant_channels")
+    .select("merchant_key, channel")
+    .eq("space_id", wallet.space_id);
+  if (merchantChannelsError) console.error("Could not load merchant channels", merchantChannelsError.message);
+
+  // A tracker failure must never stop someone saving an edit: the form
+  // simply shows no max warning. This row is left out so it is not counted
+  // against itself.
+  const today = todayLocalDate();
+  let cardRows: CardTrackerRow[] = [];
+  try {
+    cardRows = await loadCardTracker(supabase, { on: today, today, excludeTransactionId: row.id });
+  } catch (e) {
+    console.error("Could not load card tracker", e);
+  }
 
   return (
     <>
@@ -420,6 +444,8 @@ export default async function EditTransactionPage({
         edit={edit}
         from={from}
         suggestions={suggestions ?? []}
+        merchantChannels={merchantChannels ?? []}
+        cardRows={cardRows}
       />
       {row.kind === "expense" && (
         <RepaymentsSection

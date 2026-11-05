@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { TrendingDown, TrendingUp, ArrowRightLeft } from "lucide-react";
+import { TrendingDown, TrendingUp, ArrowRightLeft, TriangleAlert } from "lucide-react";
 import { AmountKeypad } from "./AmountKeypad";
 import { CategoryPicker, type Category } from "./CategoryPicker";
 import { WalletPicker, type PickerWallet } from "./WalletPicker";
@@ -19,6 +19,10 @@ import {
   usualCategoryId,
   type EntrySuggestion,
 } from "@/lib/entry-suggestions";
+import { CHANNELS, CHANNEL_LABELS, type Channel } from "@/lib/channels";
+import { expenseWarnings, merchantKey, suggestChannel } from "@/lib/card-bonus";
+// Type-only: src/server/card-tracker.ts is server-only and must never reach the client bundle.
+import type { CardTrackerRow } from "@/server/card-tracker";
 import { parseOrigin } from "@/lib/origin";
 import { todayLocalDate } from "@/lib/today";
 
@@ -29,7 +33,13 @@ import { todayLocalDate } from "@/lib/today";
 // category filter stays correct when the wallet chip changes after mount.
 // `kind` and `color_slot` feed the WalletPicker's grouping (cards under
 // "Wallets", banks under "Accounts") and each row's glyph colour.
-type Wallet = PickerWallet & { space_id: string };
+type Wallet = PickerWallet & {
+  space_id: string;
+  bonus_channel: Channel | null;
+  bonus_cap_minor: number | null;
+};
+/** A household's remembered channel for a merchant, keyed by `merchantKey`. */
+type MerchantChannel = { merchant_key: string; channel: Channel };
 type Kind = "expense" | "income" | "transfer";
 
 /**
@@ -55,6 +65,8 @@ export type EditTransactionSeed = {
   occurredOn: string;
   note: string;
   merchant: string;
+  /** The stored channel, null when deliberately blank. Never re-suggested on load. */
+  channel: Channel | null;
 };
 
 /**
@@ -91,6 +103,15 @@ const FOCUS_RING =
 
 const CHIP_BORDER =
   `rounded-full border px-3 py-1 text-sm ${FOCUS_RING}`;
+
+/** The amount as minor units for a live warning: a half-typed value counts as zero. */
+function safeAmountMinor(raw: string, minorUnit: number): number {
+  try {
+    return parseAmountInput(raw, minorUnit);
+  } catch {
+    return 0;
+  }
+}
 
 /**
  * Task 19's add-transaction screen — spec §5.1's "amount-first" flow (the
@@ -206,7 +227,8 @@ const CHIP_BORDER =
  * controls `WalletForm`'s bug actually hit (a `<select>`, a radio group) are
  * exactly the ones edit mode REMOVES (wallet, kind), replaced by inert
  * stated text with no live DOM property for a reset to desync in the first
- * place. The brief's instruction to route this form's controls through
+ * place. (The channel chips are radios and do render in edit mode, but as
+ * ordinary controlled inputs under the same action-less `<form>`.) The brief's instruction to route this form's controls through
  * hidden inputs the way `WalletForm` does does not apply here — this is
  * this task's own found defect in its brief (see this task's report).
  */
@@ -229,6 +251,8 @@ export function TransactionForm(
          *  nothing: with none, the Note and Merchant fields are the plain
          *  inputs they always were. */
         suggestions?: EntrySuggestion[];
+        merchantChannels?: MerchantChannel[];
+        cardRows?: CardTrackerRow[];
       }
     | {
         mode: "edit";
@@ -246,11 +270,15 @@ export function TransactionForm(
          */
         from?: string | null;
         suggestions?: EntrySuggestion[];
+        merchantChannels?: MerchantChannel[];
+        cardRows?: CardTrackerRow[];
       },
 ) {
   const router = useRouter();
   const { wallets, categories } = props;
   const suggestions = props.suggestions ?? [];
+  const merchantChannels = props.merchantChannels ?? [];
+  const cardRows = props.cardRows ?? [];
   const edit = props.mode === "edit" ? props.edit : undefined;
   // A plain boolean rather than `edit` itself for the mount-focus effect's
   // dependency below: `edit` is an object prop and could arrive as a fresh
@@ -299,6 +327,14 @@ export function TransactionForm(
    *  `create_transfer` (0005_transfer_fn.sql) has no such parameter. See the
    *  control's own comment below, and `transferInput`'s, for the asymmetry. */
   const [merchant, setMerchant] = useState(() => (edit ? edit.merchant : ""));
+  const ruleChannel = (text: string): Channel | null =>
+    merchantChannels.find((r) => r.merchant_key === merchantKey(text))?.channel ?? null;
+  const [channel, setChannel] = useState<Channel | null>(() => {
+    if (edit) return edit.kind === "transfer" ? null : edit.channel;
+    return suggestChannel(null, wallets.find((w) => w.id === defaultWalletId)?.bonus_channel ?? null);
+  });
+  // Starts true in edit mode: a stored channel, even a blank one, is the user's answer.
+  const [channelTouched, setChannelTouched] = useState(isEditMode);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
 
@@ -449,6 +485,7 @@ export function TransactionForm(
     // `transactions_category_same_space` would refuse the save, and clearing
     // here is what stops the user from ever getting that far.
     if (!nextWallet || nextWallet.space_id !== wallet.space_id) setCategory(null);
+    if (!channelTouched) setChannel(suggestChannel(ruleChannel(merchant), nextWallet?.bonus_channel ?? null));
     // The wallet just changed currency (possibly to a different
     // `minorUnit`) — an amount already typed under the OLD currency's
     // precision can be over-precise for the new one (e.g. "1.505" typed
@@ -525,6 +562,7 @@ export function TransactionForm(
   function handleMerchantChange(next: string) {
     setMerchant(next);
     setError(null);
+    if (!channelTouched) setChannel(suggestChannel(ruleChannel(next), wallet.bonus_channel));
     // Prefill the category this merchant usually gets, but only when the
     // user has not chosen one on this entry, and only if that category is
     // one the form is offering right now: the same kind, and the selected
@@ -535,6 +573,12 @@ export function TransactionForm(
     if (!usual) return;
     const match = categories.find((c) => c.id === usual && c.kind === kind && c.space_id === wallet?.space_id);
     if (match) setCategory(match);
+  }
+
+  function pickChannel(next: Channel | null) {
+    setChannel(next);
+    setChannelTouched(true);
+    setError(null);
   }
 
   function handleFormKeyDown(e: React.KeyboardEvent<HTMLFormElement>) {
@@ -597,6 +641,7 @@ export function TransactionForm(
                 occurred_on: date,
                 note,
                 merchant,
+                ...(edit.kind === "expense" ? { channel } : {}),
               });
 
         if ("error" in res) {
@@ -658,6 +703,7 @@ export function TransactionForm(
               // the control that feeds this does not render for a transfer
               // in create mode either, so this state is always "" there.
               merchant,
+              ...(kind === "expense" ? { channel } : {}),
             });
 
       if ("error" in res) {
@@ -685,6 +731,23 @@ export function TransactionForm(
       router.push(parseOrigin(from));
     });
   }
+
+  // The tracker's figures are for the cycle containing today; a date outside
+  // that cycle has no running total to add this amount to.
+  const cardRow = cardRows.find((r) => r.walletId === wallet.id);
+  const inCycle = cardRow !== undefined && date >= cardRow.from && date <= cardRow.to;
+  const warnings =
+    kind === "expense" && wallet.bonus_channel
+      ? expenseWarnings({
+          walletName: wallet.name,
+          bonusChannel: wallet.bonus_channel,
+          capMinor: wallet.bonus_cap_minor,
+          currency: wallet.currency_code,
+          channel,
+          amountMinor: safeAmountMinor(amount, minorUnitFor(wallet.currency_code)),
+          spentBeforeMinor: inCycle ? cardRow.spentMinor : null,
+        })
+      : [];
 
   return (
     <form
@@ -990,6 +1053,66 @@ export function TransactionForm(
           )}
         </label>
       )}
+
+      {kind === "expense" && (
+        <fieldset
+          className="flex flex-col gap-2"
+          aria-label={`Channel for ${wallet.name}`}
+          aria-describedby={errorId}
+        >
+          <legend className="mb-1 text-sm" style={{ color: "var(--ink-2)" }}>
+            Channel
+          </legend>
+          <div className="flex flex-wrap gap-2">
+            {CHANNELS.map((value) => {
+              const selected = channel === value;
+              return (
+                <label key={value} className="cursor-pointer">
+                  <input
+                    type="radio"
+                    name="txn-channel"
+                    value={value}
+                    checked={selected}
+                    onChange={() => pickChannel(value)}
+                    // A checked radio fires no change event, so tapping the
+                    // selected chip is caught here and clears the channel.
+                    onClick={() => {
+                      if (selected) pickChannel(null);
+                    }}
+                    className="peer sr-only"
+                  />
+                  <span
+                    className={`block ${CHIP_BORDER} peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--cat-1)]`}
+                    style={{
+                      borderColor: selected ? "var(--cat-1)" : "var(--ink-2)",
+                      background: selected ? "var(--grid)" : "transparent",
+                      color: "var(--ink)",
+                      fontWeight: selected ? 600 : 400,
+                    }}
+                  >
+                    {CHANNEL_LABELS[value]}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </fieldset>
+      )}
+
+      {/* One live region, always mounted so a warning appearing is announced.
+          Warnings inform and never block Save. */}
+      <div role="status" aria-label={`Warnings for ${wallet.name}`} className="flex flex-col gap-2">
+        {warnings.map((w) => (
+          <p
+            key={w}
+            className="flex items-start gap-2 rounded-md border px-3 py-2 text-sm"
+            style={{ borderColor: "var(--cat-2)", background: "var(--surface)", color: "var(--ink)" }}
+          >
+            <TriangleAlert size={16} aria-hidden className="mt-0.5 shrink-0" style={{ color: "var(--cat-2)" }} />
+            {w}
+          </p>
+        ))}
+      </div>
 
       {/* Always mounted, not conditionally rendered — see the useEffect
           above for why. Empty when there's nothing to say. */}
