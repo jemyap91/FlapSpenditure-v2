@@ -169,7 +169,7 @@ export default async function WalletDetailPage({
     supabase
       .from("transactions")
       .select(
-        "id, kind, amount_minor, currency_code, occurred_on, note, merchant, created_by, wallet_id, categories!transactions_category_id_fkey(name, color_slot, icon), repaid_expense(merchant, note, categories!transactions_category_id_fkey(name, color_slot, icon))",
+        "id, kind, amount_minor, currency_code, occurred_on, note, merchant, created_by, wallet_id, channel, channel_mismatch, categories!transactions_category_id_fkey(name, color_slot, icon), repaid_expense(merchant, note, categories!transactions_category_id_fkey(name, color_slot, icon))",
       )
       .eq("wallet_id", id)
       .is("deleted_at", null)
@@ -206,6 +206,8 @@ export default async function WalletDetailPage({
     merchant: string | null;
     created_by: string | null;
     wallet_id: string;
+    channel: Row["channel"];
+    channel_mismatch: boolean | null;
     categories: { name: string; color_slot: number; icon: string } | null;
     repaid_expense: {
       merchant: string | null;
@@ -240,6 +242,8 @@ export default async function WalletDetailPage({
     })(),
     repays: repaysLabel(r),
     created_by_name: r.created_by_name,
+    channel: r.channel,
+    channel_mismatch: r.channel_mismatch === true,
   }));
 
   const showAttribution = anyRowShared(joined, memberRows);

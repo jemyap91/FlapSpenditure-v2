@@ -73,3 +73,24 @@ describe("ilikePattern", () => {
     expect(ilikePattern('a,b.c(d) "e" \\f')).toBe('"%a,b.c(d) \\"e\\" \\\\\\\\f%"');
   });
 });
+
+describe("wallet and mismatch filters", () => {
+  const WALLET = "11111111-1111-4111-8111-111111111111";
+
+  it("parses wallet and mismatch=1, and counts them as filters", () => {
+    const f = parseTransactionFilters({ wallet: WALLET, mismatch: "1" });
+    expect(f).toEqual({ walletId: WALLET, mismatch: true });
+    expect(hasAnyFilter(f)).toBe(true);
+  });
+
+  it("drops a bad wallet id and mismatch=0", () => {
+    expect(parseTransactionFilters({ wallet: "nope", mismatch: "0" })).toEqual({});
+    expect(parseTransactionFilters({ mismatch: "true" })).toEqual({});
+  });
+
+  it("combines with the date range", () => {
+    expect(
+      parseTransactionFilters({ wallet: WALLET, mismatch: "1", from: "2026-09-01", to: "2026-09-30" }),
+    ).toEqual({ walletId: WALLET, mismatch: true, from: "2026-09-01", to: "2026-09-30" });
+  });
+});

@@ -43,6 +43,8 @@ const baseRow: Row = {
   category_icon: "shopping-basket",
   color_slot: 1,
   created_by_name: null,
+  channel: null,
+  channel_mismatch: false,
 };
 
 // Overrides layered onto `baseRow` — the merchant tests below use this
@@ -433,5 +435,29 @@ describe("refund rows", () => {
     );
     expect(screen.getByRole("link", { name: "Alice" })).toBeInTheDocument();
     expect(screen.getByText(/Repayment for Matcha Bar/)).toBeInTheDocument();
+  });
+});
+
+describe("TransactionList — channel tags", () => {
+  it("shows the channel in the secondary line", () => {
+    render(<TransactionList rows={[row({ channel: "in_store" })]} />);
+    expect(screen.getByText(/In store/)).toBeInTheDocument();
+  });
+
+  it("shows No bonus as text on a mismatch row", () => {
+    render(<TransactionList rows={[row({ channel: "in_store", channel_mismatch: true })]} />);
+    expect(screen.getByText(/No bonus/)).toBeInTheDocument();
+  });
+
+  it("shows neither for a null channel", () => {
+    render(<TransactionList rows={[row()]} />);
+    expect(screen.queryByText(/In store/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No bonus/)).not.toBeInTheDocument();
+  });
+
+  it("shows the channel without No bonus when it matches", () => {
+    render(<TransactionList rows={[row({ channel: "online" })]} />);
+    expect(screen.getByText(/Online/)).toBeInTheDocument();
+    expect(screen.queryByText(/No bonus/)).not.toBeInTheDocument();
   });
 });

@@ -143,4 +143,35 @@ describe("FilterBar", () => {
     rerender(<FilterBar categories={CATEGORIES} filters={{}} total={12} shown={12} />);
     expect(screen.getByRole("status", { name: "Filter results" })).toHaveTextContent("");
   });
+
+  it("keeps the wallet and mismatch params when another control changes", async () => {
+    const WALLET = "11111111-1111-4111-8111-111111111111";
+    render(
+      <FilterBar
+        categories={CATEGORIES}
+        filters={{ walletId: WALLET, mismatch: true, from: "2026-09-01", to: "2026-09-30" }}
+        total={2}
+        shown={2}
+      />,
+    );
+    await userEvent.setup().selectOptions(screen.getByRole("combobox", { name: "Category" }), CAT_GROCERIES);
+    const url = lastUrl();
+    expect(url.searchParams.get("wallet")).toBe(WALLET);
+    expect(url.searchParams.get("mismatch")).toBe("1");
+    expect(url.searchParams.get("from")).toBe("2026-09-01");
+    expect(url.searchParams.get("to")).toBe("2026-09-30");
+    expect(url.searchParams.get("category")).toBe(CAT_GROCERIES);
+  });
+
+  it("offers Clear filters when only wallet and mismatch are set", () => {
+    render(
+      <FilterBar
+        categories={CATEGORIES}
+        filters={{ walletId: "11111111-1111-4111-8111-111111111111", mismatch: true }}
+        total={1}
+        shown={1}
+      />,
+    );
+    expect(screen.getByRole("link", { name: "Clear filters" })).toHaveAttribute("href", "/transactions");
+  });
 });

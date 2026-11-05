@@ -336,4 +336,16 @@ describe("WalletDetailPage", () => {
     ).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Add a transaction/ })).not.toBeInTheDocument();
   });
+
+  it("tags a row with its channel and No bonus when it earns none", async () => {
+    walletsById.set(WALLET_A, wallet(WALLET_A));
+    transactionsData.push(
+      txn("t1", WALLET_A, { note: "Uniqlo", channel: "in_store", channel_mismatch: true }),
+    );
+
+    render(await WalletDetailPage({ params: Promise.resolve({ id: WALLET_A }) }));
+
+    expect(screen.getByText(/In store/)).toBeInTheDocument();
+    expect(screen.getByText(/No bonus/)).toBeInTheDocument();
+  });
 });
