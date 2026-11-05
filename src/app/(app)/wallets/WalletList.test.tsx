@@ -930,3 +930,93 @@ describe("WalletList — the trailing control column", () => {
     expect(link.closest("span")?.className).toContain("min-w-0");
   });
 });
+
+describe("WalletList — the phone's more-actions menu", () => {
+  const a = wallet("a", { name: "Everyday" });
+  const trigger = () => screen.getByRole("button", { name: "More actions for Everyday" });
+
+  const renderMenu = () =>
+    render(
+      <WalletList
+        currentUserId={ME}
+        {...listProps([a])}
+        editActions={{ a: noopAction }}
+        memberSections={{ a: <p>members for Everyday</p> }}
+      />,
+    );
+
+  it("keeps Settings and Members tucked away until asked", async () => {
+    const user = userEvent.setup();
+    renderMenu();
+    expect(trigger()).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: "Settings for Everyday" })).not.toBeInTheDocument();
+
+    await user.click(trigger());
+
+    expect(trigger()).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Settings for Everyday" })).toBeInTheDocument();
+  });
+
+  it("opens the wallet's settings and closes behind itself", async () => {
+    const user = userEvent.setup();
+    renderMenu();
+    await user.click(trigger());
+    await user.click(screen.getByRole("button", { name: "Settings for Everyday" }));
+
+    expect(screen.getByRole("dialog", { name: "Edit Everyday" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Settings for Everyday" })).not.toBeInTheDocument();
+  });
+
+  it("opens the wallet's members", async () => {
+    const user = userEvent.setup();
+    renderMenu();
+    await user.click(trigger());
+    // The second match is the desktop icon, which CSS hides on a real phone
+    // but jsdom does not.
+    const members = screen.getAllByRole("button", { name: "Members of Everyday" });
+    await user.click(members.find((b) => b.textContent === "Members")!);
+
+    expect(screen.getByRole("dialog", { name: "Members of Everyday" })).toBeInTheDocument();
+    expect(screen.getByText("members for Everyday")).toBeInTheDocument();
+  });
+
+  it("offers only what the viewer can do", async () => {
+    const user = userEvent.setup();
+    render(
+      <WalletList
+        currentUserId={ME}
+        {...listProps([a])}
+        memberSections={{ a: <p>members for Everyday</p> }}
+      />,
+    );
+    await user.click(trigger());
+    expect(screen.queryByRole("button", { name: "Settings for Everyday" })).not.toBeInTheDocument();
+  });
+
+  it("closes on Escape and hands focus back to the trigger", async () => {
+    const user = userEvent.setup();
+    renderMenu();
+    await user.click(trigger());
+    await user.keyboard("{Escape}");
+
+    expect(trigger()).toHaveAttribute("aria-expanded", "false");
+    expect(trigger()).toHaveFocus();
+  });
+
+  it("closes when a tap lands elsewhere", async () => {
+    const user = userEvent.setup();
+    renderMenu();
+    await user.click(trigger());
+    await user.click(document.body);
+
+    expect(trigger()).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("does not archive when a swipe starts on the menu", () => {
+    renderMenu();
+    fireEvent.touchStart(trigger(), { touches: [{ clientX: 200, clientY: 0 }] });
+    fireEvent.touchEnd(trigger(), { changedTouches: [{ clientX: 50, clientY: 0 }] });
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+});
