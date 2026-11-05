@@ -237,6 +237,35 @@ export type Database = {
         }
         Relationships: []
       }
+      merchant_channels: {
+        Row: {
+          channel: Database["public"]["Enums"]["expense_channel"]
+          merchant_key: string
+          space_id: string
+          updated_at: string
+        }
+        Insert: {
+          channel: Database["public"]["Enums"]["expense_channel"]
+          merchant_key: string
+          space_id: string
+          updated_at?: string
+        }
+        Update: {
+          channel?: Database["public"]["Enums"]["expense_channel"]
+          merchant_key?: string
+          space_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "merchant_channels_space_id_fkey"
+            columns: ["space_id"]
+            isOneToOne: false
+            referencedRelation: "spaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       profiles: {
         Row: {
           base_currency: string
@@ -473,6 +502,7 @@ export type Database = {
         Row: {
           amount_minor: number
           category_id: string | null
+          channel: Database["public"]["Enums"]["expense_channel"] | null
           created_at: string
           created_by: string | null
           currency_code: string
@@ -489,10 +519,12 @@ export type Database = {
           transfer_id: string | null
           updated_at: string
           wallet_id: string
+          channel_mismatch: boolean | null
           effective_category_id: string | null
           repaid_expense: {
             amount_minor: number
             category_id: string | null
+            channel: Database["public"]["Enums"]["expense_channel"] | null
             created_at: string
             created_by: string | null
             currency_code: string
@@ -514,6 +546,7 @@ export type Database = {
         Insert: {
           amount_minor: number
           category_id?: string | null
+          channel?: Database["public"]["Enums"]["expense_channel"] | null
           created_at?: string
           created_by?: string | null
           currency_code: string
@@ -534,6 +567,7 @@ export type Database = {
         Update: {
           amount_minor?: number
           category_id?: string | null
+          channel?: Database["public"]["Enums"]["expense_channel"] | null
           created_at?: string
           created_by?: string | null
           currency_code?: string
@@ -767,9 +801,12 @@ export type Database = {
       wallets: {
         Row: {
           archived_at: string | null
+          bonus_cap_minor: number | null
+          bonus_channel: Database["public"]["Enums"]["expense_channel"] | null
           color_slot: number
           created_at: string
           currency_code: string
+          cycle_start_day: number | null
           icon: string
           id: string
           kind: Database["public"]["Enums"]["wallet_kind"]
@@ -782,9 +819,12 @@ export type Database = {
         }
         Insert: {
           archived_at?: string | null
+          bonus_cap_minor?: number | null
+          bonus_channel?: Database["public"]["Enums"]["expense_channel"] | null
           color_slot: number
           created_at?: string
           currency_code: string
+          cycle_start_day?: number | null
           icon: string
           id?: string
           kind: Database["public"]["Enums"]["wallet_kind"]
@@ -797,9 +837,12 @@ export type Database = {
         }
         Update: {
           archived_at?: string | null
+          bonus_cap_minor?: number | null
+          bonus_channel?: Database["public"]["Enums"]["expense_channel"] | null
           color_slot?: number
           created_at?: string
           currency_code?: string
+          cycle_start_day?: number | null
           icon?: string
           id?: string
           kind?: Database["public"]["Enums"]["wallet_kind"]
@@ -845,6 +888,12 @@ export type Database = {
       accept_space_invite: { Args: { p_invite: string }; Returns: undefined }
       accept_wallet_invite: { Args: { invite: string }; Returns: undefined }
       budget_visible: { Args: { b: string }; Returns: boolean }
+      channel_mismatch: {
+        Args: { "": Database["public"]["Tables"]["transactions"]["Row"] }
+        Returns: {
+          error: true
+        } & "the function public.channel_mismatch with parameter or with a single unnamed json/jsonb parameter, but no matches were found in the schema cache"
+      }
       count_hidden_repayments: { Args: { p_expense: string }; Returns: number }
       create_transfer: {
         Args: {
@@ -1014,6 +1063,7 @@ export type Database = {
         Returns: {
           amount_minor: number
           category_id: string | null
+          channel: Database["public"]["Enums"]["expense_channel"] | null
           created_at: string
           created_by: string | null
           currency_code: string
@@ -1055,6 +1105,15 @@ export type Database = {
         }
         Returns: string
       }
+      set_wallet_bonus: {
+        Args: {
+          p_cap_minor: number
+          p_channel: Database["public"]["Enums"]["expense_channel"]
+          p_cycle_start_day: number
+          p_wallet_id: string
+        }
+        Returns: undefined
+      }
       set_wallet_group: {
         Args: { p_group_id?: string; p_wallet_id: string }
         Returns: undefined
@@ -1080,6 +1139,7 @@ export type Database = {
         Returns: {
           amount_minor: number
           category_id: string | null
+          channel: Database["public"]["Enums"]["expense_channel"] | null
           created_at: string
           created_by: string | null
           currency_code: string
@@ -1107,6 +1167,12 @@ export type Database = {
     }
     Enums: {
       category_kind: "expense" | "income"
+      expense_channel:
+        | "online"
+        | "in_store"
+        | "bill"
+        | "paynow_transfer"
+        | "overseas"
       invite_status: "pending" | "accepted" | "declined"
       member_role: "owner" | "member"
       member_via: "owner" | "household" | "direct"
@@ -1245,6 +1311,13 @@ export const Constants = {
   public: {
     Enums: {
       category_kind: ["expense", "income"],
+      expense_channel: [
+        "online",
+        "in_store",
+        "bill",
+        "paynow_transfer",
+        "overseas",
+      ],
       invite_status: ["pending", "accepted", "declined"],
       member_role: ["owner", "member"],
       member_via: ["owner", "household", "direct"],

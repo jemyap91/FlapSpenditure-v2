@@ -5112,3 +5112,99 @@ begin;
       'LEAK: a revoked token still resolves';
   end $$;
 commit;
+
+-- =====================================================================
+-- Channel tagging (0033): set_wallet_bonus and merchant_channels.
+--   co = owner of a shared wallet, cm = a plain member of it and of the
+--   household, cx = outside the household.
+-- =====================================================================
+insert into auth.users (id, email) values
+  ('c4a00000-0000-4000-8000-000000000011', 'ch-owner@x.io'),
+  ('c4a00000-0000-4000-8000-000000000012', 'ch-member@x.io'),
+  ('c4a00000-0000-4000-8000-000000000013', 'ch-outsider@x.io');
+insert into wallets (id, owner_id, name, kind, currency_code, color_slot, icon)
+  values ('c4a00000-0000-4000-8000-000000000021', 'c4a00000-0000-4000-8000-000000000011',
+          'Channel Shared', 'card', 'USD', 1, 'wallet');
+insert into space_members (space_id, user_id, role)
+  values ((select space_id from wallets where id = 'c4a00000-0000-4000-8000-000000000021'),
+          'c4a00000-0000-4000-8000-000000000012', 'member');
+insert into wallet_members (wallet_id, user_id, role)
+  values ('c4a00000-0000-4000-8000-000000000021', 'c4a00000-0000-4000-8000-000000000012', 'member');
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"c4a00000-0000-4000-8000-000000000012","email":"ch-member@x.io"}';
+  do $$
+  declare v_space uuid := (select space_id from wallets where id = 'c4a00000-0000-4000-8000-000000000021');
+  begin
+    assert (select current_user) = 'authenticated', 'impersonation failed: current_user';
+    assert (select auth.uid()) = 'c4a00000-0000-4000-8000-000000000012'::uuid, 'impersonation failed: auth.uid()';
+
+    perform public.set_wallet_bonus('c4a00000-0000-4000-8000-000000000021', 'online', 15::smallint, 50000);
+    assert (select bonus_channel = 'online' and cycle_start_day = 15 and bonus_cap_minor = 50000
+              from wallets where id = 'c4a00000-0000-4000-8000-000000000021'),
+      'PERMISSION BROKEN: a non-owner wallet member cannot set bonus terms';
+
+    update wallets set name = 'Renamed' where id = 'c4a00000-0000-4000-8000-000000000021';
+    assert not found, 'LEAK: a non-owner renamed the wallet';
+    assert (select name from wallets where id = 'c4a00000-0000-4000-8000-000000000021') = 'Channel Shared',
+      'LEAK: a non-owner changed the wallet name';
+
+    insert into merchant_channels (space_id, merchant_key, channel) values (v_space, 'grab', 'online');
+    update merchant_channels set channel = 'in_store' where space_id = v_space and merchant_key = 'grab';
+    assert (select channel from merchant_channels where space_id = v_space and merchant_key = 'grab') = 'in_store',
+      'PERMISSION BROKEN: a household member cannot write merchant_channels';
+  end $$;
+commit;
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"c4a00000-0000-4000-8000-000000000011","email":"ch-owner@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'c4a00000-0000-4000-8000-000000000011'::uuid, 'impersonation failed: auth.uid()';
+    assert (select count(*) from merchant_channels) = 1,
+      'PERMISSION BROKEN: the owner cannot read the household''s merchant_channels';
+    begin
+      update wallets set bonus_channel = 'bill' where id = 'c4a00000-0000-4000-8000-000000000021';
+      raise exception 'LEAK: the owner wrote bonus_channel with a plain update';
+    exception when insufficient_privilege then null;
+    end;
+    begin
+      update wallets set cycle_start_day = 3 where id = 'c4a00000-0000-4000-8000-000000000021';
+      raise exception 'LEAK: the owner wrote cycle_start_day with a plain update';
+    exception when insufficient_privilege then null;
+    end;
+    begin
+      update wallets set bonus_cap_minor = 3 where id = 'c4a00000-0000-4000-8000-000000000021';
+      raise exception 'LEAK: the owner wrote bonus_cap_minor with a plain update';
+    exception when insufficient_privilege then null;
+    end;
+  end $$;
+commit;
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"c4a00000-0000-4000-8000-000000000013","email":"ch-outsider@x.io"}';
+  do $$ begin
+    assert (select auth.uid()) = 'c4a00000-0000-4000-8000-000000000013'::uuid, 'impersonation failed: auth.uid()';
+    assert (select count(*) from merchant_channels) = 0, 'LEAK: an outsider reads another household''s merchant_channels';
+    begin
+      perform public.set_wallet_bonus('c4a00000-0000-4000-8000-000000000021', 'overseas', 1::smallint, 1);
+      raise exception 'LEAK: a non-member set bonus terms';
+    exception when raise_exception then
+      assert sqlerrm = 'that account does not exist', 'wrong error for a non-member: ' || sqlerrm;
+    end;
+    begin
+      insert into merchant_channels (space_id, merchant_key, channel)
+        values ((select space_id from wallets where id = 'c4a00000-0000-4000-8000-000000000021'), 'evil', 'online');
+      raise exception 'LEAK: an outsider wrote into another household''s merchant_channels';
+    exception when insufficient_privilege then null;
+    end;
+  end $$;
+commit;
+
+do $$ begin
+  assert (select bonus_channel = 'online' and cycle_start_day = 15 and bonus_cap_minor = 50000
+            from wallets where id = 'c4a00000-0000-4000-8000-000000000021'),
+    'a rejected caller changed the bonus terms';
+end $$;

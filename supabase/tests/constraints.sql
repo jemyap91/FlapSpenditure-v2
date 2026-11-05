@@ -1964,3 +1964,65 @@ do $$ begin
            where user_id = 'a5a50000-0000-4000-8000-000000000005'),
     'ESCALATION: a bare space_members row granted the household''s shared wallets';
 end $$;
+
+-- Channel tagging (0033): the channel and bonus-term CHECK constraints.
+-- Each REJECT asserts SQLSTATE 23514 and the constraint that fired.
+begin;
+  insert into auth.users (id,email) values ('c4a00000-0000-4000-8000-000000000001','ch@x.io');
+  insert into wallets (id,owner_id,name,kind,currency_code,color_slot,icon)
+    values ('c4a00000-0000-4000-8000-000000000002',
+            'c4a00000-0000-4000-8000-000000000001','Channel Card','card','USD',1,'wallet');
+
+  -- ACCEPT: a channel on an expense, and complete bonus terms.
+  insert into transactions (wallet_id,created_by,kind,amount_minor,currency_code,channel,occurred_on)
+    values ('c4a00000-0000-4000-8000-000000000002','c4a00000-0000-4000-8000-000000000001',
+            'expense', -500, 'USD', 'online', current_date);
+  update wallets set bonus_channel = 'online', cycle_start_day = 31, bonus_cap_minor = 1
+    where id = 'c4a00000-0000-4000-8000-000000000002';
+  update wallets set bonus_channel = null, cycle_start_day = null, bonus_cap_minor = null
+    where id = 'c4a00000-0000-4000-8000-000000000002';
+
+  do $$
+  declare
+    v_sqlstate   text;
+    v_constraint text;
+    v_case       text;
+    v_expected   text;
+    v_sql        text;
+  begin
+    for v_case, v_expected, v_sql in values
+      ('income with a channel', 'transactions_channel_expense_only',
+       $q$insert into transactions (wallet_id,created_by,kind,amount_minor,currency_code,channel,occurred_on)
+          values ('c4a00000-0000-4000-8000-000000000002','c4a00000-0000-4000-8000-000000000001',
+                  'income', 500, 'USD', 'online', current_date)$q$),
+      ('cycle_start_day 0', 'wallets_cycle_start_day_range',
+       $q$update wallets set cycle_start_day = 0 where id = 'c4a00000-0000-4000-8000-000000000002'$q$),
+      ('cycle_start_day 32', 'wallets_cycle_start_day_range',
+       $q$update wallets set cycle_start_day = 32 where id = 'c4a00000-0000-4000-8000-000000000002'$q$),
+      ('bonus_cap_minor 0', 'wallets_bonus_cap_positive',
+       $q$update wallets set bonus_channel = 'online', cycle_start_day = 1, bonus_cap_minor = 0
+          where id = 'c4a00000-0000-4000-8000-000000000002'$q$),
+      ('a max with no channel', 'wallets_bonus_cap_needs_terms',
+       $q$update wallets set cycle_start_day = 1, bonus_cap_minor = 100
+          where id = 'c4a00000-0000-4000-8000-000000000002'$q$),
+      ('a max with no cycle day', 'wallets_bonus_cap_needs_terms',
+       $q$update wallets set bonus_channel = 'online', bonus_cap_minor = 100
+          where id = 'c4a00000-0000-4000-8000-000000000002'$q$),
+      ('an unnormalised merchant_key', 'merchant_channels_merchant_key_check',
+       $q$insert into merchant_channels (space_id, merchant_key, channel)
+          values ((select space_id from wallets where id = 'c4a00000-0000-4000-8000-000000000002'),
+                  ' Grab ', 'online')$q$)
+    loop
+      begin
+        execute v_sql;
+        raise exception 'CONSTRAINT BROKEN: % was not rejected', v_case;
+      exception
+        when others then
+          get stacked diagnostics v_sqlstate = returned_sqlstate, v_constraint = constraint_name;
+          assert v_sqlstate = '23514' and v_constraint = v_expected,
+            format('%s: expected check_violation from %s, got SQLSTATE %s (constraint %s): %s',
+                   v_case, v_expected, v_sqlstate, v_constraint, sqlerrm);
+      end;
+    end loop;
+  end $$;
+rollback;
