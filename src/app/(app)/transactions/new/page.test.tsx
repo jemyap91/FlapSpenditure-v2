@@ -58,7 +58,7 @@ vi.mock("@/server/card-tracker", () => ({
 
 const { walletsData, rulesData, categoriesData } = vi.hoisted(() => ({
   walletsData: [] as { id: string; name: string; currency_code: string; kind: "card" | "bank"; color_slot: number; space_id: string; bonus_channel: string | null; bonus_cap_minor: number | null }[],
-  rulesData: [] as { merchant_key: string; channel: string }[],
+  rulesData: [] as { space_id: string; merchant_key: string; channel: string }[],
   categoriesData: [] as Record<string, unknown>[],
 }));
 
@@ -319,7 +319,7 @@ describe("NewTransactionPage — channel and card bonus", () => {
   });
 
   it("applies the household's merchant rules", async () => {
-    rulesData.push({ merchant_key: "uniqlo", channel: "in_store" });
+    rulesData.push({ space_id: SPACE, merchant_key: "uniqlo", channel: "in_store" });
     const ui = await NewTransactionPage({ searchParams: Promise.resolve({}) });
     render(ui);
     await userEvent.setup().type(screen.getByLabelText("Merchant"), "Uniqlo");
