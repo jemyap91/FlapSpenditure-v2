@@ -24,6 +24,8 @@ const { actions, stored, tracker, bonus, calls } = vi.hoisted(() => ({
   // Every builder method the fake sees, as [method, ...args].
   calls: [] as unknown[][],
   stored: {
+    // When set, createClient rejects, as it does when the session is gone.
+    clientDown: false,
     row: null as Record<string, unknown> | null,
     // What an array query (no maybeSingle) returns, when a test needs more
     // than the one stored row -- a transfer's two legs.
@@ -41,21 +43,24 @@ vi.mock("@/lib/today", () => ({ todayLocalDate: () => "2026-09-29" }));
 // stored row. The tools' reads only supply defaults and a response body --
 // the writes they make go through the (mocked) server actions above.
 vi.mock("@/lib/supabase/server", () => ({
-  createClient: async () => ({
-    from: () => {
-      const builder: Record<string, unknown> = {};
-      for (const m of ["select", "eq", "is", "order", "limit", "gte", "lte", "or", "filter"]) {
-        builder[m] = (...a: unknown[]) => {
-          calls.push([m, ...a]);
-          return builder;
-        };
-      }
-      builder.then = (r: (v: unknown) => void) =>
-        r({ data: stored.list ?? (stored.row ? [stored.row] : []), error: null });
-      builder.maybeSingle = async () => ({ data: stored.row });
-      return builder;
-    },
-  }),
+  createClient: async () => {
+    if (stored.clientDown) throw new Error("no session");
+    return {
+      from: () => {
+        const builder: Record<string, unknown> = {};
+        for (const m of ["select", "eq", "is", "order", "limit", "gte", "lte", "or", "filter"]) {
+          builder[m] = (...a: unknown[]) => {
+            calls.push([m, ...a]);
+            return builder;
+          };
+        }
+        builder.then = (r: (v: unknown) => void) =>
+          r({ data: stored.list ?? (stored.row ? [stored.row] : []), error: null });
+        builder.maybeSingle = async () => ({ data: stored.row });
+        return builder;
+      },
+    };
+  },
 }));
 
 import { callTool, toolList } from "./tools";
@@ -66,6 +71,7 @@ beforeEach(() => {
   bonus.setWalletBonus.mockReset();
   tracker.warningsFor.mockResolvedValue({ channel: null, warnings: [] });
   calls.length = 0;
+  stored.clientDown = false;
   stored.list = null;
   stored.row = {
     id: TXN_ID,
@@ -213,6 +219,19 @@ describe("create_transaction channel and warnings", () => {
     expect(result).toEqual({
       ok: true,
       data: { id: "new", channel: "bill", warnings: ["The expense was saved, but its warnings couldn't be checked."] },
+    });
+  });
+
+  it("still reports success when the client cannot even be created after the save", async () => {
+    actions.createTransaction.mockImplementation(async () => {
+      // The save lands, then the session goes away.
+      stored.clientDown = true;
+      return { id: "new" };
+    });
+    const result = await callTool("create_transaction", base);
+    expect(result).toEqual({
+      ok: true,
+      data: { id: "new", channel: null, warnings: ["The expense was saved, but its warnings couldn't be checked."] },
     });
   });
 
@@ -401,6 +420,13 @@ describe("callTool", () => {
 });
 
 describe("toolList", () => {
+  it("tells the client that saving tools can return warnings to relay", () => {
+    for (const name of ["create_transaction", "update_transaction"]) {
+      const tool = toolList().find((t) => t.name === name)!;
+      expect(tool.description).toMatch(/warnings/);
+    }
+  });
+
   it("publishes a JSON Schema object for every tool", () => {
     const tools = toolList();
     expect(tools.map((t) => t.name)).toEqual([

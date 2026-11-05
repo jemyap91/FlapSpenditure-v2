@@ -51,7 +51,6 @@ export async function setWalletBonus(raw: unknown): Promise<{ ok: true } | { err
   });
   if (error) return { error: "Could not save card terms. Please try again." };
 
-  revalidatePath("/");
-  revalidatePath("/wallets");
+  revalidatePath("/", "layout");
   return { ok: true };
 }

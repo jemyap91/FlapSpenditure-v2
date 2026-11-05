@@ -50,8 +50,8 @@ describe("setWalletBonus", () => {
       p_cycle_start_day: 19,
       p_cap_minor: 100000,
     });
-    expect(revalidatePath).toHaveBeenCalledWith("/");
-    expect(revalidatePath).toHaveBeenCalledWith("/wallets");
+    expect(revalidatePath).toHaveBeenCalledTimes(1);
+    expect(revalidatePath).toHaveBeenCalledWith("/", "layout");
   });
 
   it("clears the terms by omitting every value", async () => {

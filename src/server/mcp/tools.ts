@@ -184,12 +184,18 @@ const WARNINGS_UNCHECKED = "The expense was saved, but its warnings couldn't be 
  * one sentence saying the warnings are unknown.
  */
 async function savedOutcome(id: string): Promise<{ channel: string | null; warnings: string[] }> {
-  const supabase = await createClient();
   try {
+    const supabase = await createClient();
     return await warningsFor(supabase, id);
   } catch {
-    const { data } = await supabase.from("transactions").select("channel").eq("id", id).maybeSingle();
-    return { channel: data?.channel ?? null, warnings: [WARNINGS_UNCHECKED] };
+    // Nothing after a save may turn it into a failure, not even this read.
+    let channel: string | null = null;
+    try {
+      const supabase = await createClient();
+      const { data } = await supabase.from("transactions").select("channel").eq("id", id).maybeSingle();
+      channel = data?.channel ?? null;
+    } catch {}
+    return { channel, warnings: [WARNINGS_UNCHECKED] };
   }
 }
 
@@ -275,7 +281,7 @@ export const TOOLS: Record<string, Tool> = {
   },
 
   create_transaction: {
-    description: "Record a new expense (default) or income. To record someone paying you back for an expense, use record_repayment instead.",
+    description: "Record a new expense (default) or income. To record someone paying you back for an expense, use record_repayment instead. The result can carry warnings (for example, the spend won't earn the card's bonus); relay them to the user.",
     input: createInput,
     run: async (args: z.output<typeof createInput>) => {
       const result = await createTransaction({
@@ -341,7 +347,7 @@ export const TOOLS: Record<string, Tool> = {
 
   update_transaction: {
     description:
-      "Change an expense, income or repayment. Only the fields you pass change; the rest keep their current values. A repayment takes its category from its expense, so passing category_id for one is rejected. Moving a transaction to another wallet keeps its currency. For a transfer, use update_transfer.",
+      "Change an expense, income or repayment. Only the fields you pass change; the rest keep their current values. A repayment takes its category from its expense, so passing category_id for one is rejected. Moving a transaction to another wallet keeps its currency. The result can carry warnings; relay them to the user. For a transfer, use update_transfer.",
     input: updateInput,
     run: async (args: z.output<typeof updateInput>) => {
       // updateTransaction takes the whole editable row, so fill in whatever
