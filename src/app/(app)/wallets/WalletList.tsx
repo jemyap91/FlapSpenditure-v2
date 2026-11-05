@@ -1,8 +1,8 @@
 "use client";
 
-import { useId, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useId, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
-import { Landmark, CreditCard, Settings, User, GripVertical } from "lucide-react";
+import { Landmark, CreditCard, Ellipsis, Settings, User, GripVertical } from "lucide-react";
 import type { WalletSort } from "@/lib/validation/wallet-group";
 import {
   createWalletGroup,
@@ -732,6 +732,31 @@ export function WalletList({
                 </button>
               )}
 
+              {/* On a phone Settings and Members fold into one control, so
+                  the name and balance keep the width two icons were using.
+                  Both layouts stay in the DOM and CSS picks one, at the same
+                  `md` the shell itself switches on. */}
+              {(editActions?.[w.id] || memberSections?.[w.id]) ? (
+                <RowMoreMenu
+                  walletName={w.name}
+                  onEdit={
+                    editActions?.[w.id]
+                      ? () => setDialog({ walletId: w.id, view: "edit" })
+                      : undefined
+                  }
+                  onMembers={
+                    memberSections?.[w.id]
+                      ? () => setDialog({ walletId: w.id, view: "members" })
+                      : undefined
+                  }
+                />
+              ) : (
+                (editActions || memberSections) && (
+                  <span aria-hidden className={`block ${ROW_CONTROL} md:hidden`} />
+                )
+              )}
+
+              <div className="hidden items-center gap-0.5 md:flex">
               {/* A reserved slot when this row has no edit action but others
                   do. Without it one wallet missing a control shifts its
                   neighbours' names sideways, and a list of truncated names
@@ -767,6 +792,7 @@ export function WalletList({
                   <User size={18} aria-hidden />
                 </button>
               )}
+              </div>
               </div>
             </li>
           );
@@ -1021,6 +1047,127 @@ export function WalletList({
             memberSections?.[dialogWallet.id]
           )}
         </Modal>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A wallet row's Settings and Members on a phone, behind one button.
+ *
+ * A disclosure rather than `role="menu"`: that role promises arrow-key
+ * navigation, and two buttons reached by Tab need none. The items render only
+ * while open, which also keeps them from doubling the row's desktop icons in
+ * jsdom, where the CSS that hides one layout does not apply.
+ *
+ * A handler left undefined drops that item, for the same reason the desktop
+ * icons are absent rather than disabled.
+ */
+function RowMoreMenu({
+  walletName,
+  onEdit,
+  onMembers,
+}: {
+  walletName: string;
+  onEdit?: () => void;
+  onMembers?: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const panelId = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  // Same rule as WalletPicker: a popover that only closes on Escape or on a
+  // choice would sit over the rows beneath it until one of those happened.
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(e: PointerEvent) {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [open]);
+
+  /** Focus goes back to the trigger BEFORE a dialog opens, so the dialog has
+   *  a live element to return to — the item that was clicked is about to
+   *  unmount. */
+  function close() {
+    setOpen(false);
+    triggerRef.current?.focus();
+  }
+
+  const item = `flex h-11 w-full items-center gap-2 rounded-md px-2 text-left text-sm ${FOCUS_RING}`;
+
+  return (
+    <div
+      ref={rootRef}
+      className="relative md:hidden"
+      // A swipe that starts here is aimed at this control, not at the row.
+      // Leaving the row's `touchStart` unset is what stops it archiving.
+      onTouchStart={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        if (open && e.key === "Escape") {
+          e.preventDefault();
+          close();
+        }
+      }}
+      // Tabbing out closes it. A null `relatedTarget` must not: iOS Safari
+      // does not focus a tapped button, so null is also what a tap on an item
+      // looks like, and closing here would unmount it before the click lands.
+      onBlur={(e) => {
+        const next = e.relatedTarget;
+        if (next && !e.currentTarget.contains(next)) setOpen(false);
+      }}
+    >
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-label={`More actions for ${walletName}`}
+        aria-expanded={open}
+        aria-controls={open ? panelId : undefined}
+        onClick={() => setOpen((o) => !o)}
+        className={`grid ${ROW_CONTROL} shrink-0 place-items-center rounded-md ${FOCUS_RING}`}
+        style={{ color: "var(--ink-2)" }}
+      >
+        <Ellipsis size={18} aria-hidden />
+      </button>
+      {open && (
+        <div
+          id={panelId}
+          className="absolute right-0 top-full z-20 mt-1 flex w-44 flex-col rounded-md border p-1 shadow-lg"
+          style={{ borderColor: "var(--grid)", background: "var(--surface)", color: "var(--ink)" }}
+        >
+          {onEdit && (
+            <button
+              type="button"
+              aria-label={`Settings for ${walletName}`}
+              onClick={() => {
+                close();
+                onEdit();
+              }}
+              className={item}
+            >
+              <Settings size={18} aria-hidden style={{ color: "var(--ink-2)" }} />
+              Settings
+            </button>
+          )}
+          {onMembers && (
+            <button
+              type="button"
+              aria-label={`Members of ${walletName}`}
+              onClick={() => {
+                close();
+                onMembers();
+              }}
+              className={item}
+            >
+              <User size={18} aria-hidden style={{ color: "var(--ink-2)" }} />
+              Members
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

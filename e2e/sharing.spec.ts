@@ -147,6 +147,10 @@ const membersRegion = (page: Page, walletName: string) =>
 async function openMembers(page: Page, walletName: string) {
   const dialog = page.getByRole("dialog", { name: `Members of ${walletName}` });
   if (!(await dialog.isVisible())) {
+    // On a phone the control sits behind the row's more-actions button.
+    if ((page.viewportSize()?.width ?? 1280) < 768) {
+      await page.getByRole("button", { name: `More actions for ${walletName}` }).click();
+    }
     await page.getByRole("button", { name: `Members of ${walletName}` }).click();
   }
   await expect(dialog).toBeVisible();

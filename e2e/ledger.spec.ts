@@ -162,6 +162,21 @@ test.describe("ledger", () => {
   });
 });
 
+/**
+ * Opens a wallet's edit dialog from either layout: a gear icon on desktop,
+ * an item behind the row's more-actions button on a phone. Decided by
+ * viewport, not `isVisible()`, which does not wait and would read false on a
+ * row that has yet to render.
+ */
+async function openWalletSettings(page: Page, walletName: string) {
+  if ((page.viewportSize()?.width ?? 1280) < 768) {
+    await page.getByRole("button", { name: `More actions for ${walletName}` }).click();
+    await page.getByRole("button", { name: `Settings for ${walletName}` }).click();
+  } else {
+    await page.getByRole("button", { name: `Edit ${walletName}` }).click();
+  }
+}
+
 /** Adds a wallet from /wallets, which is the only screen that can create a
  *  second one (onboarding only ever runs at zero wallets). */
 async function addWallet(page: Page, name: string) {
@@ -181,7 +196,7 @@ async function addWallet(page: Page, name: string) {
  * assert on a refusal that never gets that far.
  */
 async function archiveViaDialog(page: Page, walletName: string, confirm = true) {
-  await page.getByRole("button", { name: `Edit ${walletName}` }).click();
+  await openWalletSettings(page, walletName);
   await page.getByRole("button", { name: "Archive this wallet" }).click();
   if (!confirm) return;
   await page
@@ -216,7 +231,7 @@ test.describe("wallets", () => {
     await addWallet(page, "Savings");
 
     // This tab renders two wallets, so archiving is offered on both.
-    await page.getByRole("button", { name: "Edit Everyday" }).click();
+    await openWalletSettings(page, "Everyday");
     await expect(page.getByRole("button", { name: "Archive this wallet" })).toBeVisible();
     await page.getByRole("button", { name: "Close" }).click();
 
@@ -274,7 +289,7 @@ test.describe("wallets", () => {
     await page.goto("/wallets");
     await expect(page.getByText(`${MINUS}$18.00`)).toBeVisible();
 
-    await page.getByRole("button", { name: "Edit Everyday" }).click();
+    await openWalletSettings(page, "Everyday");
     const dialog = page.getByRole("dialog", { name: "Edit Everyday" });
     await expect(dialog).toBeVisible();
 
