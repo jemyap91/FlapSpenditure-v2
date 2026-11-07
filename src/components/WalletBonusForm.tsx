@@ -71,6 +71,7 @@ export function WalletBonusForm({
   }
 
   const label = "text-sm";
+  const targetLabel = channel === "" ? "Min spend" : "Max";
   return (
     <form onSubmit={save} className="mt-4 flex flex-col gap-3" noValidate>
       <div className="flex flex-col gap-1">
@@ -88,7 +89,7 @@ export function WalletBonusForm({
           className={FIELD}
           style={FIELD_STYLE}
         >
-          <option value="">No channel</option>
+          <option value="">Any channel</option>
           {CHANNELS.map((c) => (
             <option key={c} value={c}>
               {CHANNEL_LABELS[c]}
@@ -118,11 +119,11 @@ export function WalletBonusForm({
       </div>
       <div className="flex flex-col gap-1">
         <label htmlFor={maxId} className={label} style={{ color: "var(--ink-2)" }}>
-          Max
+          {targetLabel}
         </label>
         <input
           id={maxId}
-          aria-label={`Max for ${wallet.name}`}
+          aria-label={`${targetLabel} for ${wallet.name}`}
           type="text"
           inputMode="decimal"
           value={max}
@@ -134,7 +135,9 @@ export function WalletBonusForm({
           style={FIELD_STYLE}
         />
         <p className="text-xs" style={{ color: "var(--ink-2)" }}>
-          The most spend in {wallet.currency_code} that earns the bonus each cycle.
+          {channel === ""
+            ? `The spend in ${wallet.currency_code} needed each cycle. All spend counts.`
+            : `The most spend in ${wallet.currency_code} that earns the bonus each cycle.`}
         </p>
       </div>
       {error && (

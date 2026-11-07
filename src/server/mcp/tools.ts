@@ -130,7 +130,7 @@ const walletBonusInput = z.object({
   wallet_id: uuid,
   bonus_channel: z.enum(CHANNELS).nullable().optional().describe("Channel that earns the bonus. null clears it; leave out to keep it"),
   cycle_start_day: z.number().int().min(1).max(31).nullable().optional().describe("Day of the month the card's cycle starts. null clears it; leave out to keep it"),
-  max: amount.nullable().optional().describe("Most spend that earns the bonus per cycle. null clears it; leave out to keep it"),
+  max: amount.nullable().optional().describe("Most spend that earns the bonus per cycle, or the minimum spend when the card has no channel. null clears it; leave out to keep it"),
 });
 
 const idInput = z.object({ id: uuid });
@@ -463,6 +463,7 @@ export const TOOLS: Record<string, Tool> = {
               wallet: { id: r.walletId, name: r.walletName },
               currency: r.currency,
               bonus_channel: r.bonusChannel,
+              goal: r.bonusChannel === null ? "min_spend" : "max",
               from: r.from,
               to: r.to,
               spent: formatAmountInput(r.spentMinor, unit),
@@ -481,7 +482,7 @@ export const TOOLS: Record<string, Tool> = {
 
   update_wallet_bonus: {
     description:
-      "Set a card wallet's bonus terms: the channel that earns the bonus, the day its cycle starts, and the max spend per cycle. Only the fields you pass change; null clears one. A max needs a channel and a cycle start day.",
+      "Set a card wallet's bonus terms: the channel that earns the bonus, the day its cycle starts, and the max spend per cycle. Only the fields you pass change; null clears one. A max needs a cycle start day. With no channel, the max is a minimum spend that all the card's spend counts towards.",
     input: walletBonusInput,
     run: async (args: z.output<typeof walletBonusInput>) => {
       const supabase = await createClient();

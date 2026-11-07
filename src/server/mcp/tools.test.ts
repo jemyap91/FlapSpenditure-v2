@@ -329,6 +329,7 @@ describe("get_card_tracker", () => {
           wallet: { id: WALLET_ID, name: "Card" },
           currency: "SGD",
           bonus_channel: "online",
+          goal: "max",
           from: "2026-09-05",
           to: "2026-10-04",
           spent: "123.45",
@@ -339,6 +340,12 @@ describe("get_card_tracker", () => {
         },
       ],
     });
+  });
+
+  it("reports a card with no channel as a min spend", async () => {
+    tracker.loadCardTracker.mockResolvedValue([{ ...row, bonusChannel: null }]);
+    const result = await callTool("get_card_tracker", {});
+    expect(result).toMatchObject({ ok: true, data: [{ bonus_channel: null, goal: "min_spend" }] });
   });
 
   it("passes a past date through, still measuring pace against today", async () => {
@@ -395,10 +402,10 @@ describe("update_wallet_bonus", () => {
   });
 
   it("passes the action's refusal through", async () => {
-    bonus.setWalletBonus.mockResolvedValue({ error: "Set a channel and cycle start day to use a max" });
+    bonus.setWalletBonus.mockResolvedValue({ error: "Set a cycle start day to use a max or min spend" });
     expect(await callTool("update_wallet_bonus", { wallet_id: WALLET_ID, bonus_channel: null })).toEqual({
       ok: false,
-      error: "Set a channel and cycle start day to use a max",
+      error: "Set a cycle start day to use a max or min spend",
     });
   });
 

@@ -23,10 +23,16 @@ function cycleLabel(from: string, to: string): string {
   return `${day(from)} ${month(from)}–${day(to)} ${month(to)}`;
 }
 
+/** Activity showing exactly the expenses behind a row's spent figure. */
+function countedHref(row: CardTrackerRow): string {
+  const channel = row.bonusChannel ? `&channel=${row.bonusChannel}` : "";
+  return `/transactions?wallet=${row.walletId}&expenses=1${channel}&from=${row.from}&to=${row.to}`;
+}
+
 /**
- * Home's "Card bonus" section (spec 4.6): one row per card with a max,
+ * Home's "Card bonus" section (spec 4.6): one row per card with a max or min spend,
  * measured over the cycle `loadCardTracker` resolved. Renders nothing when no
- * card has a max, so Home shows no empty chrome.
+ * card has either, so Home shows no empty chrome.
  */
 export function CardTracker({ rows }: { rows: CardTrackerRow[] }) {
   if (rows.length === 0) return null;
@@ -51,23 +57,29 @@ function CardTrackerItem({ row }: { row: CardTrackerRow }) {
   // The bar and its value stop at the max; the figure beside it shows the real spend.
   const filled = Math.min(row.spentMinor, row.capMinor);
   const percent = row.capMinor > 0 ? (filled / row.capMinor) * 100 : 0;
+  const isMinSpend = row.bonusChannel === null;
+  const goal = isMinSpend ? "min spend" : "max";
   const status =
     row.pace === "reached"
-      ? "max reached"
+      ? `${goal} reached`
       : row.pace === "on_pace"
-        ? "on pace to hit max"
-        : `${formatMoney(row.remainingMinor, row.currency)} left`;
+        ? `on pace to hit ${goal}`
+        : `${formatMoney(row.remainingMinor, row.currency)} ${isMinSpend ? "to go" : "left"}`;
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex items-baseline justify-between gap-2">
-        <h3 className="text-sm font-medium" style={{ color: "var(--ink)" }}>
+      <Link
+        href={countedHref(row)}
+        aria-label={`${row.walletName}: see counted transactions`}
+        className="flex items-baseline justify-between gap-2 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]"
+      >
+        <h3 className="text-sm font-medium underline" style={{ color: "var(--ink)" }}>
           {row.walletName}
         </h3>
         <p className="text-sm" style={{ color: "var(--ink)" }}>
           {formatMoney(row.spentMinor, row.currency)} / {formatMoney(row.capMinor, row.currency)}
         </p>
-      </div>
+      </Link>
       <div
         role="progressbar"
         aria-label={row.walletName}

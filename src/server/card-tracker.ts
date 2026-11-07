@@ -10,7 +10,8 @@ export type CardTrackerRow = {
   walletId: string;
   walletName: string;
   currency: string;
-  bonusChannel: Channel;
+  /** Null on a min-spend card: all spend counts and `capMinor` is its minimum. */
+  bonusChannel: Channel | null;
   capMinor: number;
   from: string;
   to: string;
@@ -30,7 +31,7 @@ function fail(log: string, error: { message: string }, message = "Failed to load
 }
 
 /**
- * Bonus progress for every card with a max, measured over the cycle that
+ * Bonus progress for every card with a max or min spend, measured over the cycle that
  * contains `on`. The only place tracker figures are calculated. Plain table
  * reads under RLS, so a viewer sees only wallets they belong to.
  */
@@ -49,7 +50,7 @@ export async function loadCardTracker(
   const rows: CardTrackerRow[] = [];
   for (const w of wallets ?? []) {
     const bonusChannel = asChannel(w.bonus_channel);
-    if (!bonusChannel || w.cycle_start_day === null || w.bonus_cap_minor === null) continue;
+    if (w.cycle_start_day === null || w.bonus_cap_minor === null) continue;
 
     const { from, to } = cycleFor(opts.on, w.cycle_start_day);
     let query = supabase
@@ -68,7 +69,7 @@ export async function loadCardTracker(
     let mismatchCount = 0;
     for (const e of expenses ?? []) {
       const channel = asChannel(e.channel);
-      if (channel === bonusChannel) spentMinor += Math.abs(e.amount_minor);
+      if (bonusChannel === null || channel === bonusChannel) spentMinor += Math.abs(e.amount_minor);
       else if (isMismatch(channel, bonusChannel)) mismatchCount += 1;
     }
 

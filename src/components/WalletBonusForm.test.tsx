@@ -47,13 +47,13 @@ describe("WalletBonusForm", () => {
     });
   });
 
-  it("sends nulls for No channel and cleared fields", async () => {
+  it("sends nulls for Any channel and cleared fields", async () => {
     const user = userEvent.setup();
     render(<WalletBonusForm wallet={wallet()} />);
 
     await user.selectOptions(screen.getByLabelText("Bonus channel for Visa"), "");
     await user.clear(screen.getByLabelText("Cycle start day for Visa"));
-    await user.clear(screen.getByLabelText("Max for Visa"));
+    await user.clear(screen.getByLabelText("Min spend for Visa"));
     await user.click(screen.getByRole("button", { name: "Save card terms for Visa" }));
 
     expect(setWalletBonus).toHaveBeenCalledWith({
@@ -65,14 +65,14 @@ describe("WalletBonusForm", () => {
   });
 
   it("renders an error result in an alert", async () => {
-    vi.mocked(setWalletBonus).mockResolvedValue({ error: "Set a channel and cycle start day to use a max" });
+    vi.mocked(setWalletBonus).mockResolvedValue({ error: "Set a cycle start day to use a max or min spend" });
     const user = userEvent.setup();
     render(<WalletBonusForm wallet={wallet()} />);
 
     await user.click(screen.getByRole("button", { name: "Save card terms for Visa" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Set a channel and cycle start day to use a max",
+      "Set a cycle start day to use a max or min spend",
     );
   });
 

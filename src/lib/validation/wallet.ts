@@ -96,8 +96,9 @@ export type WalletField = keyof WalletInput;
 /**
  * A wallet's card bonus terms. All three null clears them. `max` is a
  * decimal string in the wallet's currency, converted to minor units by the
- * action (which knows the currency); a max without a channel and cycle day
- * has nothing to measure against, so it is refused here.
+ * action (which knows the currency); it needs a cycle day to measure against,
+ * so one without is refused here. With no channel it is a min spend: all of
+ * the wallet's spend counts towards it.
  */
 export const walletBonusInput = z
   .object({
@@ -112,11 +113,11 @@ export const walletBonusInput = z
     max: z.string().trim().nullable(),
   })
   .superRefine((data, ctx) => {
-    if (data.max && (data.bonus_channel === null || data.cycle_start_day === null)) {
+    if (data.max && data.cycle_start_day === null) {
       ctx.addIssue({
         code: "custom",
         path: ["max"],
-        message: "Set a channel and cycle start day to use a max",
+        message: "Set a cycle start day to use a max or min spend",
       });
     }
   });

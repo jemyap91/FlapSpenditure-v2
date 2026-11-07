@@ -92,7 +92,9 @@ Three nullable columns on `wallets`, with checks:
 - `bonus_cap_minor bigint`, positive, in the wallet's currency
 
 `bonus_channel` alone is valid, and gives a wallet a default and mismatch flags
-without a tracker row. A max requires a channel and a cycle start day. The max is per wallet, not hard-coded, so a change to a card's
+without a tracker row. A max requires a cycle start day. With no channel it is a
+min spend instead (0034): all of the wallet's expenses count towards it, whatever
+their channel, and nothing is a mismatch. The max is per wallet, not hard-coded, so a change to a card's
 terms is a settings edit.
 
 A start day past the end of a short month clamps to that month's last day.
@@ -173,7 +175,8 @@ mismatch count ("2 no bonus") when above zero.
 
 The bar's state is never carried by colour alone. Tapping the count opens Activity
 filtered to that wallet, cycle and mismatches, which needs new `wallet` and
-`mismatch` filters in `src/lib/transaction-filters.ts`.
+`mismatch` filters in `src/lib/transaction-filters.ts`. Tapping the card opens the
+expenses behind its spent figure, through the `expenses` and `channel` filters.
 
 The section stays on the current cycle while browsing an earlier month, and is
 absent when no wallet has a max.
@@ -222,8 +225,8 @@ because it can't know which wallet rows they apply to.
 |---|---|---|---|
 | DBS Woman's World | Online | 1 | $1,000 |
 | Citi Rewards | Online | 19 | $1,000 |
-| Cheryl's OCBC | In store | 24 | $1,000 |
-| UOB One | Bill | 2 | $500 |
+| OCBC365 1370 and 8005 | None (min spend) | 24 | $500 |
+| UOB One | None (min spend) | 2 | $500 |
 
 All four appear in the tracker. The user described the OCBC cycle as "24 Nov", read
 here as the 24th of each month, and it applies to every OCBC credit card.
