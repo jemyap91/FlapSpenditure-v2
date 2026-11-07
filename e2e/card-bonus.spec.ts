@@ -122,5 +122,11 @@ test.describe("card bonus", () => {
     await expect(page).toHaveURL("/transactions");
     await page.goto("/");
     await expect(page.getByText("$120.00 / $100.00")).toBeVisible();
+
+    // 8. The card opens what counted: not the in-store expense.
+    await page.getByRole("link", { name: "Everyday: see counted transactions" }).click();
+    await expect(page).toHaveURL(/\/transactions\?.*expenses=1/);
+    await expect(page.getByRole("button", { name: /^Delete / })).toHaveCount(2);
+    await expect(page.getByText("−$5.00")).toHaveCount(0);
   });
 });

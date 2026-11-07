@@ -74,6 +74,18 @@ describe("ilikePattern", () => {
   });
 });
 
+describe("expenses and channel filters", () => {
+  it("parses expenses=1 and a known channel, and counts them as filters", () => {
+    const f = parseTransactionFilters({ expenses: "1", channel: "online" });
+    expect(f).toEqual({ expensesOnly: true, channel: "online" });
+    expect(hasAnyFilter(f)).toBe(true);
+  });
+
+  it("drops expenses=0 and an unknown channel", () => {
+    expect(parseTransactionFilters({ expenses: "0", channel: "cheque" })).toEqual({});
+  });
+});
+
 describe("wallet and mismatch filters", () => {
   const WALLET = "11111111-1111-4111-8111-111111111111";
 

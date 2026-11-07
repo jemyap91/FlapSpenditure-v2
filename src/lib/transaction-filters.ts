@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CHANNELS, type Channel } from "./channels";
 
 /**
  * The /transactions filters, as carried in the URL (`?q=&category=&from=&to=`)
@@ -22,6 +23,10 @@ export type TransactionFilters = {
   walletId?: string;
   /** Only expenses tagged with a channel their wallet earns no bonus on (`?mismatch=1`). */
   mismatch?: true;
+  /** Only expenses (`?expenses=1`), leaving out income, transfers and repayments. */
+  expensesOnly?: true;
+  /** Only expenses tagged with this channel (`?channel=online`). */
+  channel?: Channel;
 };
 
 export const SEARCH_MAX_LENGTH = 120;
@@ -56,6 +61,10 @@ export function parseTransactionFilters(params: RawParams): TransactionFilters {
   if (wallet.success) out.walletId = wallet.data;
 
   if (first(params.mismatch) === "1") out.mismatch = true;
+  if (first(params.expenses) === "1") out.expensesOnly = true;
+
+  const channel = CHANNELS.find((c) => c === first(params.channel));
+  if (channel) out.channel = channel;
 
   const from = isoDate.safeParse(first(params.from));
   const to = isoDate.safeParse(first(params.to));
@@ -75,7 +84,9 @@ export function hasAnyFilter(f: TransactionFilters): boolean {
     f.from !== undefined ||
     f.to !== undefined ||
     f.walletId !== undefined ||
-    f.mismatch !== undefined
+    f.mismatch !== undefined ||
+    f.expensesOnly !== undefined ||
+    f.channel !== undefined
   );
 }
 
