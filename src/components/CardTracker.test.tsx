@@ -32,6 +32,18 @@ describe("CardTracker", () => {
     expect(screen.getByText(/\$690\.00 left/)).toBeInTheDocument();
   });
 
+  it("words a card with no channel as a min spend", () => {
+    render(<CardTracker rows={[row({ bonusChannel: null })]} />);
+    expect(screen.getByText(/\$690\.00 to go/)).toBeInTheDocument();
+  });
+
+  it("says when a min spend is on pace or reached", () => {
+    const { rerender } = render(<CardTracker rows={[row({ bonusChannel: null, pace: "on_pace" })]} />);
+    expect(screen.getByText(/on pace to hit min spend/)).toBeInTheDocument();
+    rerender(<CardTracker rows={[row({ bonusChannel: null, pace: "reached" })]} />);
+    expect(screen.getByText(/min spend reached/)).toBeInTheDocument();
+  });
+
   it("collapses a cycle inside one month to a single month name", () => {
     render(<CardTracker rows={[row({ from: "2026-11-01", to: "2026-11-30" })]} />);
     expect(screen.getByText(/1–30 Nov/)).toBeInTheDocument();
@@ -74,9 +86,25 @@ describe("CardTracker", () => {
     );
   });
 
-  it("shows no link when nothing is mismatched", () => {
+  it("links a card to the expenses that counted on its channel", () => {
+    render(<CardTracker rows={[row()]} />);
+    expect(screen.getByRole("link", { name: "Citi Rewards: see counted transactions" })).toHaveAttribute(
+      "href",
+      "/transactions?wallet=w1&expenses=1&channel=online&from=2026-10-19&to=2026-11-18",
+    );
+  });
+
+  it("links a min-spend card to all its expenses for the cycle", () => {
+    render(<CardTracker rows={[row({ bonusChannel: null })]} />);
+    expect(screen.getByRole("link", { name: "Citi Rewards: see counted transactions" })).toHaveAttribute(
+      "href",
+      "/transactions?wallet=w1&expenses=1&from=2026-10-19&to=2026-11-18",
+    );
+  });
+
+  it("shows no no-bonus link when nothing is mismatched", () => {
     render(<CardTracker rows={[row({ mismatchCount: 0 })]} />);
-    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /no bonus/ })).not.toBeInTheDocument();
     expect(screen.queryByText(/no bonus/)).not.toBeInTheDocument();
   });
 

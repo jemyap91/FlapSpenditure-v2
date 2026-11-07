@@ -177,7 +177,18 @@ describe("walletBonusInput", () => {
     ).toBe(true);
   });
 
-  it("refuses a max without a channel or cycle day", () => {
+  it("accepts a min spend: a max with a cycle day and no channel", () => {
+    expect(
+      walletBonusInput.safeParse({
+        wallet_id: WALLET_ID,
+        bonus_channel: null,
+        cycle_start_day: 2,
+        max: "500",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("refuses a max without a cycle day", () => {
     const result = walletBonusInput.safeParse({
       wallet_id: WALLET_ID,
       bonus_channel: null,
@@ -186,7 +197,7 @@ describe("walletBonusInput", () => {
     });
     expect(result.success).toBe(false);
     expect(!result.success && result.error.issues[0]!.message).toBe(
-      "Set a channel and cycle start day to use a max",
+      "Set a cycle start day to use a max or min spend",
     );
   });
 

@@ -131,6 +131,24 @@ describe("loadCardTracker", () => {
     expect(row).toMatchObject({ spentMinor: 0, mismatchCount: 0 });
   });
 
+  it("counts every expense on a min-spend card, whatever its channel, with no mismatches", async () => {
+    const supabase = fakeClient({
+      wallets: [wallet({ bonus_channel: null, bonus_cap_minor: 50000 })],
+      transactions: [
+        expense({ channel: "in_store", amount_minor: 3915 }),
+        expense({ channel: "bill", amount_minor: 1000 }),
+        expense({ channel: null, amount_minor: 1143 }),
+      ],
+    });
+    const [row] = await loadCardTracker(supabase, ON);
+    expect(row).toMatchObject({
+      bonusChannel: null,
+      spentMinor: 6058,
+      remainingMinor: 43942,
+      mismatchCount: 0,
+    });
+  });
+
   it("floors remaining at zero past the max while spent keeps the real total", async () => {
     const supabase = fakeClient({
       wallets: [wallet()],

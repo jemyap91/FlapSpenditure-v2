@@ -77,6 +77,8 @@ export function FilterBar({
     // spend) and must survive every other change to the bar.
     if (next.walletId) params.set("wallet", next.walletId);
     if (next.mismatch) params.set("mismatch", "1");
+    if (next.expensesOnly) params.set("expenses", "1");
+    if (next.channel) params.set("channel", next.channel);
     const qs = params.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname);
   }

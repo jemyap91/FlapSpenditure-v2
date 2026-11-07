@@ -185,6 +185,8 @@ export default async function TransactionsPage({
   if (filters.walletId) query = query.eq("wallet_id", filters.walletId);
   // A computed field again, so `.filter`; null channels never flag.
   if (filters.mismatch) query = query.filter("channel_mismatch", "eq", true);
+  if (filters.expensesOnly) query = query.eq("kind", "expense");
+  if (filters.channel) query = query.eq("channel", filters.channel);
   if (filters.from) query = query.gte("occurred_on", filters.from);
   if (filters.to) query = query.lte("occurred_on", filters.to);
 

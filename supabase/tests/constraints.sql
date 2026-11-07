@@ -1979,6 +1979,9 @@ begin;
             'expense', -500, 'USD', 'online', current_date);
   update wallets set bonus_channel = 'online', cycle_start_day = 31, bonus_cap_minor = 1
     where id = 'c4a00000-0000-4000-8000-000000000002';
+  -- ACCEPT: a min spend, which has a cycle day and no channel (0034).
+  update wallets set bonus_channel = null, cycle_start_day = 2, bonus_cap_minor = 50000
+    where id = 'c4a00000-0000-4000-8000-000000000002';
   update wallets set bonus_channel = null, cycle_start_day = null, bonus_cap_minor = null
     where id = 'c4a00000-0000-4000-8000-000000000002';
 
@@ -2001,9 +2004,6 @@ begin;
        $q$update wallets set cycle_start_day = 32 where id = 'c4a00000-0000-4000-8000-000000000002'$q$),
       ('bonus_cap_minor 0', 'wallets_bonus_cap_positive',
        $q$update wallets set bonus_channel = 'online', cycle_start_day = 1, bonus_cap_minor = 0
-          where id = 'c4a00000-0000-4000-8000-000000000002'$q$),
-      ('a max with no channel', 'wallets_bonus_cap_needs_terms',
-       $q$update wallets set cycle_start_day = 1, bonus_cap_minor = 100
           where id = 'c4a00000-0000-4000-8000-000000000002'$q$),
       ('a max with no cycle day', 'wallets_bonus_cap_needs_terms',
        $q$update wallets set bonus_channel = 'online', bonus_cap_minor = 100

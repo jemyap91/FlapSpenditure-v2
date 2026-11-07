@@ -1175,7 +1175,7 @@ describe("WalletList — card terms", () => {
     expect(screen.getByLabelText("Name")).toBeInTheDocument();
     expect(screen.getByLabelText(/^Bonus channel for /)).toBeInTheDocument();
     expect(screen.getByLabelText(/^Cycle start day for /)).toBeInTheDocument();
-    expect(screen.getByLabelText(/^Max for /)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Min spend for /)).toBeInTheDocument();
   });
 
   it("keeps the edit dialog and its unsaved edits open after the card terms save", async () => {
