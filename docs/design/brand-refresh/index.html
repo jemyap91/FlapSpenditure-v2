@@ -2,673 +2,598 @@
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bagel+Fat+One&family=DM+Sans:ital,opsz,wght@0,9..40,400..800;1,9..40,400&family=Gluten:wght@400..800&family=Modak&family=Outfit:wght@400..700&family=Titan+One&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500..900&family=Manrope:wght@500..800&family=DM+Mono:wght@400;500&display=swap">
 <style>
-/* Layout: one long cream scroll, sections as chapters, colour blocks and phones sitting on top. */
+/* Layout: one long sheet of riso paper. Chapters stack top to bottom; the phones are the centrepiece. */
 :root {
-  /* base */
-  --cream: #F7EFDF;
-  --paper: #FFF9EE;
-  --ink: #2B0F14;
-  --ink-2: #6A4C50;
-  --line: #E6D8BF;
-  /* Cheryl's palette */
-  --green-house: #116B09;
-  --kind-berry: #1F6BED;
-  --velvet-cherry: #6E1221;
-  --flossy: #FF7FAB;
-  --mellow: #F4FF1E;
-  --taffy: #E76290;
-  --hot-pink: #FF4283;
-  --magenta: #FF1EC7;
-  --blue-vinyl: #0759A2;
-  --deep-red: #C60707;
-  --muted-blue: #518DFF;
-  --riviera: #5196E8;
-  /* roles */
-  --brand: var(--hot-pink);
-  --highlight: var(--mellow);
-  --danger: var(--deep-red);
-  --cheryl: var(--taffy);
-  --jeremy: var(--riviera);
+  /* inks */
+  --paper: #F2EADB;
+  --card: #FBF6EC;
+  --oat: #E8DDCB;
+  --ink: #201B2E;
+  --ink-2: #625B6C;
+  --pink: #FF48B0;
+  --blue: #2F5BD3;
+  --sun: #FFC21A;
+  --green: #00A95C;
+  --over: #6B3FC9;     /* shared = pink + blue overprint */
+  --scarlet: #FF3712;  /* over budget = pink + sunflower overprint */
+  /* tints (30% screens) */
+  --pink-t: #FFD2EA;
+  --blue-t: #D3DDF6;
+  --sun-t: #FFEDB8;
+  --green-t: #C4EBD6;
+  --over-t: #E0D5F4;
+  --scarlet-t: #FFD3C8;
   /* type */
-  --f-display: "Bagel Fat One", "Titan One", "Arial Black", system-ui, sans-serif;
-  --f-quirk: "Modak", "Gluten", "Comic Sans MS", system-ui, sans-serif;
-  --f-body: "DM Sans", "Helvetica Neue", Arial, system-ui, sans-serif;
+  --f-display: "Unbounded", "Arial Black", system-ui, sans-serif;
+  --f-body: "Manrope", "Helvetica Neue", Arial, system-ui, sans-serif;
+  --f-mono: "DM Mono", ui-monospace, Menlo, monospace;
+  /* shape */
+  --r-lg: 28px; --r-md: 20px; --r-sm: 12px;
+  --shadow: 0 1px 2px rgba(32,27,46,.05), 0 10px 30px -12px rgba(32,27,46,.18);
   color-scheme: light;
 }
 * { box-sizing: border-box; }
-body {
-  background: var(--cream);
-  color: var(--ink);
-  font-family: var(--f-body);
-  font-size: 16px;
-  line-height: 1.55;
-}
-.wrap {
-  max-width: 1180px;
-  margin: 0 auto;
-  padding-left: max(16px, env(safe-area-inset-left, 0px));
-  padding-right: max(16px, env(safe-area-inset-right, 0px));
-}
-h1, h2, h3 { text-wrap: balance; margin: 0; }
-h2 { font-family: var(--f-display); font-weight: 400; font-size: clamp(2.2rem, 6vw, 3.6rem); line-height: 1; letter-spacing: -0.01em; }
-h3 { font-family: var(--f-body); font-weight: 800; font-size: 1.1rem; }
+body { background: var(--paper); color: var(--ink); font-family: var(--f-body); font-size: 16px; line-height: 1.55; }
+body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 50; opacity: .45;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.13  0 0 0 0 0.1  0 0 0 0 0.18  0 0 0 .07 0'/></filter><rect width='180' height='180' filter='url(%23n)'/></svg>"); }
+.wrap { max-width: 1180px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+h1, h2, h3 { margin: 0; text-wrap: balance; }
 p { margin: 0; }
-.lede { max-width: 62ch; color: var(--ink-2); font-size: 1.05rem; }
-.eyebrow { font-weight: 800; font-size: .75rem; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-2); }
-section.chapter { padding-block: 72px 24px; display: flex; flex-direction: column; gap: 28px; }
+h2 { font-family: var(--f-display); font-weight: 800; font-size: clamp(1.9rem, 5vw, 3rem); line-height: 1.02; letter-spacing: -.03em; }
+h3 { font-family: var(--f-display); font-weight: 700; font-size: 1.15rem; letter-spacing: -.01em; }
+.eyebrow { font-family: var(--f-mono); font-size: .76rem; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-2); }
+.lede { max-width: 64ch; color: var(--ink-2); font-size: 1.04rem; }
+.chapter { padding-block: 80px 8px; display: flex; flex-direction: column; gap: 28px; }
 .chapter-head { display: flex; flex-direction: column; gap: 12px; }
-.mark { background: linear-gradient(transparent 55%, var(--mellow) 55%, var(--mellow) 92%, transparent 92%); padding: 0 .1em; }
-.tag { display: inline-flex; align-items: center; gap: 6px; font-size: .72rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; padding: 4px 10px; border-radius: 999px; background: var(--ink); color: var(--cream); }
-.tag.idea { background: var(--mellow); color: var(--ink); }
-a { color: var(--blue-vinyl); }
-a:focus-visible, button:focus-visible { outline: 3px solid var(--kind-berry); outline-offset: 2px; }
+.panel { background: var(--card); border-radius: var(--r-lg); padding: 24px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.tag { display: inline-flex; align-items: center; font-family: var(--f-mono); font-size: .7rem; letter-spacing: .05em; text-transform: uppercase; padding: 3px 9px; border-radius: 999px; background: var(--ink); color: var(--paper); white-space: nowrap; }
+.tag.idea { background: var(--sun); color: var(--ink); }
+a { color: var(--blue); }
+a:focus-visible, button:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+.ink-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; vertical-align: -1px; }
 
 /* ---------- HERO ---------- */
-.hero { position: relative; overflow: hidden; padding-block: 56px 40px; }
-.hero-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 24px; align-items: center; }
-.hero h1 { font-family: var(--f-display); font-weight: 400; font-size: clamp(3rem, 10vw, 7.2rem); line-height: .9; letter-spacing: -0.02em; }
-.hero h1 .q { font-family: var(--f-quirk); color: var(--hot-pink); font-size: 1.08em; display: inline-block; transform: rotate(-3deg); }
-.hero-sub { margin-top: 18px; font-size: 1.15rem; max-width: 46ch; color: var(--ink-2); }
-.hero-art { position: relative; aspect-ratio: 1; max-width: 100%; }
-.blob { position: absolute; border-radius: 50%; }
-.hero-art .b1 { inset: 4% 10% 18% 6%; background: var(--kind-berry); border-radius: 46% 54% 40% 60% / 52% 44% 56% 48%; }
-.hero-art .b2 { width: 34%; aspect-ratio: 1; right: 0; top: 2%; background: var(--mellow); }
-.hero-art .b3 { width: 26%; aspect-ratio: 1; left: 0; bottom: 6%; background: var(--green-house); border-radius: 30%; transform: rotate(12deg); }
-.hero-art .mascot { position: absolute; inset: 8% 8% 6% 8%; }
-.hero-art .badge-star { position: absolute; right: 4%; bottom: 10%; width: 30%; }
-.brief { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
-.brief span { padding: 6px 12px; border-radius: 999px; border: 2px solid var(--ink); font-weight: 700; font-size: .85rem; background: var(--paper); }
-.note-box { margin-top: 26px; padding: 14px 18px; border-radius: 18px; background: var(--paper); border: 2px dashed var(--line); font-size: .92rem; color: var(--ink-2); max-width: 60ch; }
+.hero { padding-block: 64px 24px; }
+.hero-grid { display: grid; grid-template-columns: 1.25fr 1fr; gap: 40px; align-items: center; }
+.hero h1 { font-family: var(--f-display); font-weight: 900; font-size: clamp(2.6rem, 8vw, 5.6rem); line-height: .92; letter-spacing: -.045em; }
+.hero h1 em { font-style: normal; color: var(--pink); }
+.hero .sub { margin-top: 20px; font-size: 1.12rem; max-width: 48ch; color: var(--ink-2); }
+.hero .note { margin-top: 22px; font-size: .9rem; color: var(--ink-2); max-width: 56ch; padding-left: 14px; border-left: 3px solid var(--sun); }
+.inks { position: relative; aspect-ratio: 1; width: 100%; max-width: 440px; justify-self: center; }
+.inks span { position: absolute; border-radius: 50%; mix-blend-mode: multiply; display: grid; place-items: center; font-family: var(--f-display); font-weight: 800; font-size: clamp(1.1rem, 3vw, 1.6rem); }
+.inks .c { width: 58%; aspect-ratio: 1; left: 4%; top: 8%; background: var(--pink); }
+.inks .j { width: 58%; aspect-ratio: 1; right: 4%; top: 8%; background: var(--blue); color: var(--paper); }
+.inks .y { width: 40%; aspect-ratio: 1; left: 30%; bottom: 2%; background: var(--sun); }
+.inks .label { position: absolute; font-family: var(--f-mono); font-size: .74rem; color: var(--ink-2); mix-blend-mode: normal; background: none; width: auto; border-radius: 0; }
+.inks .lc { left: 0; top: 0; } .inks .lj { right: 0; top: 0; } .inks .ls { left: 50%; top: 44%; transform: translateX(-50%); color: var(--paper); font-weight: 500; }
 
 /* ---------- MOODBOARD ---------- */
-.mood-grid { columns: 3 300px; column-gap: 20px; }
-.ref { break-inside: avoid; margin: 0 0 20px; background: var(--paper); border-radius: 22px; overflow: hidden; border: 2px solid var(--ink); }
+.mood-grid { columns: 3 300px; column-gap: 18px; }
+.ref { break-inside: avoid; margin: 0 0 18px; background: var(--card); border-radius: var(--r-md); overflow: hidden; }
 .ref img { display: block; width: 100%; height: auto; }
-.ref figcaption { padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 8px; font-size: .92rem; }
-.ref .t { font-weight: 800; font-size: 1rem; }
-.take, .leave { display: grid; grid-template-columns: 54px 1fr; gap: 8px; align-items: baseline; }
-.take b, .leave b { font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; text-align: center; border-radius: 999px; padding: 2px 0; }
-.take b { background: var(--green-house); color: var(--paper); }
-.leave b { background: var(--velvet-cherry); color: var(--paper); }
+.ref figcaption { padding: 14px 16px 16px; display: grid; gap: 6px; font-size: .9rem; }
+.ref .t { font-weight: 800; }
+.ref .take, .ref .leave { display: grid; grid-template-columns: 52px 1fr; gap: 8px; }
+.ref b.k { font-family: var(--f-mono); font-weight: 500; font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; padding-top: 3px; }
+.ref .take b.k { color: var(--green); } .ref .leave b.k { color: var(--scarlet); }
 
 /* ---------- COLOUR ---------- */
-.roles { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
-.role { border-radius: 22px; padding: 18px; min-height: 150px; display: flex; flex-direction: column; justify-content: space-between; gap: 18px; border: 2px solid var(--ink); }
-.role .r-name { font-family: var(--f-display); font-size: 1.6rem; line-height: 1; }
-.role .r-meta { font-size: .85rem; font-weight: 600; }
-.role .r-job { font-size: .82rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
-.split { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-.panel { background: var(--paper); border-radius: 24px; padding: 22px; border: 2px solid var(--line); display: flex; flex-direction: column; gap: 14px; min-width: 0; }
-.dupes { display: flex; flex-direction: column; gap: 12px; }
-.dupe { display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: center; }
-.dupe .pair { display: flex; }
-.dupe .pair i { width: 44px; height: 44px; border-radius: 50%; border: 2px solid var(--ink); display: block; }
-.dupe .pair i + i { margin-left: -12px; }
-.dupe p { font-size: .9rem; }
+.inkset { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+.ink { border-radius: var(--r-lg); overflow: hidden; background: var(--card); }
+.ink .sw { height: 120px; padding: 14px; display: flex; flex-direction: column; justify-content: flex-end; font-family: var(--f-display); font-weight: 700; font-size: 1.15rem; }
+.ink .tint { height: 34px; padding: 8px 14px; font-family: var(--f-mono); font-size: .72rem; }
+.ink .meta { padding: 12px 14px 16px; font-size: .86rem; display: grid; gap: 2px; }
+.ink .meta code { font-family: var(--f-mono); font-size: .8rem; }
+.overprint { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.op { display: grid; grid-template-columns: 120px 1fr; gap: 18px; align-items: center; }
+.op .venn { position: relative; height: 80px; }
+.op .venn i { position: absolute; top: 8px; width: 64px; height: 64px; border-radius: 50%; mix-blend-mode: multiply; }
+.op .venn i:first-child { left: 0; } .op .venn i:last-child { left: 40px; }
+.op p { font-size: .92rem; }
+.base { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.base div { border-radius: var(--r-md); padding: 14px; min-height: 84px; display: flex; flex-direction: column; justify-content: flex-end; font-size: .82rem; font-weight: 700; }
+.base div code { font-family: var(--f-mono); font-weight: 400; font-size: .74rem; }
+.rules { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.rules .panel { gap: 8px; }
+.rules p { font-size: .92rem; color: var(--ink-2); }
+.rules .n { font-family: var(--f-mono); font-size: .74rem; color: var(--ink-2); }
 .contrast-wrap { overflow-x: auto; }
-table.contrast { border-collapse: separate; border-spacing: 4px; font-size: .82rem; min-width: 520px; width: 100%; }
+table.contrast { border-collapse: separate; border-spacing: 4px; font-size: .82rem; min-width: 480px; width: 100%; }
 table.contrast th { text-align: left; font-weight: 700; padding: 4px 6px; white-space: nowrap; }
-table.contrast td.cell { border-radius: 10px; padding: 8px 10px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.cell .v { font-size: .72rem; font-weight: 600; opacity: .85; }
-.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: .82rem; color: var(--ink-2); }
-.cats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
-.cat { border-radius: 18px; padding: 12px 14px; font-weight: 800; font-size: .9rem; display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 58px; }
-.cat small { font-weight: 600; font-size: .72rem; opacity: .85; }
-.striped { background-image: repeating-linear-gradient(45deg, rgba(43,15,20,.18) 0 6px, transparent 6px 12px); }
-.owners { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; }
-.owner { display: flex; align-items: center; gap: 10px; font-weight: 700; }
-
-/* owner badges (shared by page + phones) */
-.ob { width: 30px; height: 30px; border-radius: 50%; display: inline-grid; place-items: center; font-family: var(--f-display); font-size: .95rem; color: var(--ink); border: 2px solid var(--ink); flex: none; line-height: 1; }
-.ob.c { background: var(--cheryl); }
-.ob.j { background: var(--jeremy); }
-.ob.s { background: linear-gradient(90deg, var(--cheryl) 50%, var(--jeremy) 50%); font-size: .7rem; }
-.ob.sm { width: 22px; height: 22px; font-size: .7rem; border-width: 1.5px; }
-.ob.sm.s { font-size: .5rem; }
+table.contrast td { border-radius: 10px; padding: 9px 10px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
+table.contrast td small { font-family: var(--f-mono); font-weight: 400; font-size: .72rem; opacity: .85; }
 
 /* ---------- TYPE ---------- */
-.pairings { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-.pairing { border-radius: 28px; padding: 26px; display: flex; flex-direction: column; gap: 16px; border: 2px solid var(--ink); min-width: 0; }
-.pairing.a { background: var(--hot-pink); }
-.pairing.b { background: var(--muted-blue); }
-.pairing .big { font-size: clamp(2.6rem, 6vw, 4.2rem); line-height: .92; }
-.pairing .num { font-size: clamp(2.4rem, 5.5vw, 3.6rem); line-height: 1; }
-.pairing .num .c { opacity: .55; font-size: .6em; }
-.pairing .body { font-size: 1rem; max-width: 46ch; }
-.pairing .specs { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: .85rem; padding: 14px; background: var(--paper); border-radius: 16px; }
-.pairing .specs dt { font-weight: 800; }
-.pairing .specs dd { margin: 0; }
-.pairing.a .big { font-family: "Bagel Fat One", var(--f-display); }
-.pairing.a .q { font-family: "Modak", var(--f-quirk); font-size: 1.15em; line-height: .8; }
-.pairing.a .body, .pairing.a .num-b { font-family: "DM Sans", var(--f-body); }
-.pairing.b .big { font-family: "Titan One", var(--f-display); }
-.pairing.b .q { font-family: "Gluten", var(--f-quirk); font-weight: 800; }
-.pairing.b .body, .pairing.b .num-b { font-family: "Outfit", var(--f-body); }
-.rec { align-self: flex-start; }
-.scale { display: flex; flex-direction: column; gap: 10px; }
-.scale .row { display: grid; grid-template-columns: 120px 1fr; gap: 16px; align-items: baseline; border-bottom: 2px dotted var(--line); padding-bottom: 10px; }
-.scale .row span:first-child { font-size: .78rem; font-weight: 700; color: var(--ink-2); }
+.typeset { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.face { border-radius: var(--r-lg); padding: 22px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.face .spec { font-family: var(--f-mono); font-size: .74rem; }
+.face .demo { line-height: 1.05; }
+.face p.use { font-size: .9rem; }
+.scale { display: grid; gap: 0; }
+.scale .row { display: grid; grid-template-columns: 160px 1fr; gap: 16px; align-items: baseline; padding: 12px 0; }
+.scale .row + .row { border-top: 1px solid var(--oat); }
+.scale .row > span:first-child { font-family: var(--f-mono); font-size: .74rem; color: var(--ink-2); }
 
-/* ---------- MASCOT ---------- */
-.concepts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
-.concept { border-radius: 28px; padding: 20px; border: 2px solid var(--ink); display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.concept svg { width: 100%; height: auto; max-width: 260px; align-self: center; }
-.concept .c-name { font-family: var(--f-display); font-size: 1.7rem; line-height: 1; }
-.concept p { font-size: .9rem; }
-.concept .pc { font-size: .82rem; display: grid; gap: 4px; }
-.moods { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
-.mood { background: var(--paper); border-radius: 24px; padding: 14px 14px 18px; display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; border: 2px solid var(--line); }
-.mood svg { width: 100%; max-width: 200px; height: auto; }
-.mood .m-t { font-family: var(--f-display); font-size: 1.25rem; line-height: 1.05; }
-.mood .m-d { font-size: .82rem; color: var(--ink-2); }
-.mood .m-copy { font-family: "Gluten", var(--f-quirk); font-weight: 700; font-size: .95rem; }
-.names { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
-.name { border-radius: 20px; padding: 14px 16px; background: var(--paper); border: 2px solid var(--line); display: flex; flex-direction: column; gap: 4px; }
-.name b { font-family: var(--f-display); font-weight: 400; font-size: 1.5rem; line-height: 1; }
-.name.fav { background: var(--mellow); border-color: var(--ink); }
-.name span { font-size: .85rem; }
+/* ---------- FLAPPY ---------- */
+.flappy-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+.flappy-refs { display: grid; gap: 14px; }
+.flappy-refs img { width: 100%; height: auto; display: block; border-radius: var(--r-md); }
+.rulelist { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.rulelist li { display: grid; grid-template-columns: 26px 1fr; gap: 10px; font-size: .94rem; }
+.rulelist li span:first-child { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-family: var(--f-mono); font-size: .72rem; background: var(--sun); }
+.prompt { background: var(--ink); color: var(--paper); border-radius: var(--r-lg); padding: 22px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.prompt-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.prompt-head h3 { color: var(--paper); }
+.prompt pre { margin: 0; white-space: pre-wrap; word-wrap: break-word; font-family: var(--f-mono); font-size: .8rem; line-height: 1.6; background: rgba(242,234,219,.06); border-radius: var(--r-sm); padding: 16px; max-height: 420px; overflow: auto; }
+.copy { font: 700 .82rem var(--f-body); background: var(--pink); color: var(--ink); border: 0; border-radius: 999px; padding: 8px 16px; cursor: pointer; }
+.copy[data-done] { background: var(--green); color: var(--paper); }
+.prompts { display: grid; gap: 16px; }
+.tips { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.tips .panel p { font-size: .9rem; color: var(--ink-2); }
 
 /* ---------- PHONES ---------- */
-.phones { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 28px; justify-items: center; align-items: start; }
-.phone-col { display: flex; flex-direction: column; gap: 14px; width: min(350px, 100%); }
-.phone { width: 100%; border: 10px solid var(--ink); border-radius: 46px; background: var(--cream); overflow: hidden; position: relative; box-shadow: 10px 12px 0 rgba(43,15,20,.12); font-family: var(--f-body); }
-.phone .scr { padding: 0 16px 96px; display: flex; flex-direction: column; gap: 14px; }
-.sb { display: flex; justify-content: space-between; align-items: center; padding: 12px 10px 4px; font-weight: 700; font-size: .78rem; }
-.sb .isl { width: 90px; height: 24px; background: var(--ink); border-radius: 20px; }
-.ph-cap { font-size: .88rem; color: var(--ink-2); }
+.phones { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; align-items: start; }
+.phone-col { display: flex; flex-direction: column; gap: 14px; width: min(350px, 100%); justify-self: center; }
+.phone { border-radius: 46px; padding: 9px; background: #17141D; box-shadow: 0 34px 60px -30px rgba(32,27,46,.55); }
+.screen { border-radius: 38px; overflow: hidden; position: relative; background: var(--paper); font-family: var(--f-body); color: var(--ink); }
+.screen .scr { padding: 0 16px 98px; display: flex; flex-direction: column; gap: 16px; }
+.sb { display: flex; justify-content: space-between; align-items: center; padding: 14px 22px 4px; font-size: .74rem; font-weight: 800; }
+.sb .isl { width: 86px; height: 25px; border-radius: 20px; background: #17141D; }
+.ph-cap { font-size: .9rem; color: var(--ink-2); }
 .ph-cap b { color: var(--ink); }
-.ph-title { font-family: var(--f-display); font-size: 1.15rem; display: flex; justify-content: space-between; align-items: center; }
-.money { font-family: var(--f-display); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
-.money .c { font-size: .55em; opacity: .6; }
-.tabbar { position: absolute; left: 14px; right: 14px; bottom: 14px; height: 62px; background: var(--ink); border-radius: 999px; display: flex; align-items: center; justify-content: space-around; padding: 0 8px; }
-.tabbar i { width: 22px; height: 22px; display: grid; place-items: center; }
-.tabbar svg { width: 22px; height: 22px; stroke: var(--cream); fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; opacity: .6; }
-.tabbar i.on svg { opacity: 1; }
-.tabbar .fab { width: 54px; height: 54px; border-radius: 50%; background: var(--hot-pink); display: grid; place-items: center; transform: translateY(-14px); border: 4px solid var(--cream); }
-.tabbar .fab svg { stroke: var(--ink); opacity: 1; stroke-width: 3; }
-.chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px 4px 5px; border-radius: 999px; font-size: .74rem; font-weight: 700; border: 2px solid var(--ink); background: var(--paper); white-space: nowrap; }
-.chip.on { background: var(--ink); color: var(--cream); }
-.chips { display: flex; gap: 5px; flex-wrap: wrap; }
-.hello { display: flex; align-items: center; justify-content: space-between; }
-.hello .hi { font-family: var(--f-display); font-size: 1.6rem; line-height: 1; }
-.hello .who { display: flex; }
-.hello .who .ob + .ob { margin-left: -8px; }
+.money { font-variant-numeric: tabular-nums; }
+.money small { font-size: .62em; opacity: .62; }
+.hd { display: flex; justify-content: space-between; align-items: center; }
+.hd .t { font-family: var(--f-display); font-weight: 800; font-size: 1.35rem; letter-spacing: -.03em; }
+.icon-btn { width: 38px; height: 38px; border-radius: 50%; background: var(--card); display: grid; place-items: center; }
+.icon-btn svg, .ic svg, .tab svg, .chip svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.icon-btn svg { width: 18px; height: 18px; }
+.duo { position: relative; width: 50px; height: 32px; flex: none; }
+.duo i { position: absolute; top: 0; width: 32px; height: 32px; border-radius: 50%; mix-blend-mode: multiply; display: grid; place-items: center; font-style: normal; font-family: var(--f-display); font-weight: 800; font-size: .72rem; }
+.duo i:first-child { left: 0; background: var(--pink); }
+.duo i:last-child { right: 0; background: var(--blue); color: var(--paper); }
 
-.hcard { border-radius: 28px; padding: 18px; position: relative; overflow: hidden; border: 2px solid var(--ink); }
-.hcard .lbl { font-weight: 800; font-size: .78rem; text-transform: uppercase; letter-spacing: .08em; }
-.hcard .money { font-size: 2.6rem; line-height: 1; margin-top: 6px; }
-.hcard .of { font-size: .82rem; font-weight: 600; margin-top: 4px; }
-.bar { height: 14px; border-radius: 999px; background: rgba(43,15,20,.14); overflow: hidden; margin-top: 12px; border: 2px solid var(--ink); }
-.bar > i { display: block; height: 100%; background: var(--ink); border-radius: 999px; }
-.hcard .peek { position: absolute; right: -10px; bottom: -18px; width: 118px; }
-.hcard .meta { margin-top: 10px; font-size: .8rem; font-weight: 700; max-width: 62%; }
+.ob { width: 22px; height: 22px; border-radius: 50%; display: inline-grid; place-items: center; font-family: var(--f-display); font-weight: 800; font-size: .58rem; flex: none; }
+.ob.c { background: var(--pink); color: var(--ink); }
+.ob.j { background: var(--blue); color: var(--paper); }
+.ob.s { background: var(--over); color: var(--paper); font-size: .48rem; }
+.ob.lg { width: 30px; height: 30px; font-size: .72rem; }
+.ob.lg.s { font-size: .6rem; }
 
-.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.tile { border-radius: 20px; padding: 12px; display: flex; flex-direction: column; gap: 14px; min-height: 92px; justify-content: space-between; }
-.tile .tn { font-weight: 800; font-size: .8rem; display: flex; justify-content: space-between; align-items: center; gap: 4px; }
-.tile .tn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
-.tile .money { font-size: 1.3rem; line-height: 1; }
-.tile .mini { height: 6px; border-radius: 999px; background: rgba(0,0,0,.16); overflow: hidden; }
-.tile .mini i { display: block; height: 100%; background: currentColor; }
+.chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.phone .chips.owners-f { flex-wrap: nowrap; }
+.phone .chips.owners-f .chip { height: 32px; font-size: .72rem; padding: 0 9px 0 4px; gap: 4px; }
+.phone .chips.owners-f .chip.plain { padding: 0 11px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px 0 6px; border-radius: 999px; background: var(--card); font-size: .78rem; font-weight: 700; white-space: nowrap; }
+.chip.plain { padding: 0 13px; }
+.chip.on { background: var(--ink); color: var(--paper); }
+.chip svg { width: 14px; height: 14px; }
 
-.cardrow { background: var(--paper); border-radius: 20px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; border: 2px solid var(--line); }
-.cardrow .top { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: .82rem; font-weight: 800; }
-.cardrow .top span { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.cardrow .sub { font-size: .74rem; font-weight: 600; color: var(--ink-2); display: flex; justify-content: space-between; gap: 6px; flex-wrap: wrap; }
-.prog { height: 10px; border-radius: 999px; background: var(--line); overflow: hidden; position: relative; }
-.prog i { display: block; height: 100%; border-radius: 999px; }
-.pill { font-size: .66rem; font-weight: 800; padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
-.sec-h { display: flex; justify-content: space-between; align-items: baseline; font-weight: 800; font-size: .9rem; }
-.sec-h a { font-size: .75rem; color: var(--ink-2); text-decoration: none; font-weight: 700; }
+.heroCard { background: var(--ink); color: var(--paper); border-radius: var(--r-lg); padding: 18px 18px 16px; position: relative; overflow: hidden; }
+.heroCard::before { content: ""; position: absolute; width: 190px; height: 190px; right: -70px; top: -80px; border-radius: 50%; background: var(--pink); mix-blend-mode: screen; opacity: .16; }
+.heroCard .k { font-family: var(--f-mono); font-size: .7rem; letter-spacing: .06em; text-transform: uppercase; opacity: .7; position: relative; min-height: 44px; padding-right: 56px; display: flex; align-items: center; margin-top: -4px; }
+.heroCard .n { font-family: var(--f-display); font-weight: 800; font-size: 2.05rem; white-space: nowrap; letter-spacing: -.045em; line-height: 1.05; color: var(--pink); margin-top: 6px; position: relative; }
+.heroCard .n small { font-size: .5em; opacity: .75; }
+.seg { display: flex; gap: 3px; margin-top: 14px; height: 10px; position: relative; }
+.seg i { border-radius: 3px; }
+.heroCard .foot { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; font-size: .78rem; font-weight: 700; position: relative; }
+.pill { font-size: .7rem; font-weight: 800; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+.flappy-slot { position: absolute; right: 12px; top: 12px; width: 46px; height: 46px; border-radius: 50%; border: 1.5px dashed rgba(242,234,219,.4); display: grid; place-items: center; font-family: var(--f-mono); font-size: .54rem; text-align: center; line-height: 1.15; color: rgba(242,234,219,.7); }
+.flappy-slot.on-light { border-color: rgba(32,27,46,.3); color: var(--ink-2); }
 
-/* add expense */
-.seg { display: grid; grid-template-columns: repeat(3, 1fr); background: var(--paper); border: 2px solid var(--ink); border-radius: 999px; padding: 4px; }
-.seg span { text-align: center; padding: 8px 0; border-radius: 999px; font-weight: 800; font-size: .8rem; }
-.seg span.on { background: var(--hot-pink); }
-.amount { text-align: center; padding: 6px 0 2px; }
-.amount .money { font-size: 3.4rem; line-height: 1; }
-.amount .cur { font-family: var(--f-display); font-size: 1.2rem; vertical-align: top; margin-right: 4px; opacity: .6; }
-.field { background: var(--paper); border-radius: 18px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; gap: 8px; border: 2px solid var(--line); }
-.field .k { font-size: .7rem; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-2); }
-.field .v { font-weight: 700; font-size: .92rem; }
-.field .stack { display: flex; flex-direction: column; min-width: 0; }
-.tip { background: var(--mellow); border: 2px solid var(--ink); border-radius: 18px; padding: 10px 12px 10px 66px; position: relative; font-size: .8rem; font-weight: 600; min-height: 64px; display: flex; align-items: center; }
-.tip svg { position: absolute; left: 6px; bottom: 4px; width: 56px; }
-.tip b { font-weight: 800; }
+.sec-h { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: -6px; }
+.sec-h b { font-family: var(--f-display); font-weight: 700; font-size: .92rem; letter-spacing: -.01em; }
+.sec-h span { font-size: .76rem; font-weight: 700; color: var(--ink-2); }
+.list { background: var(--card); border-radius: var(--r-md); padding: 4px 14px; }
+.row { display: flex; align-items: center; gap: 12px; padding: 11px 0; }
+.row + .row { border-top: 1px solid var(--oat); }
+.ic { width: 34px; height: 34px; border-radius: 11px; display: grid; place-items: center; flex: none; }
+.ic svg { width: 17px; height: 17px; }
+.row .nm { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.row .nm b { font-size: .86rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .nm span { font-size: .72rem; color: var(--ink-2); font-weight: 600; }
+.row .amt { font-weight: 800; font-size: .9rem; text-align: right; }
+.row .amt span { display: block; font-size: .68rem; color: var(--ink-2); font-weight: 600; }
+.mini { height: 4px; border-radius: 9px; background: var(--oat); overflow: hidden; }
+.mini i { display: block; height: 100%; border-radius: 9px; }
+
+.stack { position: relative; height: 128px; }
+.cc { position: absolute; left: 0; right: 0; border-radius: var(--r-md); padding: 12px 14px; font-size: .78rem; font-weight: 800; }
+.cc.b1 { top: 0; height: 60px; transform: scale(.9); transform-origin: top; background: var(--sun); }
+.cc.b2 { top: 12px; height: 60px; transform: scale(.95); transform-origin: top; background: var(--blue); color: var(--paper); }
+.cc.front { top: 26px; height: 102px; background: var(--pink); color: var(--ink); display: flex; flex-direction: column; justify-content: space-between; box-shadow: 0 -6px 16px -8px rgba(32,27,46,.35); }
+.cc .r { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.cc .r span { display: flex; align-items: center; gap: 6px; }
+.cc .bar { height: 6px; border-radius: 9px; background: rgba(32,27,46,.16); }
+.cc .bar i { display: block; height: 100%; width: 67.5%; border-radius: 9px; background: var(--ink); }
+.cc .sub { font-family: var(--f-mono); font-weight: 400; font-size: .7rem; display: flex; justify-content: space-between; }
+
+.tab { position: absolute; left: 14px; right: 14px; bottom: 14px; height: 62px; border-radius: 999px; background: var(--ink); display: flex; align-items: center; justify-content: space-around; }
+.tab svg { width: 22px; height: 22px; color: var(--paper); opacity: .5; }
+.tab .on svg { opacity: 1; }
+.tab .fab { width: 54px; height: 54px; border-radius: 50%; background: var(--pink); display: grid; place-items: center; }
+.tab .fab svg { color: var(--ink); opacity: 1; stroke-width: 2.6; }
+
+/* add */
+.segctl { display: grid; grid-template-columns: repeat(3, 1fr); background: var(--oat); border-radius: 999px; padding: 4px; }
+.segctl span { text-align: center; padding: 9px 0; border-radius: 999px; font-weight: 800; font-size: .8rem; color: var(--ink-2); }
+.segctl span.on { background: var(--card); color: var(--ink); box-shadow: 0 1px 3px rgba(32,27,46,.12); }
+.amount { text-align: center; padding: 4px 0 0; }
+.amount .money { font-family: var(--f-display); font-weight: 800; font-size: 3.1rem; letter-spacing: -.05em; line-height: 1; }
+.amount .cur { font-family: var(--f-display); font-weight: 700; font-size: 1.1rem; color: var(--ink-2); vertical-align: 1.3em; margin-right: 4px; }
+.amount .hint { font-family: var(--f-mono); font-size: .7rem; color: var(--ink-2); margin-top: 6px; }
+.fields { background: var(--card); border-radius: var(--r-md); padding: 2px 14px; }
+.field { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 11px 0; min-height: 52px; }
+.field + .field { border-top: 1px solid var(--oat); }
+.field .k { font-family: var(--f-mono); font-size: .66rem; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-2); }
+.field .v { font-weight: 700; font-size: .9rem; display: flex; align-items: center; gap: 6px; }
+.field .stack2 { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.field .act { font-size: .78rem; font-weight: 800; color: var(--blue); }
+.toggle { width: 44px; height: 26px; border-radius: 999px; background: var(--green); position: relative; flex: none; }
+.toggle::after { content: ""; position: absolute; right: 3px; top: 3px; width: 20px; height: 20px; border-radius: 50%; background: var(--card); }
+.tip { background: var(--sun-t); border-radius: var(--r-md); padding: 12px 14px 12px 64px; position: relative; font-size: .8rem; font-weight: 600; min-height: 62px; display: flex; align-items: center; }
+.tip .flappy-slot { left: 10px; top: 50%; transform: translateY(-50%); width: 42px; height: 42px; right: auto; font-size: .46rem; }
 .keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-.keypad span { background: var(--paper); border-radius: 16px; text-align: center; padding: 9px 0; font-family: var(--f-display); font-size: 1.3rem; border: 2px solid var(--line); }
-.save { background: var(--ink); color: var(--cream); border-radius: 999px; text-align: center; padding: 14px; font-weight: 800; font-size: 1rem; }
-.toggle { width: 42px; height: 24px; border-radius: 999px; background: var(--green-house); position: relative; border: 2px solid var(--ink); flex: none; }
-.toggle::after { content: ""; position: absolute; right: 2px; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--paper); }
+.keypad span { background: var(--card); border-radius: 14px; text-align: center; padding: 10px 0; font-family: var(--f-display); font-weight: 600; font-size: 1.15rem; }
+.save { background: var(--ink); color: var(--paper); border-radius: 999px; text-align: center; padding: 15px; font-weight: 800; font-size: .95rem; }
 
 /* wallets */
-.wsum { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-.wsum div { border-radius: 18px; padding: 10px; display: flex; flex-direction: column; gap: 6px; border: 2px solid var(--ink); }
-.wsum .money { font-size: 1rem; }
-.wsum small { font-size: .68rem; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
-.wgroup { display: flex; flex-direction: column; gap: 8px; }
-.wgroup-h { display: flex; align-items: center; gap: 8px; font-family: var(--f-display); font-size: 1.05rem; }
-.wgroup-h small { font-family: var(--f-body); font-weight: 700; font-size: .72rem; color: var(--ink-2); margin-left: auto; }
-.wrow { background: var(--paper); border-radius: 18px; padding: 10px 12px; display: flex; align-items: center; gap: 10px; border: 2px solid var(--line); }
-.wrow .wi { width: 34px; height: 34px; border-radius: 12px; display: grid; place-items: center; flex: none; border: 2px solid var(--ink); }
-.wrow .wi svg { width: 18px; height: 18px; fill: none; stroke: var(--ink); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
-.wrow .wn { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.wrow .wn b { font-size: .84rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wrow .wn span { font-size: .7rem; color: var(--ink-2); font-weight: 600; }
-.wrow .money { font-size: .95rem; }
-.wcard { flex-direction: column; align-items: stretch; gap: 8px; }
-.wcard .row1 { display: flex; align-items: center; gap: 10px; }
+.owners { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.owners div { border-radius: var(--r-md); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.owners .money { font-weight: 800; font-size: 1rem; }
+.owners small { font-family: var(--f-mono); font-size: .64rem; text-transform: uppercase; letter-spacing: .05em; display: flex; align-items: center; gap: 6px; }
+.grp { display: flex; flex-direction: column; gap: 8px; }
+.grp-h { display: flex; align-items: center; gap: 8px; font-family: var(--f-display); font-weight: 700; font-size: .92rem; }
+.grp-h small { font-family: var(--f-body); font-weight: 700; font-size: .72rem; color: var(--ink-2); margin-left: auto; }
+.cardx { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; }
+.cardx + .row, .row + .cardx { border-top: 1px solid var(--oat); }
+.cardx .row { padding: 0; border: 0; }
+.cardx .foot { display: flex; justify-content: space-between; align-items: center; gap: 6px; flex-wrap: wrap; font-size: .72rem; font-weight: 700; color: var(--ink-2); }
 
-/* states row */
+/* states */
 .states { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
-.state { display: flex; flex-direction: column; gap: 8px; }
-.state .hcard { min-height: 168px; }
+.state .heroCard { min-height: 170px; }
 
 /* future */
-.future { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
-.fcard { border-radius: 26px; padding: 20px; border: 2px solid var(--ink); display: flex; flex-direction: column; gap: 10px; }
-.fcard .n { font-family: var(--f-display); font-size: 1.4rem; line-height: 1.05; }
+.future { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.fcard { border-radius: var(--r-lg); padding: 22px; display: flex; flex-direction: column; gap: 10px; }
+.fcard .n { font-family: var(--f-display); font-weight: 800; font-size: 1.2rem; letter-spacing: -.02em; line-height: 1.15; }
 .fcard p { font-size: .92rem; }
-.honest { background: var(--paper); border-radius: 24px; padding: 20px 22px; border: 2px solid var(--line); display: flex; flex-direction: column; gap: 10px; max-width: 80ch; }
-.honest ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
-.decide { background: var(--ink); color: var(--cream); border-radius: 30px; padding: 28px; display: flex; flex-direction: column; gap: 14px; margin-bottom: 64px; }
-.decide h2 { color: var(--mellow); }
-.decide ol { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 8px; max-width: 70ch; }
-.decide a { color: var(--flossy); }
-footer { padding-block: 0 48px; font-size: .82rem; color: var(--ink-2); }
+.honest ul { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: .94rem; }
+.decide { background: var(--ink); color: var(--paper); border-radius: 32px; padding: 30px; display: flex; flex-direction: column; gap: 14px; margin: 80px 0 40px; }
+.decide h2 { color: var(--sun); }
+.decide ol { margin: 0; padding-left: 22px; display: grid; gap: 8px; max-width: 72ch; }
+footer { padding-block: 0 56px; font-size: .82rem; color: var(--ink-2); }
 
-@media (max-width: 900px) {
-  .hero-grid, .split, .pairings, .concepts, .future { grid-template-columns: 1fr; }
-  .hero-art { max-width: 380px; justify-self: center; width: 100%; }
-  .moods { grid-template-columns: repeat(2, 1fr); }
-  .states { grid-template-columns: 1fr; max-width: 360px; }
+@media (max-width: 1060px) {
+  .phones { grid-template-columns: 1fr; }
+  .typeset, .rules, .future, .tips { grid-template-columns: 1fr; }
+  .inkset { grid-template-columns: repeat(2, 1fr); }
+  .states { grid-template-columns: 1fr; max-width: 380px; }
 }
-@media (max-width: 420px) {
-  .moods { grid-template-columns: 1fr 1fr; gap: 10px; }
-  .scale .row { grid-template-columns: 1fr; gap: 2px; }
+@media (max-width: 760px) {
+  .hero-grid, .overprint, .flappy-grid { grid-template-columns: 1fr; }
+  .inks { max-width: 300px; }
+  .base { grid-template-columns: repeat(2, 1fr); }
+  .scale .row { grid-template-columns: 1fr; gap: 4px; }
 }
-@media (prefers-reduced-motion: no-preference) {
-  .hero-art .mascot { animation: bob 3.6s ease-in-out infinite; }
-  @keyframes bob { 50% { transform: translateY(-8px) rotate(-1.5deg); } }
-}
+@media (max-width: 420px) { .inkset { grid-template-columns: 1fr; } .op { grid-template-columns: 96px 1fr; } }
 </style>
 
-<!-- ================= HERO ================= -->
 <header class="hero">
   <div class="wrap hero-grid">
     <div>
-      <p class="eyebrow">Brand &amp; UI refresh · moodboard and mockups · Nov 2026</p>
-      <h1>Flap&shy;spenditure, <span class="q">but fun</span></h1>
-      <p class="hero-sub">A money app made for two people sharing cards and accounts. This page sets out how it could look and feel: warm cream underneath, loud colour on top, and a small monster to keep you company.</p>
-      <div class="brief">
-        <span>Warm cream base</span><span>Funky colour blocks</span><span>Chunky + quirky type</span><span>Clean vector</span><span>Flappy monster</span><span>Easy to use</span>
-      </div>
-      <p class="note-box"><b>Suggestions only.</b> Nothing on this page changes the live app. It's a direction for Cheryl and Jeremy to react to before anything gets built.</p>
+      <p class="eyebrow">Flapspenditure · brand &amp; UI refresh · round 3</p>
+      <h1>Two inks. <em>One</em> money app.</h1>
+      <p class="sub">A riso-print system for a couple's expense tracker. Cheryl is pink, Jeremy is blue, and everything you share is where the inks overlap. Wrapped in a calm, card-based layout that keeps the money easy to read.</p>
+      <p class="note"><b>Suggestions only.</b> Nothing here touches the live app. Amounts are made up; wallet names are real.</p>
     </div>
-    <div class="hero-art" aria-hidden="true">
-      <div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div>
-      <div class="mascot" data-mascot="flapjack" data-mood="happy"></div>
+    <div class="inks" aria-hidden="true">
+      <span class="c"></span><span class="j"></span><span class="y"></span>
+      <span class="label lc">Cheryl · pink</span><span class="label lj">Jeremy · blue</span><span class="label ls">shared</span>
     </div>
   </div>
 </header>
 
 <main class="wrap">
 
-<!-- ================= 1 MOODBOARD ================= -->
-<section class="chapter" id="moodboard">
+<!-- ============ 1 DIRECTION ============ -->
+<section class="chapter" id="direction">
   <div class="chapter-head">
-    <p class="eyebrow">1 · Moodboard</p>
-    <h2>What we're <span class="mark">stealing</span> (nicely)</h2>
-    <p class="lede">Your nine references, each with what to take and what to leave. The common thread: one bold colour per moment, oversized friendly type, and shapes that feel cut out of paper.</p>
+    <p class="eyebrow">1 · The direction</p>
+    <h2>Riso Club colour, Cherry Cola layout</h2>
+    <p class="lede">From round 2 you picked the riso palette for its idea and the Cherry Cola structure for its clarity. So the brand gets the personality (overprinted inks, paper grain, mono details) and the screens get a dark hero card, clean lists and a stacked card wallet.</p>
   </div>
   <div class="mood-grid">
-    <figure class="ref"><img src="refs/events.jpg" alt="Three pastel event app screens with stacked cards and starburst date badges" loading="lazy">
-      <figcaption><span class="t">Pastel event app</span>
-        <div class="take"><b>Take</b><span>Stacked, overlapping cards. Starburst badges for dates. The diagonal stripe pattern, which we can use for categories once the solid colours run out.</span></div>
-        <div class="leave"><b>Leave</b><span>The thin, busy line chart and the soft pastels. Ours are louder.</span></div>
-      </figcaption></figure>
-    <figure class="ref"><img src="refs/payout.jpg" alt="Payment app with large balance figure and coloured send and request tiles" loading="lazy">
+    <figure class="ref"><img src="refs/payout.jpg" alt="Payment app with large balance figure and coloured tiles" loading="lazy">
       <figcaption><span class="t">Payout app</span>
-        <div class="take"><b>Take</b><span>Huge money figures with the cents set smaller and lighter. Square colour tiles with arrows. The dark pill tab bar.</span></div>
-        <div class="leave"><b>Leave</b><span>Stock photo avatars. Our people are badges.</span></div>
-      </figcaption></figure>
-    <figure class="ref"><img src="refs/blob-insurance.jpg" alt="Insurance app screens on cream with pink blob characters" loading="lazy">
+        <div class="take"><b class="k">Take</b><span>Huge money figure with smaller cents. Dark pill tab bar.</span></div>
+        <div class="leave"><b class="k">Leave</b><span>Stock photo avatars.</span></div></figcaption></figure>
+    <figure class="ref"><img src="refs/blob-insurance.jpg" alt="Insurance app screens on cream" loading="lazy">
       <figcaption><span class="t">Cream insurance app</span>
-        <div class="take"><b>Take</b><span>The cream base with one hot colour per screen. "Hi Oliver" warmth. A grid of plain action tiles.</span></div>
-        <div class="leave"><b>Leave</b><span>The blob-with-eyes character. It's that brand's signature, so our monster needs its own silhouette (wings, coin slot).</span></div>
-      </figcaption></figure>
-    <figure class="ref"><img src="refs/mood.jpg" alt="Mood app with orange and green full-screen characters" loading="lazy">
-      <figcaption><span class="t">Mood check-in app</span>
-        <div class="take"><b>Take</b><span>The mascot's mood drives the whole screen colour. Big expressive eyes. Sweat drops for stress.</span></div>
-        <div class="leave"><b>Leave</b><span>All-caps block headlines on everyday screens. Save shouting for big moments.</span></div>
-      </figcaption></figure>
-    <figure class="ref"><img src="refs/yoga.jpg" alt="Fitness app with day pills and colourful plan cards" loading="lazy">
+        <div class="take"><b class="k">Take</b><span>Cream base, one bold block per screen, warm greetings.</span></div>
+        <div class="leave"><b class="k">Leave</b><span>Its blob character, which is that brand's signature.</span></div></figcaption></figure>
+    <figure class="ref"><img src="refs/events.jpg" alt="Pastel event app with stacked cards" loading="lazy">
+      <figcaption><span class="t">Event app</span>
+        <div class="take"><b class="k">Take</b><span>Stacked, overlapping cards, which became the card wallet.</span></div>
+        <div class="leave"><b class="k">Leave</b><span>Soft pastels and the busy chart.</span></div></figcaption></figure>
+    <figure class="ref"><img src="refs/yoga.jpg" alt="Fitness planner with day pills" loading="lazy">
       <figcaption><span class="t">Fitness planner</span>
-        <div class="take"><b>Take</b><span>Day pills, a ready-made pattern for the calendar spending view in issue #13. The splat shape breaking out of its card.</span></div>
-        <div class="leave"><b>Leave</b><span>Small grey text on colour. It's hard to read.</span></div>
-      </figcaption></figure>
-    <figure class="ref"><img src="refs/courses.jpg" alt="Learning app with purple hero, doodles and green course card" loading="lazy">
+        <div class="take"><b class="k">Take</b><span>Day pills for a future calendar view.</span></div>
+        <div class="leave"><b class="k">Leave</b><span>Small grey text on colour.</span></div></figcaption></figure>
+    <figure class="ref"><img src="refs/palette.jpg" alt="Original twelve colour palette" loading="lazy">
+      <figcaption><span class="t">Original palette</span>
+        <div class="take"><b class="k">Take</b><span>The pinks and the cobalt energy, now tightened to riso inks.</span></div>
+        <div class="leave"><b class="k">Leave</b><span>Green House and Velvet Cherry, which fought each other.</span></div></figcaption></figure>
+    <figure class="ref"><img src="refs/courses.jpg" alt="Courses app with doodles and chips" loading="lazy">
       <figcaption><span class="t">Courses app</span>
-        <div class="take"><b>Take</b><span>The marker-highlighted word. Hand-drawn doodles as small accents. Filter chips.</span></div>
-        <div class="leave"><b>Leave</b><span>Purple-on-white. It's the look every app has right now.</span></div>
-      </figcaption></figure>
-    <figure class="ref"><img src="refs/mocha.jpg" alt="Mocha Mocha bubble font specimen in yellow over a photo" loading="lazy">
-      <figcaption><span class="t">Mocha Mocha (paid)</span>
-        <div class="take"><b>Take</b><span>A bubbly face sitting beside a thin, clean sans in the same line. Free lookalike: <b>Modak</b>.</span></div>
-        <div class="leave"><b>Leave</b><span>Bubble type for anything longer than three words.</span></div>
-      </figcaption></figure>
-    <figure class="ref"><img src="refs/chunk.jpg" alt="Extra Chunk Please chunky orange display type" loading="lazy">
-      <figcaption><span class="t">"Extra Chunk"</span>
-        <div class="take"><b>Take</b><span>Heavy, rounded, slightly wonky caps for big numbers and titles. Free lookalikes: <b>Bagel Fat One</b>, <b>Titan One</b>.</span></div>
-        <div class="leave"><b>Leave</b><span>Setting it in all caps at small sizes. It clogs up.</span></div>
-      </figcaption></figure>
-    <figure class="ref"><img src="refs/palette.jpg" alt="Twelve colour palette swatches with names and hex codes" loading="lazy">
-      <figcaption><span class="t">The palette</span>
-        <div class="take"><b>Take</b><span>All twelve colours, plus the trick of setting each name in another palette colour.</span></div>
-        <div class="leave"><b>Leave</b><span>The black background. We're cream.</span></div>
-      </figcaption></figure>
+        <div class="take"><b class="k">Take</b><span>Borderless filter chips. A confident type scale.</span></div>
+        <div class="leave"><b class="k">Leave</b><span>Generic purple-on-white.</span></div></figcaption></figure>
   </div>
 </section>
 
-<!-- ================= 2 COLOUR ================= -->
+<!-- ============ 2 COLOUR ============ -->
 <section class="chapter" id="colour">
   <div class="chapter-head">
-    <p class="eyebrow">2 · Colour system</p>
-    <h2>Every colour gets <span class="mark">a job</span></h2>
-    <p class="lede">In a money app, colour means something: who owns it, what it's for, whether you're in trouble. So a few colours do structural jobs and are never borrowed for decoration. The rest are free to play.</p>
+    <p class="eyebrow">2 · Colour</p>
+    <h2>Four inks, and what they make together</h2>
+    <p class="lede">Riso printers use a few spot inks and get more colours by layering them. We do the same: four inks, two overprints, and 30% tints for big surfaces. Because everything comes from the same inks, it holds together on cream.</p>
   </div>
 
-  <div class="roles">
-    <div class="role" style="background:var(--cream)"><div><p class="r-job">Page background</p><p class="r-name">Cream</p></div><p class="r-meta">#F7EFDF · cards sit on #FFF9EE</p></div>
-    <div class="role" style="background:var(--ink);color:var(--cream)"><div><p class="r-job">Text &amp; main buttons</p><p class="r-name">Cherry Ink</p></div><p class="r-meta">#2B0F14 · near-black warmed with Velvet Cherry</p></div>
-    <div class="role" style="background:var(--hot-pink)"><div><p class="r-job">Brand · the + button</p><p class="r-name">Hot Pink</p></div><p class="r-meta">#FF4283 · ink text only (white fails)</p></div>
-    <div class="role" style="background:var(--mellow)"><div><p class="r-job">Highlight · hero card</p><p class="r-name">Mellow</p></div><p class="r-meta">#F4FF1E · a fill, never text</p></div>
-    <div class="role" style="background:var(--deep-red);color:var(--paper)"><div><p class="r-job">Over budget, only</p><p class="r-name">Deep Red</p></div><p class="r-meta">#C60707 · reserved, so red always means "look"</p></div>
-    <div class="role" style="background:var(--green-house);color:var(--paper)"><div><p class="r-job">Goals hit · good news</p><p class="r-name">Green House</p></div><p class="r-meta">#116B09 · white text OK</p></div>
+  <div class="inkset">
+    <div class="ink"><div class="sw" style="background:var(--pink)">Fluoro Pink</div><div class="tint" style="background:var(--pink-t)">tint FFD2EA</div><div class="meta"><code>#FF48B0</code><span>Brand · + button · Cheryl</span></div></div>
+    <div class="ink"><div class="sw" style="background:var(--blue);color:var(--paper)">Riso Blue</div><div class="tint" style="background:var(--blue-t)">tint D3DDF6</div><div class="meta"><code>#2F5BD3</code><span>Jeremy · links · selection</span></div></div>
+    <div class="ink"><div class="sw" style="background:var(--sun)">Sunflower</div><div class="tint" style="background:var(--sun-t)">tint FFEDB8</div><div class="meta"><code>#FFC21A</code><span>Highlights · tips · nudges</span></div></div>
+    <div class="ink"><div class="sw" style="background:var(--green);color:var(--paper)">Riso Green</div><div class="tint" style="background:var(--green-t)">tint C4EBD6</div><div class="meta"><code>#00A95C</code><span>Goals hit · on track · good news</span></div></div>
   </div>
 
-  <div class="split">
-    <div class="panel">
-      <h3>Owner badges: Cheryl, Jeremy, shared</h3>
-      <p style="font-size:.92rem">Your two near-duplicate colours become the people colours, so they never clash with categories. The shared badge is literally half of each.</p>
-      <div class="owners">
-        <span class="owner"><span class="ob c">C</span>Cheryl · Taffy #E76290</span>
-        <span class="owner"><span class="ob j">J</span>Jeremy · Riviera #5196E8</span>
-        <span class="owner"><span class="ob s">C+J</span>Shared · half and half</span>
-      </div>
-      <p style="font-size:.85rem;color:var(--ink-2)">The initial is always in the badge, so it still works for colour-blind eyes and in greyscale.</p>
-    </div>
-    <div class="panel">
-      <h3>Near-duplicates, sorted</h3>
-      <div class="dupes">
-        <div class="dupe"><span class="pair"><i style="background:var(--flossy)"></i><i style="background:var(--taffy)"></i></span><p><b>Flossy vs Taffy:</b> Flossy stays a category colour, Taffy becomes Cheryl's.</p></div>
-        <div class="dupe"><span class="pair"><i style="background:var(--muted-blue)"></i><i style="background:var(--riviera)"></i></span><p><b>Muted Blue vs Riviera:</b> Muted Blue stays a category, Riviera becomes Jeremy's.</p></div>
-        <div class="dupe"><span class="pair"><i style="background:var(--hot-pink)"></i><i style="background:var(--magenta)"></i></span><p><b>The two Hot Pinks:</b> #FF4283 is the brand. #FF1EC7 (call it Magenta) only appears in celebrations.</p></div>
-      </div>
-    </div>
+  <div class="overprint">
+    <div class="panel op"><div class="venn"><i style="background:var(--pink)"></i><i style="background:var(--blue)"></i></div>
+      <p><b>Pink + blue = Shared</b> <code style="font-family:var(--f-mono);font-size:.8rem">#6B3FC9</code><br>Every joint account, shared expense and "C+J" badge uses the overprint. The couples idea, built into the palette.</p></div>
+    <div class="panel op"><div class="venn"><i style="background:var(--pink)"></i><i style="background:var(--sun)"></i></div>
+      <p><b>Pink + sunflower = Over budget</b> <code style="font-family:var(--f-mono);font-size:.8rem">#FF3712</code><br>A hot scarlet, reserved for trouble only. It's never a category colour, so when you see it, it means something.</p></div>
+  </div>
+
+  <div class="base">
+    <div style="background:var(--paper);box-shadow:inset 0 0 0 1px var(--oat)">Paper<code>#F2EADB · page</code></div>
+    <div style="background:var(--card)">Card<code>#FBF6EC · surfaces</code></div>
+    <div style="background:var(--oat)">Oat<code>#E8DDCB · tracks, dividers</code></div>
+    <div style="background:var(--ink);color:var(--paper)">Riso Ink<code>#201B2E · text, hero, tab bar</code></div>
+  </div>
+
+  <div class="rules">
+    <div class="panel"><span class="n">Rule 1</span><h3>One dark block per screen</h3><p>The hero card is Riso Ink. Everything else sits on paper and card, so your eye lands on the one number that matters.</p></div>
+    <div class="panel"><span class="n">Rule 2</span><h3>Tints for areas, inks for accents</h3><p>Large fills use the 30% tint. Full-strength ink is kept for icons, badges, progress and the + button.</p></div>
+    <div class="panel"><span class="n">Rule 3</span><h3>No outlines, ever</h3><p>Cards separate by fill and spacing. One soft shadow exists, for things that float (cards in the stack, the tab bar).</p></div>
   </div>
 
   <div class="panel">
-    <h3>Categories as colour blocks</h3>
-    <p style="font-size:.92rem">Matched to your logging rules. Text colour is picked per tile for contrast. The app has up to 16 categories, so after the solid colours run out, tiles get the stripe from the events reference.</p>
-    <div class="cats" id="cats"></div>
-  </div>
-
-  <div class="panel">
-    <h3>Can you read it? Contrast check</h3>
-    <p style="font-size:.92rem">Worked out live from the hex codes, using the WCAG standard. <b>4.5</b> is the bar for small text; <b>3</b> is enough for big, bold numbers and headings.</p>
+    <h3>Contrast check</h3>
+    <p style="font-size:.9rem;color:var(--ink-2)">Calculated live from the hex codes using the WCAG formula. 4.5 passes for body text; 3 passes for large, bold text only.</p>
     <div class="contrast-wrap"><table class="contrast" id="contrast"></table></div>
-    <div class="legend"><span>✓ AA = passes for body text</span><span>Big = big/bold text only</span><span>✗ = don't</span></div>
   </div>
 </section>
 
-<!-- ================= 3 TYPE ================= -->
+<!-- ============ 3 TYPE ============ -->
 <section class="chapter" id="type">
   <div class="chapter-head">
     <p class="eyebrow">3 · Type</p>
-    <h2>Chunky, quirky, <span class="mark">then calm</span></h2>
-    <p class="lede">Three jobs: a chunky face for titles and big numbers, a quirky face for the mascot's voice and celebrations, and a clean sans for everything you actually read. All free on Google Fonts.</p>
+    <h2>Wide and bold up top, calm underneath</h2>
+    <p class="lede">The bubble font is gone. Unbounded is wide and confident, but crisp enough for one hero number per screen. Every other amount is in Manrope, a plain sans that's easy to scan. DM Mono adds the riso-receipt flavour in small labels.</p>
   </div>
-  <div class="pairings">
-    <div class="pairing a">
-      <span class="tag rec">Recommended</span>
-      <p class="big">Spent this month <span class="q">yay!</span></p>
-      <p class="num"><span class="money" style="font-family:'Bagel Fat One',var(--f-display)">S$1,186<span class="c">.40</span></span></p>
-      <p class="body">Eating out is S$312.80 so far. Yuu Card needs S$259.80 more to hit its S$800 min spend before 18 Nov.</p>
-      <dl class="specs">
-        <dt>Chunky</dt><dd>Bagel Fat One · stands in for "Extra Chunk"</dd>
-        <dt>Quirky</dt><dd>Modak · stands in for Mocha Mocha's bubble</dd>
-        <dt>Body</dt><dd>DM Sans · <span id="tnum-a">checking tabular figures…</span></dd>
-      </dl>
+  <div class="typeset">
+    <div class="face" style="background:var(--ink);color:var(--paper)">
+      <span class="spec">Display · Unbounded 700–900</span>
+      <p class="demo" style="font-family:var(--f-display);font-weight:800;font-size:2.3rem;letter-spacing:-.04em;color:var(--pink)">S$1,186<small style="font-size:.5em;opacity:.75">.40</small></p>
+      <p class="use">Screen titles and the single hero number. Never for lists.</p>
     </div>
-    <div class="pairing b">
-      <span class="tag" style="background:var(--paper);color:var(--ink)">Alternative</span>
-      <p class="big">Spent this month <span class="q">yay!</span></p>
-      <p class="num"><span class="money" style="font-family:'Titan One',var(--f-display)">S$1,186<span class="c">.40</span></span></p>
-      <p class="body">Eating out is S$312.80 so far. Yuu Card needs S$259.80 more to hit its S$800 min spend before 18 Nov.</p>
-      <dl class="specs">
-        <dt>Chunky</dt><dd>Titan One · rounder, a bit more polite</dd>
-        <dt>Quirky</dt><dd>Gluten · handmade wobble, less blobby</dd>
-        <dt>Body</dt><dd>Outfit · <span id="tnum-b">checking tabular figures…</span></dd>
-      </dl>
+    <div class="face" style="background:var(--card)">
+      <span class="spec">Body &amp; amounts · Manrope 500–800</span>
+      <p class="demo" style="font-weight:800;font-size:1.7rem;font-variant-numeric:tabular-nums">S$312.80</p>
+      <p class="use">Everything you read, including every amount in lists, with even-width digits switched on.</p>
+    </div>
+    <div class="face" style="background:var(--sun-t)">
+      <span class="spec">Detail · DM Mono 400–500</span>
+      <p class="demo" style="font-family:var(--f-mono);font-size:1.1rem">SUN 08 NOV · 10 DAYS LEFT</p>
+      <p class="use">Small labels, dates and card numbers. A little riso-receipt character in the margins.</p>
     </div>
   </div>
-  <div class="panel">
-    <h3>Why A</h3>
-    <p style="font-size:.95rem;max-width:70ch">Bagel Fat One is closest to your Extra Chunk reference, and Modak is the nearest free match to Mocha Mocha's bubble. For a ledger, the body font also needs "tabular figures" (every digit the same width) so amounts line up in columns. The specs on each card above test this live in your browser. If a font fails, we keep it for text and set amounts in the chunky face, which already reads as numbers. Pairing B is gentler and might suit Jeremy if A feels too loud.</p>
-    <div class="scale">
-      <div class="row"><span>Hero number · 44px</span><span class="money" style="font-size:2.75rem;line-height:1">S$1,186<span class="c">.40</span></span></div>
-      <div class="row"><span>Screen title · 26px</span><span style="font-family:var(--f-display);font-size:1.6rem;line-height:1.1">Wallets</span></div>
-      <div class="row"><span>Mascot voice · 28px</span><span style="font-family:var(--f-quirk);font-size:1.75rem;line-height:1">Nice one!</span></div>
-      <div class="row"><span>Body · 15px</span><span style="font-size:.95rem">Counts toward Yuu Card's S$800 min spend.</span></div>
-      <div class="row"><span>Label · 12px caps</span><span class="eyebrow" style="color:var(--ink)">Spent in November</span></div>
-    </div>
+  <div class="panel scale">
+    <div class="row"><span>Hero · 36px Unbounded 800</span><span style="font-family:var(--f-display);font-weight:800;font-size:2.25rem;letter-spacing:-.045em;line-height:1">S$1,186<small style="font-size:.5em;color:var(--ink-2)">.40</small></span></div>
+    <div class="row"><span>Title · 22px Unbounded 800</span><span style="font-family:var(--f-display);font-weight:800;font-size:1.4rem;letter-spacing:-.03em">Wallets</span></div>
+    <div class="row"><span>Section · 15px Unbounded 700</span><span style="font-family:var(--f-display);font-weight:700;font-size:.95rem">Where it went</span></div>
+    <div class="row"><span>Amount · 15px Manrope 800</span><span style="font-weight:800;font-variant-numeric:tabular-nums">S$248.15</span></div>
+    <div class="row"><span>Body · 14px Manrope 600</span><span style="font-weight:600;font-size:.9rem">Counts toward Yuu Card's S$800 min spend.</span></div>
+    <div class="row"><span>Label · 11px DM Mono</span><span style="font-family:var(--f-mono);font-size:.72rem;text-transform:uppercase;letter-spacing:.06em">Spent in November</span></div>
   </div>
 </section>
 
-<!-- ================= 4 MASCOT ================= -->
-<section class="chapter" id="mascot">
-  <div class="chapter-head">
-    <p class="eyebrow">4 · Mascot</p>
-    <h2>Three ways to be <span class="mark">flappy</span></h2>
-    <p class="lede">Each concept takes "flap" differently. All are simple flat shapes with no outlines, so they work at 24px in the tab bar and at full screen.</p>
-  </div>
-  <div class="concepts">
-    <div class="concept" style="background:var(--muted-blue)">
-      <span class="tag rec">My pick</span>
-      <div data-mascot="flapjack" data-mood="happy"></div>
-      <p class="c-name">A · Wings</p>
-      <p>A round little piggy-bank monster with stubby wings and a coin slot on its head. Flaps when it's happy, droops when you overspend.</p>
-      <div class="pc"><span>👍 The wings give it a clear silhouette, and the coin slot says "money" without words.</span><span>👎 It's the most "cute" of the three, so it may read young.</span></div>
-    </div>
-    <div class="concept" style="background:var(--flossy)">
-      <div data-mascot="lop" data-mood="happy"></div>
-      <p class="c-name">B · Floppy ears</p>
-      <p>A tall bean with long ears that flop and swing. Ears up for good news, ears flat for bad.</p>
-      <div class="pc"><span>👍 Ears are very expressive and easy to animate.</span><span>👎 It reads closer to a bunny than a monster.</span></div>
-    </div>
-    <div class="concept" style="background:var(--mellow)">
-      <div data-mascot="clasp" data-mood="happy"></div>
-      <p class="c-name">C · Wallet flap</p>
-      <p>The monster is a coin purse. Its flap is its lid, which pops open to "eat" a receipt when you log one.</p>
-      <div class="pc"><span>👍 The most ownable idea, since it's literally a wallet.</span><span>👎 It's boxier, so less huggable.</span></div>
-    </div>
-  </div>
-
-  <div class="chapter-head" style="margin-top:12px">
-    <h3 style="font-family:var(--f-display);font-weight:400;font-size:1.8rem">Concept A, four moods</h3>
-    <p class="lede">Each mood comes with a line of copy in the mascot's voice.</p>
-  </div>
-  <div class="moods">
-    <div class="mood"><div data-mascot="flapjack" data-mood="happy"></div><p class="m-t">Happy</p><p class="m-copy">"On track! Keep flapping."</p><p class="m-d">Default state. Under budget and on pace.</p></div>
-    <div class="mood"><div data-mascot="flapjack" data-mood="over"></div><p class="m-t">Over budget</p><p class="m-copy">"Uh oh, Eating out is S$48 over."</p><p class="m-d">Wings droop, sweat drops, wobbly mouth. Worried, not angry.</p></div>
-    <div class="mood"><div data-mascot="flapjack" data-mood="goal"></div><p class="m-t">Goal hit</p><p class="m-copy">"Min spend smashed! Miles incoming."</p><p class="m-d">Wings up, confetti, drops a coin in its own slot.</p></div>
-    <div class="mood"><div data-mascot="flapjack" data-mood="nap"></div><p class="m-t">No-spend day</p><p class="m-copy">"Zero spent today. Nap earned."</p><p class="m-d">A bonus mood, for days with nothing logged.</p></div>
-  </div>
-
-  <div class="chapter-head" style="margin-top:12px">
-    <h3 style="font-family:var(--f-display);font-weight:400;font-size:1.8rem">Names</h3>
-  </div>
-  <div class="names">
-    <div class="name fav"><b>Flapjack</b><span>Your favourite. "Flap" plus a pancake, which fits concept A's round, flat body. Shortens to "Jack".</span></div>
-    <div class="name"><b>Flip</b><span>Short and bouncy. A coin flip, and it fits in a tiny badge.</span></div>
-    <div class="name"><b>Penny</b><span>Pairs with the coin slot. Reads softer and more grown-up.</span></div>
-    <div class="name"><b>Mo</b><span>Short for monster and for moolah. Two letters, friendly in copy: "Mo says…"</span></div>
-    <div class="name"><b>Clasp</b><span>Only works for concept C, the wallet.</span></div>
-  </div>
-</section>
-
-<!-- ================= 5 SCREENS ================= -->
+<!-- ============ 4 SCREENS ============ -->
 <section class="chapter" id="screens">
   <div class="chapter-head">
-    <p class="eyebrow">5 · App screens</p>
-    <h2>Home, Add, <span class="mark">Wallets</span></h2>
-    <p class="lede">Built on pairing A and mascot A. Wallet names are your real ones; <b>every amount is made up</b>, so this page is safe to share. Each phone is shown fully scrolled.</p>
+    <p class="eyebrow">4 · Screens</p>
+    <h2>Home, Add expense, Wallets</h2>
+    <p class="lede">Each screen has one dark hero, clean lists and owner colours everywhere. The dashed circles mark where Flappy will sit once the character is final.</p>
   </div>
 
   <div class="phones">
     <!-- HOME -->
     <div class="phone-col">
-      <div class="phone"><div class="sb"><span>9:41</span><span class="isl"></span><span>5G ▮</span></div>
+      <div class="phone"><div class="screen">
+        <div class="sb"><span>9:41</span><span class="isl"></span><span>5G</span></div>
         <div class="scr">
-          <div class="hello"><p class="hi">Hi you two</p><span class="who"><span class="ob c">C</span><span class="ob j">J</span></span></div>
-          <div class="chips"><span class="chip on" style="padding-left:10px">All</span><span class="chip"><span class="ob sm c">C</span>Cheryl</span><span class="chip"><span class="ob sm j">J</span>Jeremy</span><span class="chip"><span class="ob sm s">C+J</span>Shared</span></div>
-          <div class="hcard" style="background:var(--mellow)">
-            <p class="lbl">Spent in November</p>
-            <p class="money">S$1,186<span class="c">.40</span></p>
-            <p class="of">of S$3,200 budget</p>
-            <div class="bar"><i style="width:37%"></i></div>
-            <p class="meta">S$2,013.60 left · 22 days · about S$91/day</p>
-            <div class="peek" data-mascot="flapjack" data-mood="happy"></div>
+          <div class="hd"><span class="t">Hey, you two</span><span class="duo"><i>C</i><i>J</i></span></div>
+          <div class="chips owners-f"><span class="chip plain on">All</span><span class="chip"><span class="ob c">C</span>Cheryl</span><span class="chip"><span class="ob j">J</span>Jeremy</span><span class="chip"><span class="ob s">C+J</span>Shared</span></div>
+          <div class="heroCard">
+            <div class="k">Spent in November</div>
+            <div class="n money">S$1,186<small>.40</small></div>
+            <div class="seg"><i style="flex:31;background:var(--pink)"></i><i style="flex:25;background:var(--green)"></i><i style="flex:20;background:var(--over)"></i><i style="flex:19;background:var(--sun)"></i><i style="flex:14;background:var(--blue)"></i><i style="flex:211;background:rgba(242,234,219,.16)"></i></div>
+            <div class="foot"><span>of S$3,200 budget</span><span class="pill" style="background:var(--sun);color:var(--ink)">S$91/day left</span></div>
+            <div class="flappy-slot">Flappy<br>happy</div>
           </div>
-          <div class="sec-h"><span>Where it went</span><a href="#screens">See all</a></div>
-          <div class="tiles" id="home-tiles"></div>
-          <div class="sec-h"><span>Card bonus</span><a href="#screens">All cards</a></div>
-          <div class="cardrow">
-            <div class="top"><span><span class="ob sm c">C</span>Yuu Card AMEX 0812</span><span class="pill" style="background:var(--mellow)">S$259.80 to go</span></div>
-            <div class="prog"><i style="width:67.5%;background:var(--kind-berry)"></i></div>
-            <div class="sub"><span>S$540.20 / S$800 min spend</span><span>Cycle ends 18 Nov</span></div>
-          </div>
-          <div class="cardrow">
-            <div class="top"><span><span class="ob sm j">J</span>Citi Rewards 8616</span><span class="pill" style="background:var(--deep-red);color:var(--paper)">Near cap</span></div>
-            <div class="prog"><i style="width:91%;background:var(--deep-red)"></i></div>
-            <div class="sub"><span>S$912.50 / S$1,000 bonus cap</span><span>S$87.50 left</span></div>
+          <div class="sec-h"><b>Where it went</b><span>See all</span></div>
+          <div class="list" id="home-cats"></div>
+          <div class="sec-h"><b>Card bonus</b><span>3 cards</span></div>
+          <div class="stack">
+            <div class="cc b1"><div class="r"><span><span class="ob j">J</span>DBS WW 0636</span></div></div>
+            <div class="cc b2"><div class="r"><span><span class="ob j" style="background:var(--paper);color:var(--blue)">J</span>Citi Rewards 8616</span><span>Near cap</span></div></div>
+            <div class="cc front">
+              <div class="r"><span><span class="ob c" style="background:var(--ink);color:var(--pink)">C</span>Yuu Card AMEX 0812</span><span>67%</span></div>
+              <div class="bar"><i></i></div>
+              <div class="sub"><span>S$540.20 / 800 min spend</span><span>10 days</span></div>
+            </div>
           </div>
         </div>
-        <div class="tabbar" aria-hidden="true">
-          <i class="on"><svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg></i>
-          <i><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></i>
+        <div class="tab" aria-hidden="true">
+          <span class="on"><svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg></span>
+          <span><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></span>
           <span class="fab"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>
-          <i><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18"/></svg></i>
-          <i><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></svg></i>
+          <span><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18"/></svg></span>
+          <span><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></svg></span>
         </div>
-      </div>
-      <p class="ph-cap"><b>Home.</b> One hero number on Mellow, with the mascot reacting to pace. Owner chips filter the whole screen. Card bonus moves up from the bottom of Home, since it's the app's superpower.</p>
+      </div></div>
+      <p class="ph-cap"><b>Home.</b> One dark hero with the month's total in pink, split by category underneath. Owner chips filter everything below. Credit cards stack like a real wallet; the front card is the one closest to a deadline.</p>
     </div>
 
     <!-- ADD -->
     <div class="phone-col">
-      <div class="phone"><div class="sb"><span>9:41</span><span class="isl"></span><span>5G ▮</span></div>
-        <div class="scr">
-          <div class="ph-title"><span>New entry</span><span class="chip">Cancel</span></div>
-          <div class="seg"><span class="on">Expense</span><span>Income</span><span>Transfer</span></div>
-          <div class="amount"><span class="cur">S$</span><span class="money">48<span class="c">.60</span></span></div>
-          <div class="field"><div class="stack"><span class="k">Merchant</span><span class="v">Song Fa Bak Kut Teh</span></div><span class="pill" style="background:var(--line)">Required</span></div>
-          <div class="chips" style="flex-wrap:wrap">
-            <span class="chip" style="background:var(--hot-pink)">🍜 Eating out</span><span class="chip">🛒 Groceries</span><span class="chip">🚕 Private Transport</span><span class="chip">＋</span>
+      <div class="phone"><div class="screen">
+        <div class="sb"><span>9:41</span><span class="isl"></span><span>5G</span></div>
+        <div class="scr" style="padding-bottom:24px">
+          <div class="hd"><span class="t">New expense</span><span class="icon-btn"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span></div>
+          <div class="segctl"><span class="on">Expense</span><span>Income</span><span>Transfer</span></div>
+          <div class="amount"><span class="cur">S$</span><span class="money">48<small>.60</small></span><p class="hint">SUN 08 NOV · TODAY</p></div>
+          <div class="chips">
+            <span class="chip" style="background:var(--pink);"><span class="ic" style="width:22px;height:22px;border-radius:7px;background:var(--ink);color:var(--pink)"><svg viewBox="0 0 24 24" style="width:12px;height:12px"><path d="M7 3v8M5 3v4a2 2 0 0 0 4 0V3M7 11v10M17 3c-2 0-3 3-3 6s1 4 3 4v8"/></svg></span>Eating out</span>
+            <span class="chip"><span class="ic" style="width:22px;height:22px;border-radius:7px;background:var(--green-t);color:var(--green)"><svg viewBox="0 0 24 24" style="width:12px;height:12px"><circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l3 12h11l2-8H6"/></svg></span>Groceries</span>
+            <span class="chip"><span class="ic" style="width:22px;height:22px;border-radius:7px;background:var(--blue-t);color:var(--blue)"><svg viewBox="0 0 24 24" style="width:12px;height:12px"><path d="M5 17h14M3 13l2-6h14l2 6v4H3z"/></svg></span>Transport</span>
           </div>
-          <div class="field"><div class="stack"><span class="k">Paid with</span><span class="v" style="display:flex;gap:6px;align-items:center"><span class="ob sm c">C</span>Yuu Card AMEX 0812</span></div><span class="v" style="font-size:.8rem">Change</span></div>
-          <div class="tip"><span data-mascot="flapjack" data-mood="happy"></span><span><b>Good pick.</b> This gets Yuu to S$588.80 of its S$800 min spend.</span></div>
-          <div class="field"><div class="stack"><span class="k">Split with Jeremy?</span><span class="v">50 / 50 · S$24.30 each</span></div><span class="toggle" aria-hidden="true"></span></div>
-          <div class="field"><div class="stack"><span class="k">Date</span><span class="v">Today, Sun 8 Nov</span></div><span class="v" style="font-size:.8rem">Note ＋</span></div>
+          <div class="fields">
+            <div class="field"><div class="stack2"><span class="k">Merchant</span><span class="v">Song Fa Bak Kut Teh</span></div></div>
+            <div class="field"><div class="stack2"><span class="k">Paid with</span><span class="v"><span class="ob c">C</span>Yuu Card AMEX 0812</span></div><span class="act">Change</span></div>
+            <div class="field"><div class="stack2"><span class="k">Split with Jeremy</span><span class="v">50/50 · S$24.30 each</span></div><span class="toggle" aria-hidden="true"></span></div>
+          </div>
+          <div class="tip"><span class="flappy-slot on-light">Flappy</span><span><b>Good pick.</b>&nbsp;This takes Yuu to S$588.80 of its S$800 min spend.</span></div>
           <div class="keypad"><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>.</span><span>0</span><span>⌫</span></div>
           <div class="save">Save expense</div>
         </div>
-      </div>
-      <p class="ph-cap"><b>Add expense.</b> Expense, Income and Transfer tabs (from Blue Comet's Expenses app). Merchant is required, as in your logging rules. Flapjack checks the card against its bonus as you pick it. <span class="tag idea">New idea</span> split toggle.</p>
+      </div></div>
+      <p class="ph-cap"><b>Add expense.</b> The amount is the hero. Merchant, card and split sit in one tidy group. Flappy checks your card against its bonus as you pick it. <span class="tag idea">New idea</span> split toggle.</p>
     </div>
 
     <!-- WALLETS -->
     <div class="phone-col">
-      <div class="phone"><div class="sb"><span>9:41</span><span class="isl"></span><span>5G ▮</span></div>
+      <div class="phone"><div class="screen">
+        <div class="sb"><span>9:41</span><span class="isl"></span><span>5G</span></div>
         <div class="scr">
-          <div class="ph-title"><span style="font-size:1.6rem">Wallets</span><span class="chip">＋ Add</span></div>
-          <div class="chips"><span class="chip on" style="padding-left:10px">All</span><span class="chip"><span class="ob sm c">C</span>Cheryl</span><span class="chip"><span class="ob sm j">J</span>Jeremy</span><span class="chip"><span class="ob sm s">C+J</span>Shared</span></div>
-          <div class="wsum">
-            <div style="background:var(--cheryl)"><small>Cheryl</small><span class="money">S$17.4k</span></div>
-            <div style="background:var(--jeremy)"><small>Jeremy</small><span class="money">S$22.4k</span></div>
-            <div style="background:linear-gradient(135deg,var(--cheryl) 50%,var(--jeremy) 50%)"><small>Shared</small><span class="money">S$8.2k</span></div>
+          <div class="hd"><span class="t">Wallets</span><span class="icon-btn"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span></div>
+          <div class="owners">
+            <div style="background:var(--pink-t)"><small><span class="ob c">C</span>Cheryl</small><span class="money">S$17.4k</span></div>
+            <div style="background:var(--blue-t)"><small><span class="ob j">J</span>Jeremy</small><span class="money">S$22.4k</span></div>
+            <div style="background:var(--over-t)"><small><span class="ob s">C+J</span>Shared</small><span class="money">S$8.2k</span></div>
           </div>
 
-          <div class="wgroup">
-            <div class="wgroup-h"><span class="ob s">C+J</span>Shared<small>1 account</small></div>
-            <div class="wrow"><span class="wi" style="background:var(--green-house)"><svg viewBox="0 0 24 24" style="stroke:var(--paper)"><path d="M3 10l9-6 9 6M5 10v8M19 10v8M9 10v8M15 10v8M3 20h18"/></svg></span><span class="wn"><b>UOB One Account 4128</b><span>Bills and household</span></span><span class="money">S$8,240<span class="c">.15</span></span></div>
+          <div class="grp"><div class="grp-h"><span class="ob lg s">C+J</span>Shared<small>1 account</small></div>
+            <div class="list"><div class="row"><span class="ic" style="background:var(--over-t);color:var(--over)"><svg viewBox="0 0 24 24"><path d="M3 10l9-6 9 6M5 10v8M19 10v8M9 10v8M15 10v8M3 20h18"/></svg></span><span class="nm"><b>UOB One Account 4128</b><span>Bills and household</span></span><span class="amt money">S$8,240<small>.15</small></span></div></div>
           </div>
 
-          <div class="wgroup">
-            <div class="wgroup-h"><span class="ob c">C</span>Cheryl<small>4 wallets · 1 card</small></div>
-            <div class="wrow"><span class="wi" style="background:var(--flossy)"><svg viewBox="0 0 24 24"><path d="M3 10l9-6 9 6M5 10v8M19 10v8M9 10v8M15 10v8M3 20h18"/></svg></span><span class="wn"><b>OCBC360 Account 5001</b><span>Savings</span></span><span class="money">S$14,302<span class="c">.60</span></span></div>
-            <div class="wrow"><span class="wi" style="background:var(--mellow)"><svg viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M11 18h2"/></svg></span><span class="wn"><b>DBS PayLah!</b><span style="color:var(--deep-red);font-weight:800">Low · top up from POSB?</span></span><span class="money">S$12<span class="c">.40</span></span></div>
-            <div class="wrow wcard">
-              <div class="row1"><span class="wi" style="background:var(--kind-berry)"><svg viewBox="0 0 24 24" style="stroke:var(--paper)"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M2 10h20M6 15h4"/></svg></span><span class="wn"><b>Yuu Card AMEX 0812</b><span>Min spend S$800 / month</span></span><span class="money">S$540<span class="c">.20</span></span></div>
-              <div class="prog"><i style="width:67.5%;background:var(--kind-berry)"></i></div>
-              <div class="sub" style="font-size:.72rem;font-weight:700;color:var(--ink-2);display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap"><span>S$259.80 to go · 10 days</span><span class="pill" style="background:var(--ink);color:var(--cream)">Bill S$1,206 due 25 Nov</span></div>
+          <div class="grp"><div class="grp-h"><span class="ob lg c">C</span>Cheryl<small>3 accounts · 1 card</small></div>
+            <div class="list">
+              <div class="row"><span class="ic" style="background:var(--pink-t);color:var(--pink)"><svg viewBox="0 0 24 24"><path d="M3 10l9-6 9 6M5 10v8M19 10v8M9 10v8M15 10v8M3 20h18"/></svg></span><span class="nm"><b>OCBC360 Account 5001</b><span>Savings</span></span><span class="amt money">S$14,302<small>.60</small></span></div>
+              <div class="row"><span class="ic" style="background:var(--scarlet-t);color:var(--scarlet)"><svg viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M11 18h2"/></svg></span><span class="nm"><b>DBS PayLah!</b><span style="color:var(--scarlet)">Low · top up from POSB?</span></span><span class="amt money">S$12<small>.40</small></span></div>
+              <div class="cardx">
+                <div class="row"><span class="ic" style="background:var(--pink);color:var(--ink)"><svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M2 10h20M6 15h4"/></svg></span><span class="nm"><b>Yuu Card AMEX 0812</b><span>S$259.80 to min spend</span></span><span class="amt money">S$540<small>.20</small></span></div>
+                <div class="mini"><i style="width:67.5%;background:var(--pink)"></i></div>
+                <div class="foot"><span style="font-family:var(--f-mono);font-weight:400">MIN S$800 · 10 DAYS</span><span class="pill" style="background:var(--ink);color:var(--paper)">Bill S$1,206 due 25 Nov</span></div>
+              </div>
             </div>
           </div>
 
-          <div class="wgroup">
-            <div class="wgroup-h"><span class="ob j">J</span>Jeremy<small>1 account · 2 cards</small></div>
-            <div class="wrow"><span class="wi" style="background:var(--muted-blue)"><svg viewBox="0 0 24 24"><path d="M3 10l9-6 9 6M5 10v8M19 10v8M9 10v8M15 10v8M3 20h18"/></svg></span><span class="wn"><b>DBS Multiplier</b><span>Salary · interest</span></span><span class="money">S$22,410<span class="c">.00</span></span></div>
-            <div class="wrow wcard">
-              <div class="row1"><span class="wi" style="background:var(--deep-red)"><svg viewBox="0 0 24 24" style="stroke:var(--paper)"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M2 10h20M6 15h4"/></svg></span><span class="wn"><b>Citi Rewards 8616</b><span>Bonus cap S$1,000</span></span><span class="money">S$912<span class="c">.50</span></span></div>
-              <div class="prog"><i style="width:91%;background:var(--deep-red)"></i></div>
-              <div class="sub" style="font-size:.72rem;font-weight:700;color:var(--deep-red)"><span>S$87.50 left before cap · switch cards soon</span></div>
+          <div class="grp"><div class="grp-h"><span class="ob lg j">J</span>Jeremy<small>1 account · 2 cards</small></div>
+            <div class="list">
+              <div class="row"><span class="ic" style="background:var(--blue-t);color:var(--blue)"><svg viewBox="0 0 24 24"><path d="M3 10l9-6 9 6M5 10v8M19 10v8M9 10v8M15 10v8M3 20h18"/></svg></span><span class="nm"><b>DBS Multiplier</b><span>Salary</span></span><span class="amt money">S$22,410<small>.00</small></span></div>
+              <div class="cardx">
+                <div class="row"><span class="ic" style="background:var(--blue);color:var(--paper)"><svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M2 10h20M6 15h4"/></svg></span><span class="nm"><b>Citi Rewards 8616</b><span style="color:var(--scarlet)">S$87.50 left before cap</span></span><span class="amt money">S$912<small>.50</small></span></div>
+                <div class="mini"><i style="width:91%;background:var(--scarlet)"></i></div>
+                <div class="foot"><span style="font-family:var(--f-mono);font-weight:400">CAP S$1,000 · SWITCH SOON</span></div>
+              </div>
             </div>
           </div>
         </div>
-        <div class="tabbar" aria-hidden="true">
-          <i><svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg></i>
-          <i><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></i>
+        <div class="tab" aria-hidden="true">
+          <span><svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg></span>
+          <span><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></span>
           <span class="fab"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>
-          <i class="on"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18"/></svg></i>
-          <i><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></svg></i>
+          <span class="on"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18"/></svg></span>
+          <span><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></svg></span>
         </div>
-      </div>
-      <p class="ph-cap"><b>Wallets.</b> Grouped by owner with badges, so "(C)" and "(J)" can leave the names (issue #13, point 5). Cards show bonus progress inline. <span class="tag idea">New idea</span> bill due dates and the PayLah low-balance nudge.</p>
+      </div></div>
+      <p class="ph-cap"><b>Wallets.</b> Grouped Shared, Cheryl, Jeremy, so "(C)" and "(J)" can leave the names (issue #13, point 5). Cards show bonus progress inline. <span class="tag idea">New idea</span> bill due dates and the PayLah nudge.</p>
     </div>
   </div>
 
-  <div class="chapter-head" style="margin-top:20px">
-    <h3 style="font-family:var(--f-display);font-weight:400;font-size:1.8rem">How Home's hero card reacts</h3>
-    <p class="lede">The same card in three states. Colour and mascot change together, so you know where you stand before you've read a number.</p>
+  <div class="chapter-head" style="margin-top:24px">
+    <h3 style="font-size:1.5rem">How the hero card reacts</h3>
+    <p class="lede">Same card, three states. The colour shifts and Flappy reacts, so you know where you stand before reading a number.</p>
   </div>
   <div class="states">
-    <div class="state"><div class="hcard" style="background:var(--mellow)"><p class="lbl">On track</p><p class="money">S$1,186<span class="c">.40</span></p><p class="of">of S$3,200</p><p class="meta">About S$91/day left</p><div class="peek" data-mascot="flapjack" data-mood="happy"></div></div></div>
-    <div class="state"><div class="hcard" style="background:var(--deep-red);color:var(--paper)"><p class="lbl">Over budget</p><p class="money">S$3,348<span class="c">.10</span></p><p class="of">S$148.10 over S$3,200</p><p class="meta">Eating out did most of it</p><div class="peek" data-mascot="flapjack" data-mood="over"></div></div></div>
-    <div class="state"><div class="hcard" style="background:var(--green-house);color:var(--paper)"><p class="lbl">Goal hit</p><p class="money">S$800<span class="c">.00</span></p><p class="of">Yuu Card min spend reached</p><p class="meta">Bonus miles unlocked</p><div class="peek" data-mascot="flapjack" data-mood="goal"></div></div></div>
+    <div class="state"><div class="heroCard"><div class="k">On track</div><div class="n money">S$1,186<small>.40</small></div><div class="foot"><span>of S$3,200</span><span class="pill" style="background:var(--green);color:var(--paper)">S$91/day left</span></div><div class="flappy-slot">Flappy<br>happy</div></div></div>
+    <div class="state"><div class="heroCard" style="background:var(--scarlet)"><div class="k" style="opacity:.85">Over budget</div><div class="n money" style="color:var(--paper)">S$3,348<small>.10</small></div><div class="foot"><span>S$148.10 over</span><span class="pill" style="background:var(--ink);color:var(--paper)">Eating out did it</span></div><div class="flappy-slot" style="border-color:rgba(242,234,219,.6);color:var(--paper)">Flappy<br>worried</div></div></div>
+    <div class="state"><div class="heroCard" style="background:var(--green)"><div class="k" style="opacity:.85">Goal hit</div><div class="n money" style="color:var(--paper)">S$800<small>.00</small></div><div class="foot"><span>Yuu min spend reached</span><span class="pill" style="background:var(--sun);color:var(--ink)">Bonus unlocked</span></div><div class="flappy-slot" style="border-color:rgba(242,234,219,.6);color:var(--paper)">Flappy<br>party</div></div></div>
   </div>
 </section>
 
-<!-- ================= 6 FUTURE ================= -->
+<!-- ============ 5 FLAPPY ============ -->
+<section class="chapter" id="flappy">
+  <div class="chapter-head">
+    <p class="eyebrow">5 · Mascot</p>
+    <h2>Flapjack, aka Flappy</h2>
+    <p class="lede">The character will be developed in ChatGPT from your references. Below are the style rules pulled from them, and two prompts ready to copy. Attach both reference images when you paste prompt 1.</p>
+  </div>
+  <div class="flappy-grid">
+    <div class="flappy-refs">
+      <img src="refs/flappy-blobs.jpg" alt="Twelve flat blob characters with tiny faces on cream" loading="lazy">
+      <img src="refs/flappy-shapes.jpg" alt="Grid of 32 colourful emotion shapes" loading="lazy">
+    </div>
+    <div class="panel">
+      <h3>What makes these work</h3>
+      <ul class="rulelist">
+        <li><span>1</span><span><b>The silhouette is the character.</b> One simple, slightly irregular shape that you'd recognise in solid black.</span></li>
+        <li><span>2</span><span><b>One flat colour, no outlines.</b> No gradients, shading or texture.</span></li>
+        <li><span>3</span><span><b>A tiny face, set slightly high.</b> Dot eyes or white eyes glancing sideways, a small mouth, optional blush.</span></li>
+        <li><span>4</span><span><b>Emotion comes from eyes and squash.</b> Sideways glances, sleepy lashes, a tilt, a stretch. No arms or legs needed.</span></li>
+        <li><span>5</span><span><b>Cute but a bit weird.</b> Charming, never babyish.</span></li>
+      </ul>
+    </div>
+  </div>
+  <div class="prompts" id="prompts"></div>
+  <div class="tips">
+    <div class="panel"><h3>Keep it consistent</h3><p>Once you have a version you love, keep working in the same ChatGPT chat and say "same character, same proportions" each time. New chats drift.</p></div>
+    <div class="panel"><h3>Get clean vectors</h3><p>ChatGPT gives you images, not true vectors. To turn the final into SVG, use Illustrator's Image Trace or vectorizer.ai. Simple flat shapes trace cleanly.</p></div>
+    <div class="panel"><h3>Then bring it back</h3><p>Send me the final expressions and I'll drop them into the dashed Flappy spots in the screens above.</p></div>
+  </div>
+</section>
+
+<!-- ============ 6 FUTURE ============ -->
 <section class="chapter" id="next">
   <div class="chapter-head">
     <p class="eyebrow">6 · Where it could go</p>
-    <h2>Couples <span class="mark">plus</span> cards</h2>
-    <p class="lede">Most trackers are built for one person. Couples apps (Honeydue, Splitwise) handle sharing but not card rewards. Card apps (HeyMax's Card Maximiser) track caps and min spends but aren't a household ledger. Flapspenditure sits where the two overlap.</p>
+    <h2>Couples, plus cards</h2>
+    <p class="lede">Couples apps (Honeydue, Splitwise) handle sharing but not card rewards. Card apps (HeyMax's Card Maximiser) track caps and min spends but aren't a household ledger. Flapspenditure sits in the overlap, which happens to be the purple.</p>
   </div>
   <div class="future">
-    <div class="fcard" style="background:var(--hot-pink)"><p class="n">"Which card?" for both of you</p><p>When logging (or before paying), suggest the best card from either partner's wallet: who's short of a min spend and who's near a cap. Card apps only see one person's cards.</p></div>
-    <div class="fcard" style="background:var(--muted-blue)"><p class="n">Bill radar</p><p>Statement and due dates per card, the amount, and which account pays it. One "bills this week" strip on Home.</p></div>
-    <div class="fcard" style="background:var(--mellow)"><p class="n">Monthly rewards recap</p><p>Miles or cashback earned, plus spends that earned nothing. The connector can already list those. Flapjack presents it.</p></div>
+    <div class="fcard" style="background:var(--pink-t)"><p class="n">"Which card?" for both of you</p><p>Suggest the best card across both partners' wallets: who's short of a min spend, and who's near a cap.</p></div>
+    <div class="fcard" style="background:var(--blue-t)"><p class="n">Bill radar</p><p>Statement and due dates per card, the amount, and which account pays. One "bills this week" strip on Home.</p></div>
+    <div class="fcard" style="background:var(--sun-t)"><p class="n">Monthly rewards recap</p><p>Miles or cashback earned, plus spends that earned nothing (the connector can already list these).</p></div>
   </div>
-  <div class="honest">
+  <div class="panel honest">
     <h3>Things to weigh</h3>
     <ul>
-      <li><b>Card rules change often.</b> Caps, min spends and bonus categories shift every few months, so someone has to keep them current. That's the real cost of pushing this further.</li>
-      <li><b>Manual entry is the bottleneck.</b> HeyMax tracks linked Visa cards automatically. Here, everything is logged by hand or through Claude. That's fine for you two, but a hurdle for other couples.</li>
-      <li><b>From a quick search, not a full market scan:</b> the couples + card-optimisation combo looks uncommon. It's worth a proper look before treating it as a product idea.</li>
+      <li><b>Card rules change often,</b> so pushing optimisation further means someone keeps caps and min spends up to date.</li>
+      <li><b>Manual entry is the bottleneck</b> for other couples. HeyMax auto-tracks linked Visa cards.</li>
+      <li><b>This is from a quick search, not a full market scan.</b> Worth a proper look before treating it as a product.</li>
     </ul>
   </div>
 </section>
@@ -676,190 +601,119 @@ footer { padding-block: 0 48px; font-size: .82rem; color: var(--ink-2); }
 <section class="decide">
   <h2>Decisions for you two</h2>
   <ol>
-    <li><b>Mascot:</b> A (wings), B (ears) or C (wallet flap)? And keep the name Flapjack?</li>
-    <li><b>Type:</b> pairing A (loud) or B (gentler)?</li>
-    <li><b>Palette trims:</b> happy for Taffy and Riviera to become the Cheryl and Jeremy colours?</li>
-    <li><b>Next screens to mock:</b> a Card bonus deep-dive, the calendar view, or Recurring?</li>
-    <li><b>Jeremy:</b> anything here that's a pain to build? The owner grouping and card progress use data the app already has. Bill dates, splits and "which card?" would be new.</li>
+    <li><b>Flappy:</b> run prompt 1 in ChatGPT, pick a concept, then run prompt 2 for the full sheet.</li>
+    <li><b>Hero card colour:</b> Riso Ink (calm, shown here) or Riso Blue (louder)?</li>
+    <li><b>Next screens:</b> a Card bonus deep-dive, the calendar view, or Recurring?</li>
+    <li><b>Jeremy:</b> owner grouping and card progress use data the app already has. Bill dates, splits and "which card?" would be new.</li>
   </ol>
 </section>
 </main>
-<footer class="wrap">Moodboard references belong to their original designers and are used here only as internal inspiration. Amounts are illustrative. Sources for section 6: <a href="https://milelion.com/2025/12/17/heymax-card-maximiser-now-tracks-minimum-spend/" target="_blank" rel="noopener">MileLion on HeyMax min spend tracking</a>, <a href="https://milelion.com/2025/09/18/heymax-card-maximiser-auto-tracking-of-credit-card-points-and-bonus-caps/" target="_blank" rel="noopener">MileLion on Card Maximiser</a>, <a href="https://getfinny.app/blog/budgeting-app-for-couples" target="_blank" rel="noopener">Finny on couples budgeting apps</a>.</footer>
+<footer class="wrap">Reference images belong to their original designers and are used only as internal inspiration. Amounts are illustrative. Section 6 sources: <a href="https://milelion.com/2025/12/17/heymax-card-maximiser-now-tracks-minimum-spend/" target="_blank" rel="noopener">MileLion on HeyMax min spend tracking</a>, <a href="https://milelion.com/2025/09/18/heymax-card-maximiser-auto-tracking-of-credit-card-points-and-bonus-caps/" target="_blank" rel="noopener">MileLion on Card Maximiser</a>, <a href="https://getfinny.app/blog/budgeting-app-for-couples" target="_blank" rel="noopener">Finny on couples budgeting apps</a>.</footer>
 
 <script>
 (function () {
-  var C = {
-    hot: "#FF4283", flossy: "#FF7FAB", mellow: "#F4FF1E", ink: "#2B0F14", cream: "#FFF4E0",
-    cherry: "#6E1221", berry: "#1F6BED", green: "#116B09", muted: "#518DFF", vinyl: "#0759A2", magenta: "#FF1EC7", paper: "#FFF9EE", taffy: "#E76290"
-  };
+  /* ---------- prompts ---------- */
+  var P1 = [
+    "I'm designing a mascot for Flapspenditure, an expense-tracking app built for couples who share cards and bank accounts. The mascot's name is Flapjack, nickname Flappy.",
+    "",
+    "I've attached two reference images showing the style I love. Use them for style only. Don't copy any character from them.",
+    "",
+    "STYLE RULES",
+    "- Flat 2D vector illustration. One solid colour per character. No outlines, no gradients, no shading, no texture.",
+    "- The silhouette IS the character: one simple, slightly irregular, blob-like shape that would still be recognisable as a solid black silhouette.",
+    "- A tiny face placed slightly high on the body: small black dot eyes, or white eyes with black pupils glancing sideways; a tiny mouth; optional soft blush.",
+    "- Personality comes from the eyes and from how the shape squashes, stretches or tilts. No arms or legs, or only tiny nubs.",
+    "- Cute, cheeky and a little bit weird. Not babyish, not 3D, not anime, not glossy.",
+    "",
+    "THE IDEA",
+    "\"Flappy\" should have something that flaps: little wing-like lobes, floppy ears, or a flap or lid. Or it can play on the name Flapjack: a soft, squishy pancake. It should feel friendly about money, never stressful.",
+    "",
+    "COLOURS (riso-print inks)",
+    "Fluoro pink #FF48B0, Riso blue #2F5BD3, Sunflower #FFC21A, Riso green #00A95C. Features in ink #201B2E. Background: warm paper #F2EADB.",
+    "",
+    "TASK",
+    "Generate one image: a 3x3 grid of 9 different Flappy concepts on the #F2EADB background, each labelled with a number and a two-word name. Vary the silhouettes a lot. Include at least two pancake-based ideas, two with wing-like lobes, one with floppy ears, and four wildcards. Keep every face equally simple."
+  ].join("\n");
 
-  /* ---------- mascot A: Flapjack (wings + coin slot) ---------- */
-  function wing(angle, side) {
-    var w = '<g transform="rotate(' + angle + ' 52 118)"><path d="M56 106 C 24 86, 4 108, 14 128 C 22 144, 44 140, 58 130 Z" fill="' + C.mellow + '" stroke="' + C.ink + '" stroke-width="3" stroke-linejoin="round"/>' +
-      '<path d="M22 118 Q32 122 40 118 M26 128 Q34 131 44 127" stroke="' + C.ink + '" stroke-width="3" fill="none" stroke-linecap="round" opacity=".55"/></g>';
-    return side === "r" ? '<g transform="translate(200 0) scale(-1 1)">' + w + '</g>' : w;
-  }
-  function eyesOpen(dx, dy, r) {
-    return [[78, 104], [122, 104]].map(function (p) {
-      return '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="17" fill="#fff"/>' +
-        '<circle cx="' + (p[0] + dx) + '" cy="' + (p[1] + dy) + '" r="' + r + '" fill="' + C.ink + '"/>' +
-        '<circle cx="' + (p[0] + dx + 3) + '" cy="' + (p[1] + dy - 4) + '" r="3" fill="#fff"/>';
-    }).join("");
-  }
-  function flapjack(mood) {
-    var ang = { happy: -12, over: 34, goal: -48, nap: 22 }[mood];
-    var s = '<svg viewBox="0 0 200 200" role="img" aria-label="Flapjack, ' + mood + '">';
-    if (mood === "goal") {
-      s += '<g>' +
-        '<rect x="20" y="30" width="10" height="10" rx="2" fill="' + C.berry + '" transform="rotate(20 25 35)"/>' +
-        '<rect x="168" y="44" width="10" height="10" rx="2" fill="' + C.green + '" transform="rotate(-15 173 49)"/>' +
-        '<circle cx="40" cy="64" r="5" fill="' + C.magenta + '"/><circle cx="172" cy="20" r="5" fill="' + C.berry + '"/>' +
-        '<path d="M150 70 l4 8 8 1 -6 6 2 8 -8 -4 -8 4 2 -8 -6 -6 8 -1z" fill="' + C.mellow + '" stroke="' + C.ink + '" stroke-width="2"/>' +
-        '<path d="M34 92 l3 6 6 1 -4 4 1 6 -6 -3 -6 3 1 -6 -4 -4 6 -1z" fill="' + C.green + '"/></g>';
-    }
-    s += wing(ang, "l") + wing(ang, "r");
-    s += '<ellipse cx="78" cy="176" rx="15" ry="7" fill="' + C.cherry + '"/><ellipse cx="122" cy="176" rx="15" ry="7" fill="' + C.cherry + '"/>';
-    s += '<path d="M38 150 C38 92 64 50 100 50 C136 50 162 92 162 150 C162 168 148 175 100 175 C52 175 38 168 38 150 Z" fill="' + C.hot + '"/>';
-    s += '<ellipse cx="100" cy="152" rx="36" ry="18" fill="' + C.cream + '" opacity=".55"/>';
-    s += '<rect x="85" y="62" width="30" height="7" rx="3.5" fill="' + C.ink + '"/>';
-    if (mood === "goal") s += '<circle cx="100" cy="40" r="12" fill="' + C.mellow + '" stroke="' + C.ink + '" stroke-width="3"/><text x="100" y="45" text-anchor="middle" font-family="Bagel Fat One, Arial Black, sans-serif" font-size="13" fill="' + C.ink + '">$</text>';
-    s += '<circle cx="60" cy="128" r="9" fill="' + C.flossy + '"/><circle cx="140" cy="128" r="9" fill="' + C.flossy + '"/>';
-    if (mood === "happy") {
-      s += eyesOpen(2, 2, 9);
-      s += '<path d="M82 128 Q100 150 118 128 Z" fill="' + C.ink + '"/><rect x="103" y="128" width="8" height="7" rx="2" fill="#fff"/>';
-    } else if (mood === "over") {
-      s += eyesOpen(0, 6, 7);
-      s += '<path d="M60 86 L90 78 M110 78 L140 86" stroke="' + C.ink + '" stroke-width="5" stroke-linecap="round"/>';
-      s += '<path d="M80 138 q5 -6 10 0 t10 0 t10 0 t10 0" stroke="' + C.ink + '" stroke-width="4.5" fill="none" stroke-linecap="round"/>';
-      s += '<path d="M156 62 C150 74 150 80 156 82 C162 80 162 74 156 62 Z" fill="' + C.berry + '"/><path d="M168 90 C164 98 164 102 168 103 C172 102 172 98 168 90 Z" fill="' + C.berry + '"/>';
-    } else if (mood === "goal") {
-      s += '<path d="M64 108 Q78 90 92 108 M108 108 Q122 90 136 108" stroke="' + C.ink + '" stroke-width="6" fill="none" stroke-linecap="round"/>';
-      s += '<path d="M76 126 Q100 166 124 126 Z" fill="' + C.ink + '"/><ellipse cx="100" cy="143" rx="11" ry="6" fill="' + C.flossy + '"/>';
-    } else {
-      s += '<path d="M66 104 Q78 114 90 104 M110 104 Q122 114 134 104" stroke="' + C.ink + '" stroke-width="5" fill="none" stroke-linecap="round"/>';
-      s += '<path d="M93 134 Q100 139 107 134" stroke="' + C.ink + '" stroke-width="4" fill="none" stroke-linecap="round"/>';
-      s += '<text x="146" y="58" font-family="Gluten, Comic Sans MS, sans-serif" font-weight="800" font-size="26" fill="' + C.berry + '">z</text><text x="164" y="38" font-family="Gluten, Comic Sans MS, sans-serif" font-weight="800" font-size="18" fill="' + C.berry + '">z</text>';
-    }
-    return s + '</svg>';
-  }
+  var P2 = [
+    "I pick concept #[NUMBER]. Develop it into a full character sheet for Flappy, keeping exactly the same style rules: flat vector, one solid colour, no outlines, tiny face set slightly high, same proportions in every pose.",
+    "",
+    "On one #F2EADB background, include:",
+    "1. HERO: one large front view, neutral and happy.",
+    "2. TURNAROUND: front, three-quarter, side and back.",
+    "3. EXPRESSIONS (same body; only the face and the squash or stretch change):",
+    "   - Happy (default)",
+    "   - Over budget: worried eyes, body squashed down, one small sweat drop",
+    "   - Goal hit: celebrating, body stretched tall, a little confetti in the brand colours",
+    "   - No-spend day: asleep, with sleepy lashes",
+    "   - Thinking: eyes glancing up",
+    "   - Waving hello: the flappy part acts as the wave",
+    "   - Surprised",
+    "   - Proud",
+    "4. SMALL-SIZE TEST: the character at 24px, 48px and 96px, plus a solid black silhouette, to check it still reads.",
+    "5. COLOUR CALLOUTS: the hex codes used.",
+    "",
+    "Label each pose in a clean sans-serif. Keep the face features the same size relative to the body across every pose."
+  ].join("\n");
 
-  /* ---------- mascot B: Lop (floppy ears) ---------- */
-  function lop() {
-    return '<svg viewBox="0 0 200 200" role="img" aria-label="Floppy-eared monster concept">' +
-      '<path d="M72 70 C34 64 18 108 26 152 C30 168 48 166 50 150 C54 120 62 98 82 82 Z" fill="' + C.muted + '"/>' +
-      '<path d="M128 70 C166 64 182 108 174 152 C170 168 152 166 150 150 C146 120 138 98 118 82 Z" fill="' + C.muted + '"/>' +
-      '<ellipse cx="82" cy="182" rx="14" ry="6" fill="' + C.vinyl + '"/><ellipse cx="118" cy="182" rx="14" ry="6" fill="' + C.vinyl + '"/>' +
-      '<path d="M56 176 C46 120 58 58 100 56 C142 58 154 120 144 176 Z" fill="' + C.berry + '"/>' +
-      '<path d="M86 58 L92 40 L100 56 L108 40 L114 58 Z" fill="' + C.berry + '"/>' +
-      '<ellipse cx="100" cy="150" rx="28" ry="20" fill="' + C.mellow + '"/>' +
-      '<circle cx="82" cy="104" r="15" fill="#fff"/><circle cx="118" cy="104" r="15" fill="#fff"/>' +
-      '<circle cx="84" cy="107" r="8" fill="' + C.ink + '"/><circle cx="120" cy="107" r="8" fill="' + C.ink + '"/>' +
-      '<circle cx="87" cy="103" r="2.6" fill="#fff"/><circle cx="123" cy="103" r="2.6" fill="#fff"/>' +
-      '<path d="M88 126 Q100 138 112 126" stroke="' + C.ink + '" stroke-width="5" fill="none" stroke-linecap="round"/>' +
-      '<rect x="96" y="129" width="8" height="7" rx="2" fill="#fff"/></svg>';
-  }
+  var P3 = [
+    "Same character, same proportions. Give me the [EXPRESSION] version on its own, centred, on a transparent background, 2048x2048, flat vector style with no outlines.",
+    "",
+    "Then: redraw Flappy as an app icon: centred in a rounded square with a solid #FF48B0 background, filling about 70% of the square."
+  ].join("\n");
 
-  /* ---------- mascot C: Clasp (wallet flap) ---------- */
-  function clasp() {
-    return '<svg viewBox="0 0 200 200" role="img" aria-label="Wallet monster concept">' +
-      '<rect x="62" y="166" width="22" height="14" rx="6" fill="' + C.cherry + '"/><rect x="116" y="166" width="22" height="14" rx="6" fill="' + C.cherry + '"/>' +
-      '<path d="M30 112 Q14 100 18 84" stroke="' + C.green + '" stroke-width="10" fill="none" stroke-linecap="round"/>' +
-      '<path d="M170 112 Q186 100 182 84" stroke="' + C.green + '" stroke-width="10" fill="none" stroke-linecap="round"/>' +
-      '<rect x="34" y="78" width="132" height="98" rx="28" fill="' + C.green + '"/>' +
-      '<path d="M50 152 Q100 168 150 152" stroke="' + C.paper + '" stroke-width="3" fill="none" stroke-dasharray="6 6" opacity=".6"/>' +
-      '<path d="M88 136 Q100 148 112 136" stroke="' + C.ink + '" stroke-width="5" fill="none" stroke-linecap="round"/>' +
-      '<path d="M34 104 C34 58 166 58 166 104 L166 108 Q100 136 34 108 Z" fill="' + C.flossy + '" transform="rotate(-6 100 100)"/>' +
-      '<circle cx="78" cy="94" r="14" fill="#fff"/><circle cx="120" cy="90" r="14" fill="#fff"/>' +
-      '<circle cx="80" cy="97" r="7.5" fill="' + C.ink + '"/><circle cx="122" cy="93" r="7.5" fill="' + C.ink + '"/>' +
-      '<circle cx="83" cy="93" r="2.5" fill="#fff"/><circle cx="125" cy="89" r="2.5" fill="#fff"/>' +
-      '<circle cx="101" cy="120" r="9" fill="' + C.mellow + '" stroke="' + C.ink + '" stroke-width="3"/></svg>';
-  }
-
-  document.querySelectorAll("[data-mascot]").forEach(function (el) {
-    var k = el.getAttribute("data-mascot"), m = el.getAttribute("data-mood") || "happy";
-    el.innerHTML = k === "lop" ? lop() : k === "clasp" ? clasp() : flapjack(m);
-  });
-
-  /* ---------- contrast maths (WCAG 2.x) ---------- */
-  function lum(hex) {
-    var c = hex.replace("#", ""), rgb = [0, 2, 4].map(function (i) { return parseInt(c.substr(i, 2), 16) / 255; });
-    rgb = rgb.map(function (v) { return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
-    return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
-  }
-  function ratio(a, b) { var x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); }
-  function best(bg) { return ratio(bg, C.ink) >= ratio(bg, C.paper) ? C.ink : C.paper; }
-
-  var pal = [
-    ["Cream", "#F7EFDF"], ["Hot Pink", "#FF4283"], ["Magenta", "#FF1EC7"], ["Flossy", "#FF7FAB"], ["Taffy", "#E76290"],
-    ["Mellow", "#F4FF1E"], ["Green House", "#116B09"], ["Kind Berry", "#1F6BED"], ["Muted Blue", "#518DFF"],
-    ["Riviera", "#5196E8"], ["Blue Vinyl", "#0759A2"], ["Velvet Cherry", "#6E1221"], ["Deep Red", "#C60707"]
+  var prompts = [
+    ["Prompt 1 · Brainstorm 9 concepts", "Paste into ChatGPT with both reference images attached.", P1],
+    ["Prompt 2 · Character sheet", "Use in the same chat once you've picked a number.", P2],
+    ["Prompt 3 · Exports and app icon", "Repeat for each expression you need.", P3]
   ];
-  var t = '<thead><tr><th>Background</th><th>Cherry Ink text</th><th>White text</th><th>As text on cream</th></tr></thead><tbody>';
-  function verdict(r) { return r >= 4.5 ? "✓ AA" : r >= 3 ? "Big" : "✗"; }
-  pal.forEach(function (p) {
-    var ri = ratio(p[1], C.ink), rw = ratio(p[1], "#FFFFFF"), rc = ratio(p[1], "#F7EFDF");
-    t += '<tr><th>' + p[0] + ' <span style="font-weight:500;color:var(--ink-2)">' + p[1] + '</span></th>' +
-      '<td class="cell" style="background:' + p[1] + ';color:' + C.ink + '">Aa ' + verdict(ri) + ' <span class="v">' + ri.toFixed(1) + '</span></td>' +
-      '<td class="cell" style="background:' + p[1] + ';color:#fff">Aa ' + verdict(rw) + ' <span class="v">' + rw.toFixed(1) + '</span></td>' +
-      (p[0] === "Cream" ? '<td class="cell" style="background:#F7EFDF;color:var(--ink-2)">n/a</td>' :
-        '<td class="cell" style="background:#F7EFDF;color:' + p[1] + '">Aa ' + verdict(rc) + ' <span class="v" style="color:var(--ink)">' + rc.toFixed(1) + '</span></td>') + '</tr>';
-  });
-  document.getElementById("contrast").innerHTML = t + "</tbody>";
-
-  /* ---------- categories ---------- */
-  var cats = [
-    ["Eating out", C.hot], ["Groceries", C.green], ["Private Transport", C.berry], ["Household", C.mellow],
-    ["Health", C.muted], ["Self-Care", C.flossy], ["Giving", C.cherry], ["Bills", C.vinyl],
-    ["Shopping", C.magenta], ["Travel", "#5196E8", true], ["Other income", "#F4FF1E", true], ["Fees", "#FF7FAB", true]
-  ];
-  document.getElementById("cats").innerHTML = cats.map(function (c) {
-    var fg = best(c[1]);
-    return '<div class="cat' + (c[2] ? " striped" : "") + '" style="background-color:' + c[1] + ';color:' + fg + '">' + c[0] +
-      '<small>' + (c[2] ? "stripe" : c[1]) + '</small></div>';
+  var host = document.getElementById("prompts");
+  host.innerHTML = prompts.map(function (p, i) {
+    return '<div class="prompt"><div class="prompt-head"><div><h3>' + p[0] + '</h3><p style="font-size:.86rem;opacity:.75">' + p[1] +
+      '</p></div><button class="copy" type="button" data-i="' + i + '">Copy prompt</button></div><pre id="prompt-' + i + '"></pre></div>';
   }).join("");
+  prompts.forEach(function (p, i) { document.getElementById("prompt-" + i).textContent = p[2]; });
+  host.addEventListener("click", function (e) {
+    var b = e.target.closest(".copy"); if (!b) return;
+    var pre = document.getElementById("prompt-" + b.getAttribute("data-i"));
+    function done() { b.textContent = "Copied"; b.setAttribute("data-done", ""); setTimeout(function () { b.textContent = "Copy prompt"; b.removeAttribute("data-done"); }, 1800); }
+    function fallback() { var r = document.createRange(); r.selectNodeContents(pre); var s = getSelection(); s.removeAllRanges(); s.addRange(r); b.textContent = "Selected: press Copy"; }
+    try { navigator.clipboard.writeText(pre.textContent).then(done, fallback); } catch (err) { fallback(); }
+  });
 
-  /* ---------- home tiles ---------- */
-  var icons = {
+  /* ---------- home categories ---------- */
+  var ic = {
     food: '<path d="M7 3v8M5 3v4a2 2 0 0 0 4 0V3M7 11v10M17 3c-2 0-3 3-3 6s1 4 3 4v8"/>',
     cart: '<circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l3 12h11l2-8H6"/>',
-    car: '<path d="M5 17h14M5 17v2M19 17v2M3 13l2-6h14l2 6v4H3z"/><circle cx="7.5" cy="14" r="1"/><circle cx="16.5" cy="14" r="1"/>',
-    home: '<path d="M3 11l9-7 9 7v9H3z"/>',
-    heart: '<path d="M12 20s-8-5-8-11a4 4 0 0 1 8-1 4 4 0 0 1 8 1c0 6-8 11-8 11z"/>',
-    gift: '<rect x="3" y="9" width="18" height="12" rx="2"/><path d="M12 9v12M3 13h18M12 9c-2-4-6-4-6-1s6 1 6 1c0 0 6 2 6-1s-4-3-6 1"/>'
+    gift: '<rect x="3" y="9" width="18" height="12" rx="2"/><path d="M12 9v12M3 13h18M12 9c-2-4-6-4-6-1s6 1 6 1c0 0 6 2 6-1s-4-3-6 1"/>',
+    home: '<path d="M3 11l9-7 9 7v9H3z"/>'
   };
-  var tiles = [
-    ["Eating out", C.hot, "food", "312", "80", 78], ["Groceries", C.green, "cart", "248", "15", 50],
-    ["Household", C.mellow, "home", "189", "00", 63], ["Giving", C.cherry, "gift", "200", "00", 100],
-    ["Health", C.muted, "heart", "140", "05", 47], ["Private Transport", C.berry, "car", "96", "40", 32]
+  var cats = [
+    ["Eating out", "food", "--pink", "--pink-t", "312.80", "S$400", 78],
+    ["Groceries", "cart", "--green", "--green-t", "248.15", "S$500", 50],
+    ["Giving", "gift", "--over", "--over-t", "200.00", "S$200", 100],
+    ["Household", "home", "--sun", "--sun-t", "189.00", "S$300", 63]
   ];
-  document.getElementById("home-tiles").innerHTML = tiles.map(function (x) {
-    var fg = best(x[1]);
-    return '<div class="tile" style="background:' + x[1] + ';color:' + fg + '"><span class="tn">' + x[0] +
-      '<svg viewBox="0 0 24 24">' + icons[x[2]] + '</svg></span><span class="money">S$' + x[3] + '<span class="c">.' + x[4] + '</span></span>' +
-      '<span class="mini"><i style="width:' + x[5] + '%"></i></span></div>';
+  document.getElementById("home-cats").innerHTML = cats.map(function (c) {
+    var iconColour = c[2] === "--sun" ? "var(--ink)" : "var(" + c[2] + ")";
+    return '<div class="row"><span class="ic" style="background:var(' + c[3] + ');color:' + iconColour + '"><svg viewBox="0 0 24 24">' + ic[c[1]] + '</svg></span>' +
+      '<span class="nm"><b>' + c[0] + '</b><span class="mini"><i style="width:' + c[6] + '%;background:var(' + c[2] + ')"></i></span></span>' +
+      '<span class="amt money">S$' + c[4] + '<span>of ' + c[5] + '</span></span></div>';
   }).join("");
 
-  /* ---------- tabular-figure check, measured in the browser ---------- */
-  function tnum(family, id) {
-    var el = document.getElementById(id);
-    function measure() {
-      var c = document.createElement("canvas").getContext("2d");
-      var probe = document.createElement("span");
-      probe.style.cssText = "position:absolute;visibility:hidden;font-size:40px;font-variant-numeric:tabular-nums;font-family:'" + family + "'";
-      document.body.appendChild(probe);
-      probe.textContent = "1111"; var a = probe.getBoundingClientRect().width;
-      probe.textContent = "0000"; var b = probe.getBoundingClientRect().width;
-      probe.remove();
-      el.textContent = Math.abs(a - b) < 0.5 ? "has tabular figures ✓" : "no tabular figures, so columns of amounts won't line up";
-    }
-    if (document.fonts && document.fonts.load) {
-      document.fonts.load("40px '" + family + "'").then(function (faces) {
-        if (!faces || !faces.length) { el.textContent = "couldn't load the font here to check tabular figures"; return; }
-        measure();
-      }, function () { el.textContent = "couldn't load the font here to check tabular figures"; });
-    } else { measure(); }
-  }
-  tnum("DM Sans", "tnum-a");
-  tnum("Outfit", "tnum-b");
+  /* ---------- contrast ---------- */
+  function lum(h) { var c = h.replace("#", ""); return [0, 2, 4].map(function (i) { var v = parseInt(c.substr(i, 2), 16) / 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }).reduce(function (a, v, i) { return a + v * [0.2126, 0.7152, 0.0722][i]; }, 0); }
+  function ratio(a, b) { var x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); }
+  function verdict(r) { return r >= 4.5 ? "✓ AA" : r >= 3 ? "Large only" : "✗ Don't"; }
+  var rows = [["Fluoro Pink", "#FF48B0"], ["Riso Blue", "#2F5BD3"], ["Sunflower", "#FFC21A"], ["Riso Green", "#00A95C"], ["Shared", "#6B3FC9"], ["Over budget", "#FF3712"], ["Riso Ink", "#201B2E"]];
+  var t = "<thead><tr><th>Fill</th><th>Ink text</th><th>Paper text</th><th>As text on paper</th></tr></thead><tbody>";
+  rows.forEach(function (r) {
+    var a = ratio(r[1], "#201B2E"), b = ratio(r[1], "#F2EADB");
+    t += "<tr><th>" + r[0] + ' <small style="font-family:var(--f-mono);font-weight:400;color:var(--ink-2)">' + r[1] + "</small></th>" +
+      (r[0] === "Riso Ink" ? '<td style="background:var(--card);color:var(--ink-2)">n/a</td>' : '<td style="background:' + r[1] + ';color:#201B2E">Aa ' + verdict(a) + " <small>" + a.toFixed(1) + "</small></td>") +
+      '<td style="background:' + r[1] + ';color:#F2EADB">Aa ' + verdict(b) + " <small>" + b.toFixed(1) + "</small></td>" +
+      '<td style="background:#F2EADB;color:' + r[1] + '">Aa ' + verdict(b) + ' <small style="color:var(--ink)">' + b.toFixed(1) + "</small></td></tr>";
+  });
+  document.getElementById("contrast").innerHTML = t + "</tbody>";
 })();
 </script>
