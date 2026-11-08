@@ -1,0 +1,344 @@
+<title>Flapspenditure Directions</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bagel+Fat+One&family=DM+Mono:wght@400;500&family=Instrument+Sans:wght@400..700&family=Unbounded:wght@500..900&family=Manrope:wght@500..800&family=Dela+Gothic+One&family=Figtree:wght@500..800&display=swap">
+<style>
+/* Layout: three directions side by side, each a column of palette, phone and verdict. The page itself stays quiet so the phones do the talking. */
+:root {
+  --page: #EFE9DF;
+  --text: #1E1A22;
+  --text-2: #5E5862;
+  --rule: #DCD3C5;
+  --f-ui: "Instrument Sans", "Helvetica Neue", Arial, sans-serif;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+body { background: var(--page); color: var(--text); font-family: var(--f-ui); font-size: 15px; line-height: 1.5; }
+.wrap { max-width: 1240px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 48px 64px; }
+header.top { display: flex; flex-direction: column; gap: 10px; max-width: 70ch; margin-bottom: 40px; }
+header.top h1 { font-family: "Bagel Fat One", var(--f-ui); font-weight: 400; font-size: clamp(2.2rem, 6vw, 3.4rem); line-height: 1; margin: 0; text-wrap: balance; }
+header.top p { margin: 0; color: var(--text-2); font-size: 1.02rem; }
+.eyebrow { font-family: "DM Mono", monospace; font-size: .75rem; letter-spacing: .08em; text-transform: uppercase; color: var(--text-2); }
+.changed { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.changed span { font-size: .8rem; font-weight: 600; background: #fff8; padding: 5px 11px; border-radius: 999px; }
+
+.dirs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; align-items: start; }
+.dir { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.dir-head { display: flex; flex-direction: column; gap: 6px; }
+.dir-head .letter { font-family: "DM Mono", monospace; font-size: .78rem; color: var(--text-2); }
+.dir-head h2 { margin: 0; font-size: 1.7rem; line-height: 1.05; text-wrap: balance; }
+.dir-head p { margin: 0; color: var(--text-2); font-size: .93rem; }
+.rec { align-self: flex-start; font-family: "DM Mono", monospace; font-size: .7rem; text-transform: uppercase; letter-spacing: .08em; background: var(--text); color: var(--page); padding: 3px 9px; border-radius: 999px; }
+.strip { display: flex; height: 64px; border-radius: 16px; overflow: hidden; }
+.strip i { flex: 1; position: relative; }
+.strip i span { position: absolute; left: 6px; bottom: 5px; font-family: "DM Mono", monospace; font-size: .58rem; font-style: normal; line-height: 1.2; }
+.verdict { display: grid; gap: 8px; font-size: .88rem; }
+.verdict div { display: grid; grid-template-columns: 64px 1fr; gap: 8px; }
+.verdict b { font-family: "DM Mono", monospace; font-weight: 500; font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; padding-top: 3px; color: var(--text-2); }
+
+/* ---------- phone shell (shared) ---------- */
+.phone { width: min(340px, 100%); align-self: center; border-radius: 44px; padding: 9px; background: #16131A; box-shadow: 0 30px 60px -30px rgba(30,26,34,.45); }
+.screen { border-radius: 36px; overflow: hidden; position: relative; height: 700px; }
+.sb { display: flex; justify-content: space-between; align-items: center; padding: 14px 22px 6px; font-size: .74rem; font-weight: 700; position: relative; z-index: 2; }
+.sb .isl { width: 84px; height: 24px; border-radius: 20px; background: #16131A; }
+.body { padding: 4px 18px 0; display: flex; flex-direction: column; position: relative; z-index: 1; }
+.tab { position: absolute; left: 14px; right: 14px; bottom: 14px; height: 60px; border-radius: 999px; display: flex; align-items: center; justify-content: space-around; z-index: 3; }
+.tab svg { width: 22px; height: 22px; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.tab .fab { width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center; }
+.tab .fab svg { stroke-width: 2.6; }
+
+/* =========================================================
+   A · RISO CLUB  — three print inks; overlaps make every other colour
+   ========================================================= */
+.dA { --paper: #F2EADB; --ink: #201B2E; --pink: #FF48B0; --blue: #2F5BD3; --yellow: #FFC21A; --muted: #6B6474;
+  background: var(--paper); color: var(--ink); font-family: "Instrument Sans", sans-serif; }
+.dA .grain { position: absolute; inset: 0; z-index: 0; opacity: .5; pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.13  0 0 0 0 0.1  0 0 0 0 0.18  0 0 0 .09 0'/></filter><rect width='160' height='160' filter='url(%23n)'/></svg>"); }
+.dA .hello { display: flex; justify-content: space-between; align-items: center; }
+.dA .mono { font-family: "DM Mono", monospace; }
+.dA .hello .mono { font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.dA .duo { position: relative; width: 46px; height: 28px; }
+.dA .duo i { position: absolute; top: 0; width: 28px; height: 28px; border-radius: 50%; mix-blend-mode: multiply; font-style: normal; font-family: "Bagel Fat One"; font-size: .8rem; display: grid; place-items: center; }
+.dA .duo i:first-child { left: 0; background: var(--pink); }
+.dA .duo i:last-child { right: 0; background: var(--blue); color: #fff; }
+.dA h3 { font-family: "Bagel Fat One", sans-serif; font-weight: 400; font-size: 2.1rem; line-height: .95; margin: 14px 0 0; letter-spacing: -.01em; }
+.dA .hero { margin-top: 6px; font-family: "DM Mono", monospace; font-weight: 500; font-size: 2.7rem; letter-spacing: -.04em; line-height: 1; font-variant-numeric: tabular-nums; }
+.dA .hero small { font-size: .5em; color: var(--muted); }
+.dA .budget { margin-top: 12px; position: relative; height: 16px; }
+.dA .budget .track { position: absolute; inset: 0; border-radius: 999px; background: rgba(32,27,46,.08); }
+.dA .budget .p, .dA .budget .b { position: absolute; top: 0; height: 16px; width: 37%; border-radius: 999px; mix-blend-mode: multiply; }
+.dA .budget .p { background: var(--pink); left: 0; }
+.dA .budget .b { background: var(--blue); left: 3px; top: 3px; opacity: .85; }
+.dA .meta { margin-top: 10px; font-size: .78rem; color: var(--muted); display: flex; justify-content: space-between; }
+.dA .viz { margin: 8px auto 0; width: 100%; max-width: 280px; }
+.dA .viz circle { mix-blend-mode: multiply; }
+.dA .receipt { display: flex; flex-direction: column; gap: 6px; font-family: "DM Mono", monospace; font-size: .76rem; }
+.dA .receipt div { display: flex; align-items: baseline; gap: 6px; }
+.dA .receipt i { width: 10px; height: 10px; border-radius: 50%; flex: none; mix-blend-mode: multiply; }
+.dA .receipt span.l { flex: 1; border-bottom: 1.5px dotted rgba(32,27,46,.3); transform: translateY(-3px); }
+.dA .ticket { margin-top: 14px; background: var(--ink); color: var(--paper); border-radius: 18px; padding: 12px 14px; position: relative;
+  -webkit-mask: radial-gradient(circle 8px at 0 50%, #0000 98%, #000) left / 51% 100% no-repeat, radial-gradient(circle 8px at 100% 50%, #0000 98%, #000) right / 51% 100% no-repeat;
+          mask: radial-gradient(circle 8px at 0 50%, #0000 98%, #000) left / 51% 100% no-repeat, radial-gradient(circle 8px at 100% 50%, #0000 98%, #000) right / 51% 100% no-repeat; }
+.dA .ticket .t1 { display: flex; justify-content: space-between; font-size: .78rem; font-weight: 700; }
+.dA .ticket .t2 { font-family: "DM Mono", monospace; font-size: .72rem; opacity: .75; margin-top: 2px; }
+.dA .ticket .bar { height: 6px; border-radius: 9px; background: rgba(242,234,219,.2); margin-top: 8px; }
+.dA .ticket .bar i { display: block; height: 100%; width: 67%; border-radius: 9px; background: var(--yellow); }
+.dA .tab { background: var(--ink); }
+.dA .tab svg { stroke: var(--paper); opacity: .55; }
+.dA .tab .on svg { opacity: 1; }
+.dA .tab .fab { background: var(--pink); }
+.dA .tab .fab svg { stroke: var(--ink); opacity: 1; }
+
+/* =========================================================
+   B · CHERRY COLA — moody oxblood blocks, candy pink and cobalt
+   ========================================================= */
+.dB { --paper: #F4ECE0; --ox: #4A0D1E; --ox-2: #6B1830; --pink: #FF8DB8; --cobalt: #2B44FF; --butter: #FFD36B; --ink: #2A0E17; --muted: #7A6268;
+  background: var(--paper); color: var(--ink); font-family: "Manrope", sans-serif; }
+.dB .hello { display: flex; justify-content: space-between; align-items: center; }
+.dB .hello b { font-family: "Unbounded", sans-serif; font-weight: 800; font-size: 1.25rem; letter-spacing: -.02em; }
+.dB .av { display: flex; }
+.dB .av i { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-style: normal; font-family: "Unbounded"; font-weight: 800; font-size: .7rem; border: 3px solid var(--paper); }
+.dB .av i + i { margin-left: -9px; }
+.dB .heroCard { margin-top: 14px; background: var(--ox); color: var(--paper); border-radius: 30px; padding: 18px 18px 16px; position: relative; overflow: hidden; }
+.dB .heroCard::after { content: ""; position: absolute; width: 170px; height: 170px; right: -60px; top: -70px; border-radius: 50%; background: var(--ox-2); }
+.dB .heroCard .k { font-size: .72rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; opacity: .7; position: relative; z-index: 1; }
+.dB .heroCard .n { font-family: "Unbounded", sans-serif; font-weight: 800; font-size: 2.35rem; letter-spacing: -.04em; line-height: 1.05; color: var(--pink); position: relative; z-index: 1; margin-top: 6px; font-variant-numeric: tabular-nums; }
+.dB .heroCard .n small { font-size: .5em; opacity: .7; }
+.dB .seg { display: flex; gap: 3px; margin-top: 14px; height: 10px; position: relative; z-index: 1; }
+.dB .seg i { border-radius: 3px; }
+.dB .heroCard .foot { display: flex; justify-content: space-between; margin-top: 10px; font-size: .76rem; font-weight: 700; position: relative; z-index: 1; }
+.dB .pill { background: var(--butter); color: var(--ink); padding: 2px 9px; border-radius: 999px; font-size: .7rem; font-weight: 800; }
+.dB .h4 { display: flex; justify-content: space-between; align-items: baseline; margin: 18px 0 8px; font-family: "Unbounded"; font-weight: 700; font-size: .85rem; }
+.dB .h4 span { font-family: "Manrope"; font-size: .74rem; color: var(--muted); font-weight: 700; }
+.dB .cats { display: flex; flex-direction: column; gap: 2px; background: #fff7; border-radius: 22px; padding: 6px 12px; }
+.dB .cats div { display: flex; align-items: center; gap: 10px; padding: 7px 0; font-size: .84rem; font-weight: 700; }
+.dB .cats div + div { border-top: 1px solid rgba(74,13,30,.08); }
+.dB .cats i { width: 26px; height: 26px; border-radius: 9px; display: grid; place-items: center; flex: none; }
+.dB .cats i svg { width: 14px; height: 14px; fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.dB .cats .amt { margin-left: auto; font-variant-numeric: tabular-nums; }
+.dB .stack { position: relative; height: 112px; margin-top: 4px; }
+.dB .cc { position: absolute; left: 0; right: 0; height: 84px; border-radius: 20px; padding: 12px 14px; font-size: .78rem; font-weight: 800; display: flex; justify-content: space-between; }
+.dB .cc.c1 { top: 0; background: var(--butter); transform: scale(.92); transform-origin: top; }
+.dB .cc.c2 { top: 14px; background: var(--pink); transform: scale(.96); transform-origin: top; }
+.dB .cc.c3 { top: 28px; background: var(--cobalt); color: #fff; flex-direction: column; justify-content: space-between; }
+.dB .cc.c3 .r { display: flex; justify-content: space-between; }
+.dB .cc .mini { height: 5px; border-radius: 9px; background: rgba(255,255,255,.25); }
+.dB .cc .mini i { display: block; width: 67%; height: 100%; border-radius: 9px; background: var(--butter); }
+.dB .tab { background: var(--ox); }
+.dB .tab svg { stroke: var(--paper); opacity: .55; }
+.dB .tab .on svg { opacity: 1; }
+.dB .tab .fab { background: var(--pink); }
+.dB .tab .fab svg { stroke: var(--ox); opacity: 1; }
+
+/* =========================================================
+   C · ELECTRIC PICNIC — poster bento, cobalt and chartreuse, sticker shapes
+   ========================================================= */
+.dC { --paper: #F1ECE3; --ink: #121212; --cobalt: #2236F5; --lime: #D7FF3C; --pink: #FF4283; --muted: #6A665F;
+  background: var(--paper); color: var(--ink); font-family: "Figtree", sans-serif; }
+.dC .hello { display: flex; justify-content: space-between; align-items: center; }
+.dC .hello b { font-family: "Dela Gothic One", sans-serif; font-weight: 400; font-size: 1.35rem; }
+.dC .hello .mo { font-size: .74rem; font-weight: 800; padding: 5px 10px; border-radius: 999px; background: var(--ink); color: var(--paper); }
+.dC .bento { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 14px; }
+.dC .bx { border-radius: 24px; padding: 14px; position: relative; overflow: hidden; }
+.dC .big { grid-column: 1 / -1; background: var(--cobalt); color: #fff; min-height: 150px; }
+.dC .big .k { font-size: .7rem; font-weight: 800; text-transform: uppercase; letter-spacing: .1em; opacity: .75; }
+.dC .big .n { font-family: "Dela Gothic One", sans-serif; font-size: 2.35rem; line-height: 1.05; margin-top: 8px; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.dC .big .n small { font-size: .5em; opacity: .7; }
+.dC .big .sub { font-size: .78rem; font-weight: 700; margin-top: 4px; opacity: .85; }
+.dC .burst { position: absolute; right: -14px; bottom: -18px; width: 104px; height: 104px; }
+.dC .burst text { font-family: "Dela Gothic One"; }
+.dC .lime { background: var(--lime); }
+.dC .pinkb { background: var(--pink); }
+.dC .inkb { background: var(--ink); color: var(--paper); }
+.dC .k2 { font-size: .68rem; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; opacity: .75; }
+.dC .v2 { font-family: "Dela Gothic One"; font-size: 1.35rem; line-height: 1.1; margin-top: 18px; font-variant-numeric: tabular-nums; }
+.dC .bars { display: flex; align-items: flex-end; gap: 5px; height: 46px; margin-top: 10px; }
+.dC .bars i { flex: 1; border-radius: 6px 6px 3px 3px; background: var(--lime); }
+.dC .card-t { display: flex; justify-content: space-between; align-items: center; font-size: .8rem; font-weight: 800; }
+.dC .stk { display: inline-grid; place-items: center; width: 26px; height: 26px; font-family: "Dela Gothic One"; font-size: .72rem; clip-path: polygon(50% 0, 61% 18%, 82% 10%, 80% 32%, 100% 42%, 84% 57%, 94% 78%, 72% 80%, 64% 100%, 50% 86%, 36% 100%, 28% 80%, 6% 78%, 16% 57%, 0 42%, 20% 32%, 18% 10%, 39% 18%); }
+.dC .prog { height: 8px; border-radius: 9px; background: rgba(241,236,227,.18); margin-top: 10px; }
+.dC .prog i { display: block; height: 100%; border-radius: 9px; background: var(--lime); }
+.dC .tab { background: var(--ink); }
+.dC .tab svg { stroke: var(--paper); opacity: .55; }
+.dC .tab .on svg { opacity: 1; }
+.dC .tab .fab { background: var(--lime); }
+.dC .tab .fab svg { stroke: var(--ink); opacity: 1; }
+
+.next { margin-top: 48px; background: #fff8; border-radius: 24px; padding: 22px 24px; display: flex; flex-direction: column; gap: 10px; max-width: 80ch; }
+.next h2 { margin: 0; font-size: 1.3rem; }
+.next ul { margin: 0; padding-left: 20px; display: grid; gap: 6px; }
+@media (max-width: 1080px) { .dirs { grid-template-columns: 1fr; max-width: 520px; margin: 0 auto; } }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <p class="eyebrow">Flapspenditure · round 2 · colour and UI directions</p>
+    <h1>Three directions with more bite</h1>
+    <p>Each one is its own system: palette, type and layout together, shown on the same Home screen with the same numbers, so you can compare like for like. Pick one (or mix two) and I'll rebuild the full page and all three screens in it.</p>
+    <div class="changed"><span>No outlines</span><span>Amounts in a plain, readable face</span><span>Chunky type only for titles</span><span>Mascot on hold until your builds arrive</span></div>
+  </header>
+
+  <div class="dirs">
+    <!-- ================= A ================= -->
+    <section class="dir">
+      <div class="dir-head">
+        <span class="letter">Direction A <span class="rec">My pick</span></span>
+        <h2>Riso Club</h2>
+        <p>Three print inks on cream. Wherever two overlap, they make a new colour, like a risograph print. So nothing clashes, because every colour comes from the same three inks. Cheryl is pink, Jeremy is blue, and <b>shared is the purple where they overlap</b>.</p>
+      </div>
+      <div class="strip">
+        <i style="background:#F2EADB"><span>Paper<br>F2EADB</span></i>
+        <i style="background:#FF48B0"><span>Fluoro pink<br>FF48B0</span></i>
+        <i style="background:#2F5BD3;color:#fff"><span>Riso blue<br>2F5BD3</span></i>
+        <i style="background:#FFC21A"><span>Sunflower<br>FFC21A</span></i>
+        <i style="background:#201B2E;color:#F2EADB"><span>Ink<br>201B2E</span></i>
+      </div>
+      <div class="phone"><div class="screen dA"><div class="grain"></div>
+        <div class="sb"><span>9:41</span><span class="isl"></span><span>5G</span></div>
+        <div class="body">
+          <div class="hello"><span class="mono">Sun 08 Nov</span><span class="duo"><i>C</i><i>J</i></span></div>
+          <h3>Spent so far</h3>
+          <div class="hero">S$1,186<small>.40</small></div>
+          <div class="budget"><span class="track"></span><span class="p"></span><span class="b"></span></div>
+          <div class="meta"><span>of S$3,200</span><span>S$91/day left</span></div>
+          <svg class="viz" viewBox="0 0 280 150" role="img" aria-label="Spending by category as overlapping circles">
+            <circle cx="92" cy="78" r="58" fill="#FF48B0"/>
+            <circle cx="160" cy="68" r="48" fill="#FFC21A"/>
+            <circle cx="200" cy="104" r="34" fill="#2F5BD3"/>
+            <circle cx="130" cy="118" r="30" fill="#2F5BD3"/>
+            <circle cx="232" cy="52" r="24" fill="#FF48B0"/>
+            <circle cx="46" cy="124" r="20" fill="#FFC21A"/>
+          </svg>
+          <div class="receipt">
+            <div><i style="background:#FF48B0"></i>Eating out<span class="l"></span>312.80</div>
+            <div><i style="background:#FFC21A"></i>Groceries<span class="l"></span>248.15</div>
+            <div><i style="background:#2F5BD3"></i>Giving<span class="l"></span>200.00</div>
+            <div><i style="background:#2F5BD3"></i>Household<span class="l"></span>189.00</div>
+          </div>
+          <div class="ticket"><div class="t1"><span>Yuu Card · Cheryl</span><span>67%</span></div><div class="t2">S$540.20 / 800 min spend · 10 days</div><div class="bar"><i></i></div></div>
+        </div>
+        <div class="tab" aria-hidden="true">
+          <span class="on"><svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9H3z"/></svg></span>
+          <span><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></span>
+          <span class="fab"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>
+          <span><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18"/></svg></span>
+          <span><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></svg></span>
+        </div>
+      </div></div>
+      <div class="verdict">
+        <div><b>Edge</b><span>The overprint look, a subtle paper grain and receipt-style mono numbers. No other money app looks like this.</span></div>
+        <div><b>Unique</b><span>The palette has a story: two people's inks overlapping into a shared one. It works for the brand as well as the UI.</span></div>
+        <div><b>Risk</b><span>The bubble chart reads more loosely than bars. Keep it for the overview and put exact numbers in the list below it.</span></div>
+      </div>
+    </section>
+
+    <!-- ================= B ================= -->
+    <section class="dir">
+      <div class="dir-head">
+        <span class="letter">Direction B</span>
+        <h2>Cherry Cola</h2>
+        <p>Moody oxblood blocks with candy pink and an electric cobalt. Grown-up with a wink: closer to a cocktail bar than a sweet shop. The deep red finally gives the pink something to push against.</p>
+      </div>
+      <div class="strip">
+        <i style="background:#F4ECE0"><span>Cream<br>F4ECE0</span></i>
+        <i style="background:#4A0D1E;color:#F4ECE0"><span>Oxblood<br>4A0D1E</span></i>
+        <i style="background:#FF8DB8"><span>Candy<br>FF8DB8</span></i>
+        <i style="background:#2B44FF;color:#fff"><span>Cobalt<br>2B44FF</span></i>
+        <i style="background:#FFD36B"><span>Butter<br>FFD36B</span></i>
+      </div>
+      <div class="phone"><div class="screen dB">
+        <div class="sb"><span>9:41</span><span class="isl"></span><span>5G</span></div>
+        <div class="body">
+          <div class="hello"><b>Hey, you two</b><span class="av"><i style="background:#FF8DB8">C</i><i style="background:#2B44FF;color:#fff">J</i></span></div>
+          <div class="heroCard">
+            <div class="k">Spent in November</div>
+            <div class="n">S$1,186<small>.40</small></div>
+            <div class="seg"><i style="flex:31;background:#FF8DB8"></i><i style="flex:25;background:#FFD36B"></i><i style="flex:20;background:#2B44FF"></i><i style="flex:19;background:#F4ECE0"></i><i style="flex:205;background:rgba(244,236,224,.18)"></i></div>
+            <div class="foot"><span>of S$3,200</span><span class="pill">S$91/day left</span></div>
+          </div>
+          <div class="h4">Where it went <span>See all</span></div>
+          <div class="cats">
+            <div><i style="background:#FF8DB8"><svg viewBox="0 0 24 24" stroke="#4A0D1E"><path d="M7 3v8M5 3v4a2 2 0 0 0 4 0V3M7 11v10M17 3c-2 0-3 3-3 6s1 4 3 4v8"/></svg></i>Eating out<span class="amt">S$312.80</span></div>
+            <div><i style="background:#FFD36B"><svg viewBox="0 0 24 24" stroke="#4A0D1E"><circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l3 12h11l2-8H6"/></svg></i>Groceries<span class="amt">S$248.15</span></div>
+            <div><i style="background:#2B44FF"><svg viewBox="0 0 24 24" stroke="#fff"><rect x="3" y="9" width="18" height="12" rx="2"/><path d="M12 9v12M3 13h18"/></svg></i>Giving<span class="amt">S$200.00</span></div>
+          </div>
+          <div class="h4">Card bonus <span>3 cards</span></div>
+          <div class="stack">
+            <div class="cc c1"><span>DBS WW 0636 · J</span></div>
+            <div class="cc c2"><span>Citi Rewards · J</span></div>
+            <div class="cc c3"><div class="r"><span>Yuu Card · C</span><span>S$259.80 to go</span></div><div class="mini"><i></i></div></div>
+          </div>
+        </div>
+        <div class="tab" aria-hidden="true">
+          <span class="on"><svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9H3z"/></svg></span>
+          <span><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></span>
+          <span class="fab"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>
+          <span><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18"/></svg></span>
+          <span><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></svg></span>
+        </div>
+      </div></div>
+      <div class="verdict">
+        <div><b>Edge</b><span>A dark hero block on cream gives instant contrast. Unbounded is a wide, confident display face, and the cards stack like a real wallet.</span></div>
+        <div><b>Unique</b><span>Oxblood is rare in fintech. It's the closest to your premium day job without feeling corporate.</span></div>
+        <div><b>Risk</b><span>It's the least "funky" of the three. Leaning too hard on oxblood would make it heavy, so it stays to one block per screen.</span></div>
+      </div>
+    </section>
+
+    <!-- ================= C ================= -->
+    <section class="dir">
+      <div class="dir-head">
+        <span class="letter">Direction C</span>
+        <h2>Electric Picnic</h2>
+        <p>A poster-style bento grid: cobalt, chartreuse and hot pink on cream, black type, and starburst stickers for badges. The loudest of the three, and the most "gig poster".</p>
+      </div>
+      <div class="strip">
+        <i style="background:#F1ECE3"><span>Cream<br>F1ECE3</span></i>
+        <i style="background:#2236F5;color:#fff"><span>Cobalt<br>2236F5</span></i>
+        <i style="background:#D7FF3C"><span>Chartreuse<br>D7FF3C</span></i>
+        <i style="background:#FF4283"><span>Hot pink<br>FF4283</span></i>
+        <i style="background:#121212;color:#F1ECE3"><span>Black<br>121212</span></i>
+      </div>
+      <div class="phone"><div class="screen dC">
+        <div class="sb"><span>9:41</span><span class="isl"></span><span>5G</span></div>
+        <div class="body">
+          <div class="hello"><b>November</b><span class="mo">C + J</span></div>
+          <div class="bento">
+            <div class="bx big">
+              <div class="k">Spent so far</div>
+              <div class="n">S$1,186<small>.40</small></div>
+              <div class="sub">of S$3,200 budget</div>
+              <svg class="burst" viewBox="0 0 100 100" aria-hidden="true"><polygon points="50,0 60,20 82,10 79,33 100,42 84,57 95,78 72,80 64,100 50,86 36,100 28,80 5,78 16,57 0,42 21,33 18,10 40,20" fill="#D7FF3C"/><text x="50" y="58" text-anchor="middle" font-size="20" fill="#121212">37%</text></svg>
+            </div>
+            <div class="bx lime"><div class="k2">Left per day</div><div class="v2">S$91</div></div>
+            <div class="bx pinkb"><div class="k2">Top category</div><div class="v2" style="font-size:1.05rem">Eating out<br>S$312.80</div></div>
+            <div class="bx" style="background:#fff;grid-column:1/-1"><div class="card-t"><span>This week</span><span style="font-size:.72rem;color:#6A665F">Mon–Sun</span></div>
+              <div class="bars"><i style="height:40%;background:#2236F5"></i><i style="height:72%;background:#2236F5"></i><i style="height:30%;background:#2236F5"></i><i style="height:88%;background:#FF4283"></i><i style="height:55%;background:#2236F5"></i><i style="height:20%;background:#2236F5"></i><i style="height:8%;background:#D7FF3C"></i></div></div>
+            <div class="bx inkb" style="grid-column:1/-1"><div class="card-t"><span style="display:flex;gap:8px;align-items:center"><span class="stk" style="background:#FF4283;color:#121212">C</span>Yuu Card</span><span>S$259.80 to go</span></div><div class="prog"><i style="width:67%"></i></div></div>
+          </div>
+        </div>
+        <div class="tab" aria-hidden="true">
+          <span class="on"><svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9H3z"/></svg></span>
+          <span><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></span>
+          <span class="fab"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>
+          <span><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18"/></svg></span>
+          <span><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></svg></span>
+        </div>
+      </div></div>
+      <div class="verdict">
+        <div><b>Edge</b><span>The most energy of the three: bento tiles, starburst stickers and chartreuse. It feels like Gen Z streetwear.</span></div>
+        <div><b>Unique</b><span>The bento layout makes Home scannable in one glance, and stickers give owner badges real personality.</span></div>
+        <div><b>Risk</b><span>Chartreuse is polarising, and this one could tire on the eyes in daily use. It also drifts furthest from your cream-first brief.</span></div>
+      </div>
+    </section>
+  </div>
+
+  <section class="next">
+    <h2>What happens next</h2>
+    <ul>
+      <li>Pick A, B or C, or a mix (for example A's palette with C's bento layout).</li>
+      <li>I'll rebuild the full page in that direction: colour system, type, Home, Add expense, Wallets and the hero states.</li>
+      <li>Flappy slots in once your builds arrive. Each direction suits a different mascot style, so it's worth deciding this first.</li>
+    </ul>
+  </section>
+</div>
