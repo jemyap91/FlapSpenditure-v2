@@ -293,6 +293,25 @@ footer { padding-block: 0 56px; font-size: .82rem; color: var(--ink-2); }
   .scale .row2 { grid-template-columns: 1fr; gap: 4px; }
 }
 @media (max-width: 420px) { .palette { grid-template-columns: 1fr; } }
+
+/* Print / Save as PDF: keep every colour and background, and keep cards whole across pages. */
+* { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+@media print {
+  @page { size: A4; margin: 10mm; }
+  html, body { background: var(--cream) !important; }
+  .chapter { padding-block: 24px 4px; }
+  .phones { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .phone-col, .panel, .heroCard, .func, .job, .sw-card, .prompt, .decide, .chapter-head, .flappy-refs img, .refstrip img, .can { break-inside: avoid; page-break-inside: avoid; }
+  .chapter-head { break-after: avoid; page-break-after: avoid; }
+  #functions, #flappy { break-before: page; page-break-before: always; }
+  .prompt pre { max-height: none; overflow: visible; }
+  .copy { display: none; }
+  .phone { box-shadow: none; }
+  .phones { display: block; }
+  .phone-col { display: inline-flex; vertical-align: top; width: 48%; margin: 0 1% 18px; zoom: .74; }
+  .phone-col { width: 64%; }
+  .states { break-inside: avoid; page-break-inside: avoid; }
+}
 </style>
 
 <header class="hero">
