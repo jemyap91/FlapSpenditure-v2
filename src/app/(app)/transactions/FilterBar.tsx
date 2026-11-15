@@ -6,7 +6,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { hasAnyFilter, type TransactionFilters } from "@/lib/transaction-filters";
 
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 const FIELD = `rounded-md border px-3 py-2 text-sm ${FOCUS_RING}`;
 const FIELD_STYLE = { borderColor: "var(--ink-2)", background: "var(--surface)", color: "var(--ink)" };
 

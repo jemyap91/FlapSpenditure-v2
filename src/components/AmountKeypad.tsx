@@ -6,7 +6,7 @@ import { appendDigit, minorUnitFor, formatMoney, parseAmountInput } from "@/lib/
 const DIGIT_KEYS_1_TO_9 = ["1", "2", "3", "4", "5", "6", "7", "8", "9"] as const;
 
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 /**
  * A custom on-screen keypad for entering a money amount, for Task 19's

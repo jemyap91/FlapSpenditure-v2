@@ -7,7 +7,7 @@ import { budgetProgress, scopeLabel, type BudgetStatusRow } from "@/lib/budget-s
 import { MONTH_ABBREV } from "@/lib/month-names";
 
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 /**
  * `Aug` for a budget set in the current calendar year, `Aug 2025` for one set
@@ -386,7 +386,7 @@ function BudgetRow({
             width: `${Math.min(progress.percent ?? 0, 100)}%`,
             minWidth: "2px",
             height: "100%",
-            background: progress.isOver ? "var(--neg)" : "var(--cat-1)",
+            background: progress.isOver ? "var(--neg)" : "var(--accent)",
           }}
         />
       </div>
@@ -437,7 +437,7 @@ function BudgetRow({
           type="submit"
           disabled={saving || walletCountMismatch}
           className={`shrink-0 rounded-md px-3 py-2 text-sm font-medium disabled:opacity-60 ${FOCUS_RING}`}
-          style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+          style={{ background: "var(--accent)", color: "var(--on-accent)" }}
         >
           {saving ? "Saving…" : "Save budget"}
         </button>
@@ -532,7 +532,7 @@ function EditWalletsForm({
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
         className={`w-fit text-xs underline ${FOCUS_RING}`}
-        style={{ color: "var(--cat-1)" }}
+        style={{ color: "var(--accent)" }}
       >
         {open ? "Close wallet editor" : "Edit wallets"}
       </button>
@@ -564,7 +564,7 @@ function EditWalletsForm({
             type="submit"
             disabled={saving}
             className={`w-fit rounded-md px-3 py-2 text-sm font-medium disabled:opacity-60 ${FOCUS_RING}`}
-            style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+            style={{ background: "var(--accent)", color: "var(--on-accent)" }}
           >
             {saving ? "Saving…" : "Save wallets"}
           </button>
@@ -670,7 +670,7 @@ function WalletPicker({
           type="button"
           onClick={() => onChange(allSelected ? new Set() : new Set(wallets.map((w) => w.id)))}
           className={`absolute right-0 top-0 text-xs underline ${FOCUS_RING}`}
-          style={{ color: "var(--cat-1)" }}
+          style={{ color: "var(--accent)" }}
         >
           {allSelected ? "Clear all" : "Select all"}
         </button>
@@ -797,7 +797,7 @@ function AddBudgetForm({
           type="submit"
           disabled={saving}
           className={`w-fit rounded-md px-3 py-2 text-sm font-medium disabled:opacity-60 ${FOCUS_RING}`}
-          style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+          style={{ background: "var(--accent)", color: "var(--on-accent)" }}
         >
           {saving ? "Saving…" : "Save budget"}
         </button>

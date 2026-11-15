@@ -4,7 +4,7 @@ import { useState } from "react";
 import { createBrowserClient } from "@/lib/supabase/client";
 
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 /**
  * "Continue with Google" for /login and /signup. One component for both:

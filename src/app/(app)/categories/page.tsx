@@ -81,7 +81,7 @@ export default async function CategoriesPage({
           route to /household, which has no TabBar entry. */}
       <p className="mb-6 text-sm" style={{ color: "var(--ink-2)" }}>
         Shared with everyone in {selected.name}.{" "}
-        <Link href="/household" className="underline" style={{ color: "var(--cat-1)" }}>
+        <Link href="/household" className="underline" style={{ color: "var(--link)" }}>
           View household
         </Link>
       </p>
@@ -97,7 +97,7 @@ export default async function CategoriesPage({
               aria-current={s.id === selected.id ? "page" : undefined}
               className="rounded-full border px-3 py-1 text-sm"
               style={{
-                borderColor: s.id === selected.id ? "var(--cat-1)" : "var(--ink-2)",
+                borderColor: s.id === selected.id ? "var(--accent)" : "var(--ink-2)",
                 fontWeight: s.id === selected.id ? 600 : 400,
                 color: "var(--ink)",
               }}

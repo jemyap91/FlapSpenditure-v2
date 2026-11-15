@@ -57,7 +57,7 @@ export function ThemeToggle({ current }: { current: ThemePref }) {
                 void setTheme(value).catch(() => {});
               });
             }}
-            className="grid flex-1 place-items-center rounded p-1.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]"
+            className="grid flex-1 place-items-center rounded p-1.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]"
             style={{
               background: selected ? "var(--surface)" : "transparent",
               color: "var(--ink)",
@@ -68,7 +68,7 @@ export function ThemeToggle({ current }: { current: ThemePref }) {
               // differentiator: it measures 5.60:1 (light) / 5.20:1 (dark)
               // against var(--surface), clearing 3:1 with margin in both
               // themes (see task-14-report.md for the full computation).
-              boxShadow: selected ? "inset 0 0 0 2px var(--cat-1)" : "none",
+              boxShadow: selected ? "inset 0 0 0 2px var(--accent)" : "none",
             }}
           >
             <Icon size={16} aria-hidden />

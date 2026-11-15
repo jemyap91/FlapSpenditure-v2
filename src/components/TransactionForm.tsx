@@ -99,7 +99,7 @@ const KIND_META = [
 ] as const satisfies readonly { value: Kind; label: string; Icon: typeof TrendingDown }[];
 
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 const CHIP_BORDER =
   `rounded-full border px-3 py-1 text-sm ${FOCUS_RING}`;
@@ -798,7 +798,7 @@ export function TransactionForm(
                   className="peer sr-only"
                 />
                 <div
-                  className={`flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-center text-sm ${FOCUS_RING} peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--cat-1)]`}
+                  className={`flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-center text-sm ${FOCUS_RING} peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--focus)]`}
                   style={{
                     // Same accepted mitigation as Sidebar.tsx's active nav
                     // item and onboarding-form.tsx's Type selector: a
@@ -810,7 +810,7 @@ export function TransactionForm(
                     // own measurement) plus the font-weight change are the
                     // real differentiators; the background is a visual bonus,
                     // not what carries the state.
-                    borderColor: selected ? "var(--cat-1)" : "var(--ink-2)",
+                    borderColor: selected ? "var(--accent)" : "var(--ink-2)",
                     background: selected ? "var(--grid)" : "transparent",
                     color: "var(--ink)",
                     fontWeight: selected ? 600 : 400,
@@ -1090,9 +1090,9 @@ export function TransactionForm(
                     className="peer sr-only"
                   />
                   <span
-                    className={`block ${CHIP_BORDER} peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--cat-1)]`}
+                    className={`block ${CHIP_BORDER} peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--focus)]`}
                     style={{
-                      borderColor: selected ? "var(--cat-1)" : "var(--ink-2)",
+                      borderColor: selected ? "var(--accent)" : "var(--ink-2)",
                       background: selected ? "var(--grid)" : "transparent",
                       color: "var(--ink)",
                       fontWeight: selected ? 600 : 400,
@@ -1151,7 +1151,7 @@ export function TransactionForm(
         type="submit"
         disabled={pending}
         className={`sticky bottom-20 mt-auto rounded-lg py-4 text-lg font-medium disabled:opacity-60 md:bottom-0 ${FOCUS_RING}`}
-        style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+        style={{ background: "var(--accent)", color: "var(--on-accent)" }}
       >
         {pending ? "Saving…" : edit ? "Save changes" : "Save"}
       </button>

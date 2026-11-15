@@ -1,12 +1,16 @@
 import Link from "next/link";
-import { ChevronLeft, ChevronRight } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
+import { getCurrentUserProfile } from "@/lib/supabase/current-user";
 import { CategoryBreakdown, type BreakdownRow } from "@/components/CategoryBreakdown";
 import { CashFlow, type FlowRow } from "@/components/CashFlow";
-import { BudgetSummary } from "@/components/BudgetSummary";
-import { CardTracker } from "@/components/CardTracker";
+import { BudgetSummary, overallBudget } from "@/components/BudgetSummary";
+import { CardToWatch } from "@/components/CardToWatch";
 import { DueList } from "@/components/DueList";
-import { formatMoney } from "@/lib/money";
+import { HomeHero } from "@/components/HomeHero";
+import { cardToWatch } from "@/lib/card-ranking";
+import { monthPace } from "@/lib/month-pace";
+import { personForWallet } from "@/lib/people";
+import { loadPeople } from "@/server/people";
 import { monthRange, monthRangeOf, parseMonthParam, shiftMonth } from "@/lib/month-range";
 import { todayLocalDate } from "@/lib/today";
 import { loadCardTracker } from "@/server/card-tracker";
@@ -16,9 +20,7 @@ import { buildDueRows, type DueRuleInput, type HandledOccurrence } from "./due-r
 import { lookbackFloor, type RecurInterval } from "@/lib/recurrence";
 
 const LINK_CLASS =
-  "rounded-sm text-sm underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
-const ARROW_CLASS =
-  "inline-flex h-8 w-8 items-center justify-center rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "rounded-sm text-sm underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 const monthName = (month: string) =>
   `${MONTH_NAME[Number(month.slice(5, 7)) - 1]} ${month.slice(0, 4)}`;
@@ -49,6 +51,9 @@ type SearchParams = Record<string, string | string[] | undefined>;
  */
 export default async function DashboardPage(props: { searchParams?: Promise<SearchParams> } = {}) {
   const supabase = await createClient();
+  const profile = await getCurrentUserProfile();
+  // (app)/layout.tsx redirects to /login first; defence in depth only.
+  if (!profile) throw new Error("Not signed in");
   const currentMonth = monthRange().from.slice(0, 7);
   const requested = parseMonthParam((await props.searchParams)?.month);
   const month = requested && requested < currentMonth ? requested : currentMonth;
@@ -63,7 +68,7 @@ export default async function DashboardPage(props: { searchParams?: Promise<Sear
   // deterministic pick, not whatever order Postgres happens to return.
   const { data: wallets, error: walletsError } = await supabase
     .from("wallets")
-    .select("id, currency_code, created_at")
+    .select("id, currency_code, created_at, owner_id, shared_with_household")
     .is("archived_at", null)
     .order("created_at", { ascending: true });
   // A query error is not "no wallets" — same reasoning as (app)/layout.tsx's
@@ -227,6 +232,7 @@ export default async function DashboardPage(props: { searchParams?: Promise<Sear
     { data: dueSkipRows, error: dueSkipsError },
     { data: dueRecordedRows, error: dueRecordedError },
     cardTrackerRows,
+    people,
   ] = await Promise.all([
     // `wallets!recurring_rules_wallet_id_fkey`: 0022 added a second FK from
     // recurring_rules to wallets (recurring_rules_wallet_same_space), so an
@@ -266,6 +272,8 @@ export default async function DashboardPage(props: { searchParams?: Promise<Sear
     // Always today's cycle, even under `?month=`: a card's bonus cycle is not
     // a calendar month. `loadCardTracker` throws on a failed read itself.
     loadCardTracker(supabase, { on: today, today }),
+    // Who owns which card, for the card-to-watch badge. Throws on a failed read.
+    loadPeople(supabase, profile.id),
   ]);
   // Same "error is not emptiness" rule as every other read on this page.
   if (dueRulesError) throw new Error("Failed to load recurring rules");
@@ -350,90 +358,90 @@ export default async function DashboardPage(props: { searchParams?: Promise<Sear
   // percentage math uses the exact same number instead of re-deriving it.
   const spent = rows.reduce((s, r) => s + r.total_minor, 0);
 
+  // The overall budget (no category, every wallet) drives the hero's pace;
+  // the per-category ones become rings below it.
+  const overall = overallBudget(budgetRows, currency, walletIds.length);
+  const budgetMinor = overall?.budget_minor ?? null;
+  const pace =
+    budgetMinor !== null && budgetMinor > 0
+      ? monthPace({ spentMinor: spent, budgetMinor, from, to, today })
+      : null;
+
+  const ownerByWalletId = new Map(activeWallets.map((w) => [w.id, w]));
+  const watch = cardToWatch(cardTrackerRows, today);
+  const watchedWallet = watch ? ownerByWalletId.get(watch.card.walletId) : undefined;
+
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-8 p-6">
-      {/* Above the hero total (this task's brief). Shown on the current
-          month only -- what's due is about today, not a month being looked
-          back on. `DueList` itself renders nothing at all when `dueRows` is
-          empty, which is most opens of this dashboard -- there is no
-          wrapping empty state to add or omit here. */}
+    <div className="mx-auto flex max-w-3xl flex-col gap-7 px-4 py-4 md:p-8">
+      {/* The page's one level-one heading (axe's `page-has-heading-one`,
+          e2e/ledger.spec.ts). The month the page is scoped to is the hero's
+          own heading, right under it. */}
+      <h1 className="text-[26px] font-extrabold" style={{ color: "var(--ink)" }}>
+        Hey, you two
+      </h1>
+
+      {/* The month is derived from the window actually queried, never a
+          second read of the clock, which on Vercel (UTC) could name a
+          different month from the one `monthRange()` resolved in the app's
+          own zone. "Next" is left out on the current month rather than
+          disabled: there is no later month to show (see the clamp above).
+
+          `total_minor` is a SUM of already-positive per-category
+          magnitudes, so the hero is a plain unsigned render.
+
+          REVIEW-CAUGHT (Important): when wallets in other currencies are
+          left out, the hero says so rather than reading as a total that
+          silently isn't one. */}
+      <HomeHero
+        monthLabel={monthLabel}
+        spentMinor={spent}
+        currency={currency}
+        budgetMinor={pace ? budgetMinor : null}
+        pace={pace}
+        isCurrentMonth={isCurrentMonth}
+        qualifier={hasExcludedWallets ? `${currency} wallets only` : null}
+        prev={{ href: monthHref(prevMonth, currentMonth), label: `Previous month, ${monthName(prevMonth)}` }}
+        next={isCurrentMonth ? null : { href: monthHref(nextMonth, currentMonth), label: `Next month, ${monthName(nextMonth)}` }}
+      />
+
+      <p className="-mt-3 flex gap-4 px-1" style={{ color: "var(--ink-2)" }}>
+        <Link href={`/transactions?from=${from}&to=${to}`} className={LINK_CLASS}>
+          {isCurrentMonth ? "This month's transactions" : `Transactions in ${monthLabel}`}
+        </Link>
+        {!isCurrentMonth && (
+          <Link href="/" className={LINK_CLASS}>
+            Back to this month
+          </Link>
+        )}
+      </p>
+
+      {/* "Needs a look": what's due today. Current month only -- what's due
+          is about today, not a month being looked back on. `DueList`
+          renders nothing at all when nothing is due. */}
       {isCurrentMonth && <DueList rows={dueRows} olderDropped={dueOlderDropped} today={today} />}
-      <header>
-        {/* An `<h1>`, not a `<p>`: this page had no level-one heading at
-            all, so its first heading was CategoryBreakdown's `<h2>` and
-            the document outline started at level 2 (caught by axe's
-            `page-has-heading-one` in e2e/ledger.spec.ts — a best-practice
-            rule, which is why the WCAG A/AA gate never flagged it).
-            Promoting the month rather than adding a hidden title keeps the
-            heading something a sighted user can actually see, and the
-            month IS what this dashboard is scoped to — every figure below
-            is for that month. */}
-        {/* Month navigation sits around the heading it changes. "Next" is
-            left out on the current month rather than disabled: there is no
-            later month to show (see the clamp above). */}
-        <div className="-ml-2 flex items-center gap-1" style={{ color: "var(--ink-2)" }}>
-          <Link
-            href={monthHref(prevMonth, currentMonth)}
-            className={ARROW_CLASS}
-            aria-label={`Previous month, ${monthName(prevMonth)}`}
-          >
-            <ChevronLeft size={18} aria-hidden />
-          </Link>
-          <h1 className="text-sm font-medium uppercase tracking-wide">
-            {/* Derived from the month actually queried, never a second
-                read of the clock, which on Vercel (UTC) could name a
-                different month from the one `monthRange()` resolved in
-                the app's own zone. */}
-            {monthLabel}
-          </h1>
-          {!isCurrentMonth && (
-            <Link
-              href={monthHref(nextMonth, currentMonth)}
-              className={ARROW_CLASS}
-              aria-label={`Next month, ${monthName(nextMonth)}`}
-            >
-              <ChevronRight size={18} aria-hidden />
-            </Link>
-          )}
-        </div>
-        {/* Hero figure: >=48px, system sans, proportional figures (§6.4).
-            `total_minor` here is a SUM of already-positive per-category
-            magnitudes (get_category_breakdown's own `sum(-t.amount_minor)`),
-            so this is a plain, unsigned money render — no double negation,
-            no `{ signed: true }` (there is nothing to sign; this is always
-            an amount spent, never a balance that can go negative). */}
-        <p className="text-5xl font-semibold" style={{ color: "var(--ink)" }}>
-          {formatMoney(spent, currency)}
-        </p>
-        {/* REVIEW-CAUGHT (Important): the caption now says WHICH wallets
-            this figure covers whenever some were excluded (different
-            currency), rather than reading as a total that silently isn't
-            one. Unqualified whenever every active wallet shares one
-            currency — the common case, and the only case the un-qualified
-            text was ever accurate for. */}
-        <p className="text-sm" style={{ color: "var(--ink-2)" }}>
-          spent {periodLabel}{hasExcludedWallets ? ` · ${currency} wallets` : ""}
-        </p>
-        <p className="mt-2 flex gap-4" style={{ color: "var(--ink-2)" }}>
-          <Link href={`/transactions?from=${from}&to=${to}`} className={LINK_CLASS}>
-            {isCurrentMonth ? "This month's transactions" : `Transactions in ${monthLabel}`}
-          </Link>
-          {!isCurrentMonth && (
-            <Link href="/" className={LINK_CLASS}>
-              Back to this month
-            </Link>
-          )}
-        </p>
-      </header>
+
+      {/* Budgets fold into Home as rings; the overall one is the hero's. */}
+      <BudgetSummary
+        rows={budgetRows}
+        currencyCode={currency}
+        walletCount={walletIds.length}
+        hideOverall={pace !== null}
+      />
+
+      {/* Always today's cycle, even under `?month=`: a card's cycle is not
+          a calendar month. Only one card here; the rest live in Cards. */}
+      <CardToWatch
+        watch={watch}
+        person={watchedWallet ? personForWallet(watchedWallet, people) : null}
+      />
+
       <CategoryBreakdown rows={rows} currencyCode={currency} total={spent} periodLabel={periodLabel} />
-      <CardTracker rows={cardTrackerRows} />
       <CashFlow
         rows={flowRows}
         currencyCode={currency}
         hasExcludedWallets={hasExcludedWallets}
         periodLabel={periodLabel}
       />
-      <BudgetSummary rows={budgetRows} currencyCode={currency} walletCount={walletIds.length} />
     </div>
   );
 }

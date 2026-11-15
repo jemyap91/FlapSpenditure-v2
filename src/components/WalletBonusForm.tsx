@@ -6,7 +6,7 @@ import { CHANNELS, CHANNEL_LABELS, type Channel } from "@/lib/channels";
 import { formatAmountInput, minorUnitFor } from "@/lib/money";
 
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 const FIELD = `rounded-md border px-3 py-2 text-sm ${FOCUS_RING}`;
 const FIELD_STYLE = {
@@ -153,7 +153,7 @@ export function WalletBonusForm({
         disabled={pending}
         aria-label={pending ? undefined : `Save card terms for ${wallet.name}`}
         className={`self-start rounded-md px-4 py-2 text-sm font-medium disabled:opacity-60 ${FOCUS_RING}`}
-        style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+        style={{ background: "var(--accent)", color: "var(--on-accent)" }}
       >
         {pending ? "Saving…" : "Save card terms"}
       </button>

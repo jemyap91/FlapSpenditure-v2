@@ -6,7 +6,7 @@ import { respondToInvite } from "@/server/actions/invites";
 import { respondToHouseholdInvite } from "@/server/actions/household";
 
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 export type PendingInvite = { id: string; kind: "wallet" | "household"; name: string };
 
@@ -87,7 +87,7 @@ export function PendingInvites({ invites }: { invites: PendingInvite[] }) {
                 disabled={responding}
                 onClick={() => respond(inv, true)}
                 className={`shrink-0 rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-60 ${FOCUS_RING}`}
-                style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+                style={{ background: "var(--accent)", color: "var(--on-accent)" }}
               >
                 Accept
               </button>

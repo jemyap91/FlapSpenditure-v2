@@ -1,34 +1,14 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  --font-sans: var(--font-manrope);
+  --font-display: var(--font-unbounded);
 }
 
 /*
- * Palette tokens — single-sourced from ../../palette.json (see src/lib/palette.ts
- * and scripts/validate-palette.mjs). Do not hand-edit these values; regenerate
- * from palette.json if the palette changes.
+ * Category palette tokens — single-sourced from ../../palette.json (see
+ * src/lib/palette.ts and scripts/validate-palette.mjs). Do not hand-edit
+ * these values; regenerate from palette.json if the palette changes.
  *
  * Dark values are declared under both the media query and the [data-theme]
  * scope so an explicit toggle wins in both directions.
@@ -38,11 +18,7 @@ body {
   --cat-5: #c7436d; --cat-6: #a48610; --cat-7: #b84999; --cat-8: #1a8210;
   --cat-9: #7e2b95; --cat-10: #129a72; --cat-11: #6936a9; --cat-12: #108e7d;
   --cat-13: #5140b4; --cat-14: #129599; --cat-15: #3549b8; --cat-16: #1193a9;
-  --surface: #fcfcfb; --page: #f9f9f7;
-  --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781; --grid: #e1e0d9;
-  --pos: #006300; --neg: #d03b3b;
-  --div-in: #17a0a0; --div-out: #e36a1f; --div-mid: #f0efec;
-  color-scheme: light;
+  --div-in: #138585; --div-out: #c8561a; --div-mid: #efe3d3;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -51,11 +27,7 @@ body {
     --cat-5: #d55078; --cat-6: #7e660a; --cat-7: #c656a6; --cat-8: #2b8f22;
     --cat-9: #ba67d3; --cat-10: #0a7556; --cat-11: #a171e8; --cat-12: #15a692;
     --cat-13: #6456cb; --cat-14: #14a3a7; --cat-15: #465fcf; --cat-16: #14a0b8;
-    --surface: #1a1a19; --page: #0d0d0d;
-    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781; --grid: #2c2c2a;
-    --pos: #0ca30c; --neg: #e66767;
-    --div-mid: #383835;
-    color-scheme: dark;
+    --div-in: #17a0a0; --div-out: #e36a1f; --div-mid: #3d1b25;
   }
 }
 
@@ -64,14 +36,131 @@ body {
   --cat-5: #d55078; --cat-6: #7e660a; --cat-7: #c656a6; --cat-8: #2b8f22;
   --cat-9: #ba67d3; --cat-10: #0a7556; --cat-11: #a171e8; --cat-12: #15a692;
   --cat-13: #6456cb; --cat-14: #14a3a7; --cat-15: #465fcf; --cat-16: #14a0b8;
-  --surface: #1a1a19; --page: #0d0d0d;
-  --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781; --grid: #2c2c2a;
-  --pos: #0ca30c; --neg: #e66767;
-  --div-mid: #383835;
+  --div-in: #17a0a0; --div-out: #e36a1f; --div-mid: #3d1b25;
+}
+
+/*
+ * Cherry Cola (Brand & UI refresh, round 4): oxblood, candy, cobalt and
+ * butter on cream. Colour means only WHO (candy = one partner, cobalt = the
+ * other, butter = shared) or STATUS (butter = celebrate / needs a look,
+ * cherry = over budget, near a cap, low balance -- nothing else).
+ *
+ * Every text pairing below was measured with the WCAG formula; the figures
+ * are against the page or card it sits on:
+ *   ink #2A0E17 15.3 · ink-2 #6E555B 5.8 / 6.2 · neg #B8172C 5.6 / 6.1 ·
+ *   link #2B44FF 5.3 / 5.7 · cream on oxblood 13.1 · on-hero-2 on oxblood
+ *   9.1 · cream on cherry-deep #C21B30 5.1 · ink on candy 8.3 / butter 12.6.
+ * Dark: ink 16.4 · ink-2 9.9 / 9.0 · candy 8.9 / 8.1 · link 6.9 · neg 6.8.
+ *
+ * `--muted` is for non-text marks only (3.7:1); text uses `--ink-2`.
+ */
+:root {
+  --page: #f4ece0;
+  --surface: #fbf5ec;
+  --ink: #2a0e17;
+  --ink-2: #6e555b;
+  --muted: #8b7378;
+  --grid: #eadfcf;
+
+  /* Primary action: buttons, selected states. */
+  --accent: #4a0d1e;
+  --on-accent: #f4ece0;
+  --focus: #2b44ff;
+  --link: #2b44ff;
+
+  /* The one hero block per screen. */
+  --hero: #4a0d1e;
+  --hero-deep: #651528;
+  --on-hero: #f4ece0;
+  --on-hero-2: #d9c2bf;
+
+  --tabbar: #4a0d1e;
+  --on-tabbar: #f4ece0;
+  --on-tabbar-2: #d9c2bf;
+
+  --candy: #ff8db8;
+  --candy-tint: #ffe0ec;
+  --cobalt: #2b44ff;
+  --cobalt-tint: #dde1ff;
+  --butter: #ffd36b;
+  --butter-tint: #fff1cc;
+  --cherry: #e0243a;
+  --cherry-deep: #c21b30;
+  --cherry-tint: #fbd7db;
+  /* Text that sits on candy / butter / the tints. */
+  --on-bright: #2a0e17;
+
+  --pos: #1b6b3a;
+  --neg: #b8172c;
+
+  --shadow-float: 0 10px 30px rgb(74 13 30 / 0.22);
+  color-scheme: light;
+}
+
+/* Dark: an oxblood-black page, cream text, the same accents. Candy takes
+   over as the primary action so buttons stay bright on the dark page. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --page: #1c0910;
+    --surface: #2b1219;
+    --ink: #f4ece0;
+    --ink-2: #c9b6b0;
+    --muted: #8b7378;
+    --grid: #3d1b25;
+    --accent: #ff8db8;
+    --on-accent: #2a0e17;
+    --focus: #ffd36b;
+    --link: #8d9bff;
+    --hero: #4a0d1e;
+    --hero-deep: #651528;
+    --tabbar: #3d0a18;
+    --candy-tint: #4a1f33;
+    --cobalt-tint: #1f2350;
+    --butter-tint: #3f3216;
+    --cherry-tint: #4a1620;
+    --pos: #6fd39a;
+    --neg: #ff7585;
+    --shadow-float: 0 10px 30px rgb(0 0 0 / 0.45);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --page: #1c0910;
+  --surface: #2b1219;
+  --ink: #f4ece0;
+  --ink-2: #c9b6b0;
+  --muted: #8b7378;
+  --grid: #3d1b25;
+  --accent: #ff8db8;
+  --on-accent: #2a0e17;
+  --focus: #ffd36b;
+  --link: #8d9bff;
+  --hero: #4a0d1e;
+  --hero-deep: #651528;
+  --tabbar: #3d0a18;
+  --candy-tint: #4a1f33;
+  --cobalt-tint: #1f2350;
+  --butter-tint: #3f3216;
+  --cherry-tint: #4a1620;
+  --pos: #6fd39a;
+  --neg: #ff7585;
+  --shadow-float: 0 10px 30px rgb(0 0 0 / 0.45);
   color-scheme: dark;
 }
 
 body {
   background: var(--page);
   color: var(--ink);
+  font-family: var(--font-manrope), system-ui, sans-serif;
+  font-weight: 500;
+  /* Even-width digits everywhere, so amounts line up in columns. */
+  font-variant-numeric: tabular-nums;
+}
+
+/* Unbounded is for titles and the one big number per screen. */
+h1,
+.font-display {
+  font-family: var(--font-unbounded), system-ui, sans-serif;
+  letter-spacing: -0.02em;
 }

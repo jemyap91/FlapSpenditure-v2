@@ -1,22 +1,26 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Manrope, Unbounded } from "next/font/google";
 import { cookies } from "next/headers";
 import "./globals.css";
 import { isThemePref, THEME_COOKIE_NAME } from "@/lib/theme-cookie";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+// Cherry Cola type: Unbounded for titles and the one big number per screen,
+// Manrope for everything else, including every amount in a list.
+const manrope = Manrope({
+  variable: "--font-manrope",
   subsets: ["latin"],
+  weight: ["500", "600", "700", "800"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const unbounded = Unbounded({
+  variable: "--font-unbounded",
   subsets: ["latin"],
+  weight: ["700", "800"],
 });
 
 export const metadata: Metadata = {
-  title: "Ledger",
-  description: "A small, fast expense tracker for shared wallets.",
+  title: "Flapspenditure",
+  description: "Money for two: a shared expense tracker.",
 };
 
 /**
@@ -65,7 +69,7 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
     <html
       lang="en"
       data-theme={theme === "system" ? undefined : theme}
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${manrope.variable} ${unbounded.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">{children}</body>
     </html>

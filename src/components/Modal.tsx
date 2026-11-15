@@ -6,7 +6,7 @@ import { useCallback, useEffect, useId, useRef, type ReactNode } from "react";
  *  codebase has no shared ui module and introducing one is unrelated to
  *  the work in hand. */
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 /**
  * A modal dialog, implemented rather than delegated to the native

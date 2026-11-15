@@ -8,7 +8,7 @@ import { CATEGORY_ICON_COMPONENTS } from "@/lib/category-icons";
 import type { CategoryIcon } from "@/lib/validation/category";
 
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 /**
  * `kind` is required on every row: Task 19's add-transaction screen filters
@@ -191,7 +191,7 @@ export function CategoryPicker({
                   // ones.
                   background: "transparent",
                   color: "var(--ink)",
-                  borderLeft: `3px solid ${value === c.id ? "var(--cat-1)" : "transparent"}`,
+                  borderLeft: `3px solid ${value === c.id ? "var(--accent)" : "transparent"}`,
                 }}
               >
                 {/* Colour + icon shape + name together, never colour alone —

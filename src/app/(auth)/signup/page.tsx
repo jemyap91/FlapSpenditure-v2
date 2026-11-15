@@ -32,7 +32,7 @@ export default function SignupPage() {
             autoComplete="email"
             aria-describedby={errorId}
             aria-invalid={state.field === "email" ? true : undefined}
-            className="rounded-md border px-3 py-2 focus:outline-2 focus:outline-offset-2 focus:outline-[var(--cat-1)]"
+            className="rounded-md border px-3 py-2 focus:outline-2 focus:outline-offset-2 focus:outline-[var(--focus)]"
             style={{ borderColor: "var(--ink-2)" }}
           />
         </label>
@@ -47,7 +47,7 @@ export default function SignupPage() {
             autoComplete="new-password"
             aria-describedby={errorId}
             aria-invalid={state.field === "password" ? true : undefined}
-            className="rounded-md border px-3 py-2 focus:outline-2 focus:outline-offset-2 focus:outline-[var(--cat-1)]"
+            className="rounded-md border px-3 py-2 focus:outline-2 focus:outline-offset-2 focus:outline-[var(--focus)]"
             style={{ borderColor: "var(--ink-2)" }}
           />
         </label>
@@ -61,8 +61,8 @@ export default function SignupPage() {
         <button
           type="submit"
           disabled={pending}
-          className="rounded-md px-4 py-2 font-medium focus:outline-2 focus:outline-offset-2 focus:outline-[var(--cat-1)] disabled:opacity-60"
-          style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+          className="rounded-md px-4 py-2 font-medium focus:outline-2 focus:outline-offset-2 focus:outline-[var(--focus)] disabled:opacity-60"
+          style={{ background: "var(--accent)", color: "var(--on-accent)" }}
         >
           {pending ? "Creating…" : "Create account"}
         </button>

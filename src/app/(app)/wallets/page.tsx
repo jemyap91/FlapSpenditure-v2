@@ -8,6 +8,9 @@ import { PendingInvites, type PendingInvite } from "./PendingInvites";
 import type { SharingMember } from "@/components/WalletSharingRow";
 import { walletSortInput } from "@/lib/validation/wallet-group";
 import { mergeWalletBalances, arrangeWallets, defaultCurrencyFor, type BalanceRow, type WalletRow } from "./wallet-rows";
+import { PeopleTotals, totalsByPerson } from "./PeopleTotals";
+import { peopleFor, personForWallet, type Person } from "@/lib/people";
+import { minorUnitFor } from "@/lib/money";
 
 /**
  * /wallets — the wallets screen. Both the Sidebar and the TabBar have
@@ -168,6 +171,18 @@ export default async function WalletsPage() {
     membersByWalletId.set(m.wallet_id, list);
   }
 
+  // Who each wallet belongs to (Cherry Cola: colour means who). The viewer
+  // is always included, as "You" when in no household yet, so their own
+  // wallets never read as someone else's.
+  const memberList = (spaceMembers ?? []).map((m) => ({ user_id: m.user_id, display_name: m.display_name }));
+  if (!memberList.some((m) => m.user_id === profile.id)) memberList.push({ user_id: profile.id, display_name: "You" });
+  const people = peopleFor(memberList);
+  const personByWalletId: Record<string, Person> = Object.fromEntries(
+    (wallets ?? []).map((w) => [w.id, personForWallet(w, people)]),
+  );
+  const mainCurrency = defaultCurrencyFor(rows, profile.base_currency);
+  const totals = totalsByPerson(rows, personByWalletId, mainCurrency);
+
   const pendingInvites: PendingInvite[] = [
     ...(invites ?? []).map((i) => ({ id: i.id, kind: "wallet" as const, name: i.wallet_name })),
     ...(householdInvites ?? []).map((i) => ({ id: i.id, kind: "household" as const, name: i.space_name })),
@@ -194,10 +209,12 @@ export default async function WalletsPage() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl p-6">
-      <h1 className="mb-6 text-2xl font-semibold" style={{ color: "var(--ink)" }}>
+    <div className="mx-auto max-w-2xl px-4 py-4 md:p-8">
+      <h1 className="mb-5 text-[26px] font-extrabold" style={{ color: "var(--ink)" }}>
         Wallets
       </h1>
+
+      <PeopleTotals totals={totals} currency={mainCurrency} minorUnit={minorUnitFor(mainCurrency)} />
 
       <PendingInvites invites={pendingInvites} />
 
@@ -216,6 +233,7 @@ export default async function WalletsPage() {
         groups={groups ?? []}
         sort={sort.success ? sort.data : "manual"}
         currentUserId={profile.id}
+        people={personByWalletId}
         memberSections={Object.fromEntries(
           rows.map((w) => [
             w.id,
