@@ -29,7 +29,8 @@ const INSTRUCTIONS =
   "Before recording a new expense or income, ask the user for the merchant if they didn't say who it was. " +
   "Saved expenses may return warnings; always tell the user each one. Leave channel out to use the " +
   "suggested one. Use get_card_tracker for card bonus progress, and list_transactions with mismatch " +
-  "true to see expenses that earned no bonus.";
+  "true to see expenses that earned no bonus. To track a new card, add it with create_card, quota " +
+  "included; change an existing card's quota with update_wallet_bonus.";
 
 function isRequest(value: unknown): value is JsonRpcRequest {
   return (

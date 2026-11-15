@@ -53,7 +53,7 @@ function firstIssueField(error: z.ZodError): WalletField | undefined {
  * tampered with, so it would put an open-redirect surface behind a
  * behaviour that is fully known at build time.
  */
-async function insertWallet(formData: FormData): Promise<WalletState | { ok: true }> {
+async function insertWallet(formData: FormData): Promise<WalletState | { ok: true; id: string }> {
   const parsed = walletInput.safeParse(Object.fromEntries(formData));
   if (!parsed.success) {
     return { error: parsed.error.issues[0]!.message, field: firstIssueField(parsed.error) };
@@ -107,19 +107,23 @@ async function insertWallet(formData: FormData): Promise<WalletState | { ok: tru
   // rewritten by 0022) fires on this INSERT and creates the
   // wallet_members(owner) row — and its space_members row — itself; do not
   // insert either here.
-  const { error } = await supabase.from("wallets").insert({
-    owner_id: user.id,
-    space_id: ownSpace.space_id,
-    name,
-    kind,
-    currency_code,
-    starting_balance_minor: startingMinor,
-    color_slot,
-    icon,
-  });
-  if (error) return { error: "Could not create wallet. Please try again." };
+  const { data: inserted, error } = await supabase
+    .from("wallets")
+    .insert({
+      owner_id: user.id,
+      space_id: ownSpace.space_id,
+      name,
+      kind,
+      currency_code,
+      starting_balance_minor: startingMinor,
+      color_slot,
+      icon,
+    })
+    .select("id")
+    .single();
+  if (error || !inserted) return { error: "Could not create wallet. Please try again." };
 
-  return { ok: true };
+  return { ok: true, id: inserted.id };
 }
 
 /**
@@ -157,6 +161,21 @@ export async function addWallet(
   revalidatePath("/", "layout");
   revalidatePath("/wallets");
   return {};
+}
+
+/**
+ * The MCP `create_card` tool's entry point: the same insert, returning the
+ * new wallet's id so the caller can set its card terms next. Like every
+ * export here it is reachable by direct POST, and gets exactly the same
+ * validation and session checks as the two form actions above.
+ */
+export async function addWalletReturningId(formData: FormData): Promise<{ id: string } | { error: string }> {
+  const result = await insertWallet(formData);
+  if (!("ok" in result)) return { error: result.error ?? "Could not create wallet. Please try again." };
+
+  revalidatePath("/", "layout");
+  revalidatePath("/wallets");
+  return { id: result.id };
 }
 
 /**
