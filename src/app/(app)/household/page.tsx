@@ -101,7 +101,7 @@ export default async function HouseholdPage() {
       {/* /api-access is sidebar-only (TabBar is full), so this is its mobile
           entry point, the same way /categories links here. */}
       <p className="-mt-4 mb-6 text-sm">
-        <Link href="/api-access" className="underline" style={{ color: "var(--cat-1)" }}>
+        <Link href="/api-access" className="underline" style={{ color: "var(--link)" }}>
           Connect Claude to your ledger
         </Link>
       </p>

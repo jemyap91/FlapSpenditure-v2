@@ -3,7 +3,7 @@
 import { useActionState } from "react";
 
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 type InviteState = { error?: string; notice?: string };
 
@@ -42,7 +42,7 @@ export function InviteByEmailForm({
         <button
           type="submit"
           className={`shrink-0 rounded-md px-3 py-2 text-sm font-medium ${FOCUS_RING}`}
-          style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+          style={{ background: "var(--accent)", color: "var(--on-accent)" }}
         >
           Send invitation
         </button>

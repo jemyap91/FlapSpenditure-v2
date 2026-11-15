@@ -6,6 +6,9 @@ import { formatAmountInput, minorUnitFor } from "@/lib/money";
 import { todayLocalDate } from "@/lib/today";
 import { ilikePattern, SEARCH_MAX_LENGTH } from "@/lib/transaction-filters";
 import { setWalletBonus } from "@/server/actions/wallet-bonus";
+import { addWalletReturningId } from "@/server/actions/wallets";
+import { CURRENCY_CODES } from "@/lib/validation/wallet";
+import { defaultCurrencyFor } from "@/app/(app)/wallets/wallet-rows";
 import { loadCardTracker, warningsFor } from "@/server/card-tracker";
 import { createRefund } from "@/server/actions/refunds";
 import {
@@ -132,6 +135,41 @@ const walletBonusInput = z.object({
   cycle_start_day: z.number().int().min(1).max(31).nullable().optional().describe("Day of the month the card's cycle starts. null clears it; leave out to keep it"),
   max: amount.nullable().optional().describe("Most spend that earns the bonus per cycle, or the minimum spend when the card has no channel. null clears it; leave out to keep it"),
 });
+
+const createCardInput = z
+  .object({
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(60)
+      .describe('The card\'s name as the user calls it, e.g. "UOB One Visa 5303 (J)"'),
+    currency: z
+      .enum(CURRENCY_CODES)
+      .optional()
+      .describe("Currency the card is billed in. Defaults to the one most of the user's wallets use"),
+    bonus_channel: z
+      .enum(CHANNELS)
+      .nullable()
+      .optional()
+      .describe("Channel that earns the bonus. Leave out or null for a min-spend card, where all spend counts"),
+    cycle_start_day: z
+      .number()
+      .int()
+      .min(1)
+      .max(31)
+      .optional()
+      .describe("Day of the month the card's statement cycle starts. Needed with a max"),
+    max: amount
+      .optional()
+      .describe(
+        "The card's quota per cycle: the most spend that earns the bonus, or the minimum spend when the card has no bonus channel",
+      ),
+  })
+  .refine((a) => a.max === undefined || a.cycle_start_day !== undefined, {
+    path: ["cycle_start_day"],
+    message: "A max needs the day the card's cycle starts",
+  });
 
 const idInput = z.object({ id: uuid });
 
@@ -477,6 +515,64 @@ export const TOOLS: Record<string, Tool> = {
       } catch {
         return { ok: false, error: "Could not load card tracker" };
       }
+    },
+  },
+
+  create_card: {
+    description:
+      "Add a credit card wallet, optionally with its quota for card tracking in the same call: the channel that earns the bonus, the day its cycle starts, and the max per cycle (with no channel, the max is a minimum spend all the card's spend counts towards). Check list_wallets first: a card with the same name is refused, and an existing card's quota is changed with update_wallet_bonus instead. If the user hasn't said the cycle start day or the quota, ask rather than guess.",
+    input: createCardInput,
+    run: async (args: z.output<typeof createCardInput>) => {
+      const supabase = await createClient();
+      const { data: existing, error: existingError } = await supabase
+        .from("wallets")
+        .select("name, currency_code")
+        .is("archived_at", null);
+      if (existingError) return { ok: false, error: "Could not load wallets" };
+
+      const wanted = args.name.toLocaleLowerCase();
+      if (existing.some((w) => w.name.trim().toLocaleLowerCase() === wanted)) {
+        return {
+          ok: false,
+          error: `A wallet called "${args.name}" already exists. Use update_wallet_bonus to change its quota.`,
+        };
+      }
+
+      const currency = args.currency ?? defaultCurrencyFor(existing, "USD");
+      const form = new FormData();
+      form.set("name", args.name);
+      form.set("kind", "card");
+      form.set("currency_code", currency);
+      form.set("starting_balance", "0");
+      // Spread across the eight wallet colours rather than all on one.
+      form.set("color_slot", String((existing.length % 8) + 1));
+      form.set("icon", "credit-card");
+      const created = await addWalletReturningId(form);
+      if ("error" in created) return { ok: false, error: created.error };
+
+      const terms = {
+        bonus_channel: args.bonus_channel ?? null,
+        cycle_start_day: args.cycle_start_day ?? null,
+        max: args.max ?? null,
+      };
+      const card = { wallet_id: created.id, name: args.name, currency };
+      if (terms.cycle_start_day === null && terms.max === null && terms.bonus_channel === null) {
+        return { ok: true, data: { ...card, ...terms } };
+      }
+
+      const saved = await setWalletBonus({ wallet_id: created.id, ...terms });
+      if ("error" in saved) {
+        // The card exists now; say so, so the quota can be retried on it
+        // rather than the card being added twice.
+        return {
+          ok: false,
+          error: `The card was added (wallet_id ${created.id}), but its quota wasn't saved: ${saved.error} Retry with update_wallet_bonus.`,
+        };
+      }
+      return {
+        ok: true,
+        data: { ...card, ...terms, goal: terms.max === null ? null : terms.bonus_channel === null ? "min_spend" : "max" },
+      };
     },
   },
 

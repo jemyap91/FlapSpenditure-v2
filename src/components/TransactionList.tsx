@@ -74,7 +74,7 @@ export type Row = {
 };
 
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 /**
  * `occurred_on` is a SQL `date` column — `"2026-08-13"`, no time part.
@@ -535,15 +535,13 @@ export function TransactionList({
                         )}
                       </span>
                     </span>
-                    {/* Sign is always rendered (`−12.50`/`+3,200.00`);
-                        colour only reinforces it, never replaces it (spec
-                        §6.4). `var(--pos)`/`var(--neg)` both clear 4.5:1
-                        against `var(--page)` (this row's actual background
-                        — see this task's report's corrected contrast
-                        table) in both themes. */}
+                    {/* Sign is always rendered (`−12.50`/`+3,200.00`), and
+                        carries direction on its own: under Cherry Cola,
+                        red means over budget or near a cap, never "an
+                        expense", so every amount is ink. */}
                     <span
-                      className="shrink-0 tabular-nums"
-                      style={{ color: r.amount_minor < 0 ? "var(--neg)" : "var(--pos)" }}
+                      className="shrink-0 font-bold tabular-nums"
+                      style={{ color: "var(--ink)" }}
                     >
                       {amountText}
                     </span>

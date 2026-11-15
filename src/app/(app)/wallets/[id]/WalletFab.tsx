@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Plus } from "lucide-react";
 
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 /**
  * Task 4's per-wallet add-transaction affordance (wallet-detail plan). A
@@ -43,7 +43,7 @@ export function WalletFab({ walletId, walletName }: { walletId: string; walletNa
       href={`/transactions/new?wallet=${walletId}&from=wallet:${walletId}`}
       aria-label={`Add a transaction to ${walletName}`}
       className={`fixed bottom-24 right-6 z-10 grid h-14 w-14 place-items-center rounded-full shadow-lg md:bottom-6 ${FOCUS_RING}`}
-      style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+      style={{ background: "var(--accent)", color: "var(--on-accent)" }}
     >
       <Plus size={24} aria-hidden />
     </Link>

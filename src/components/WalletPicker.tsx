@@ -5,7 +5,7 @@ import { ChevronDown, CreditCard, Landmark } from "lucide-react";
 import { slotVar } from "@/lib/palette";
 
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 /** The popover's width — Tailwind's `w-72`, kept in sync by hand. */
 const POPOVER_WIDTH_PX = 288;
@@ -216,7 +216,7 @@ export function WalletPicker({
                           // left border plus weight for the selected row.
                           background: "transparent",
                           color: "var(--ink)",
-                          borderLeft: `3px solid ${w.id === value ? "var(--cat-1)" : "transparent"}`,
+                          borderLeft: `3px solid ${w.id === value ? "var(--accent)" : "transparent"}`,
                         }}
                       >
                         <WalletGlyph wallet={w} />

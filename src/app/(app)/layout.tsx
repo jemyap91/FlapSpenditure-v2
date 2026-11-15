@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getCurrentUserProfile } from "@/lib/supabase/current-user";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { TabBar } from "@/components/shell/TabBar";
-import { AddFab } from "@/components/shell/AddFab";
+import { ProfileMenu } from "@/components/shell/ProfileMenu";
 import { ThemeCookieSync } from "@/components/shell/ThemeCookieSync";
 
 /**
@@ -68,7 +68,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           visible, high-contrast control. */}
       <a
         href="#main-content"
-        className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded-md focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded-md focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]"
         style={{ background: "var(--surface)", color: "var(--ink)" }}
       >
         Skip to content
@@ -82,10 +82,14 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       <Sidebar theme={profile.theme} />
       {/* tabIndex so the skip link above can programmatically focus it,
           without adding <main> itself to the normal Tab order. */}
-      <main id="main-content" tabIndex={-1} className="flex-1 pb-20 md:pb-0 focus:outline-none">
-        {children}
-      </main>
-      <AddFab />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <ProfileMenu theme={profile.theme} />
+        {/* pb-28 clears the floating tab bar (56px + its 12px inset and the
+            raised + button) so the last row of every page stays tappable. */}
+        <main id="main-content" tabIndex={-1} className="flex-1 pb-28 md:pb-0 focus:outline-none">
+          {children}
+        </main>
+      </div>
       <TabBar />
     </div>
   );

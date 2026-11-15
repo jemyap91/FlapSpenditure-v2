@@ -28,6 +28,8 @@ import { slotVar } from "@/lib/palette";
 import { Modal } from "@/components/Modal";
 import { WalletForm } from "@/components/WalletForm";
 import { WalletBonusForm } from "@/components/WalletBonusForm";
+import { PersonBadge } from "@/components/PersonBadge";
+import type { Person } from "@/lib/people";
 import type {
   WalletWithBalance,
   WalletSection,
@@ -78,7 +80,7 @@ const ROW_GRIP = "h-11 w-7";
 const ROW_MORE = "h-11 w-7";
 
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 /**
  * Wallet icons are a closed two-value set (`WALLET_ICONS` in
@@ -121,6 +123,7 @@ export function WalletList({
   currentUserId,
   memberSections,
   editActions,
+  people = {},
 }: {
   /**
    * The list already arranged into the viewer's own sections by
@@ -136,6 +139,9 @@ export function WalletList({
   groups: WalletGroup[];
   sort: WalletSort;
   currentUserId: string;
+  /** Owner (or Shared) per wallet id: a badge on the row and a word under
+   *  its name. Optional; a wallet missing here shows neither. */
+  people?: Record<string, Person>;
   /**
    * Per-wallet content rendered INSIDE that wallet's row — the members list
    * and invite form. Keyed by wallet id.
@@ -576,7 +582,7 @@ export function WalletList({
             type="submit"
             disabled={arranging}
             className={`rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-60 ${FOCUS_RING}`}
-            style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+            style={{ background: "var(--accent)", color: "var(--on-accent)" }}
           >
             Add group
           </button>
@@ -731,9 +737,9 @@ export function WalletList({
                 if (Math.abs(dy) > Math.abs(dx)) return;
                 requestArchive(w);
               }}
-              className="mb-2 flex select-none items-center gap-2 rounded-lg border py-2 pl-3 transition-opacity md:select-auto md:px-3"
+              className="mb-2 flex select-none items-center gap-2 rounded-2xl py-2.5 pl-3 transition-opacity md:select-auto md:px-3"
               style={{
-                borderColor: "var(--grid)",
+                background: "var(--surface)",
                 // iOS's own long-press preview of the wallet's link.
                 WebkitTouchCallout: "none",
                 opacity: archiving ? 0.5 : 1,
@@ -741,14 +747,21 @@ export function WalletList({
                 // visible "picked up" state the rows shuffling underneath
                 // read as the list glitching rather than as a drag.
                 boxShadow: draggingId === w.id ? "0 2px 8px rgb(0 0 0 / 0.25)" : undefined,
-                background: draggingId === w.id ? "var(--grid)" : undefined,
+                ...(draggingId === w.id ? { background: "var(--grid)" } : {}),
               }}
               aria-busy={archiving || undefined}
             >
               {/* Colour is never the only cue (spec §6.1/§6.3): the slot
                   colour tints the glyph, but the glyph shape and the name
                   beside it are what actually identify the wallet. */}
-              <Icon aria-hidden size={18} style={{ color: slotVar(w.color_slot) }} className="shrink-0" />
+              <span className="relative grid h-9 w-9 shrink-0 place-items-center rounded-xl" style={{ background: "var(--page)" }}>
+                <Icon aria-hidden size={18} style={{ color: slotVar(w.color_slot) }} />
+                {people[w.id] && (
+                  <span className="absolute -bottom-1 -right-1">
+                    <PersonBadge person={people[w.id]!} size={16} />
+                  </span>
+                )}
+              </span>
               <span className="min-w-0 flex-1">
                 {/* The wallet's NAME is the link into its detail screen.
                     The accessible name is the wallet's name alone: nothing
@@ -764,6 +777,7 @@ export function WalletList({
                 </Link>
                 <span className="block text-xs" style={{ color: "var(--ink-2)" }}>
                   {w.kind === "card" ? "Card" : "Bank"} · {w.currency_code}
+                  {people[w.id] ? ` · ${people[w.id]!.name}` : ""}
                 </span>
               </span>
               {/* `balanceMinor === null` means the balance was not computed
@@ -773,7 +787,7 @@ export function WalletList({
                   negative balance (a card can genuinely be overdrawn) but
                   adds no "+" to a positive one. */}
               <span
-                className="shrink-0 tabular-nums"
+                className="shrink-0 font-extrabold tabular-nums"
                 style={{
                   color:
                     w.balanceMinor === null
@@ -993,7 +1007,7 @@ export function WalletList({
                 type="submit"
                 disabled={arranging}
                 className={`rounded-md px-3 py-2 text-sm font-medium disabled:opacity-60 ${FOCUS_RING}`}
-                style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+                style={{ background: "var(--accent)", color: "var(--on-accent)" }}
               >
                 Save
               </button>

@@ -79,7 +79,8 @@ test.describe("card bonus", () => {
     await fillExpense(page, "30", "Uniqlo");
     await save(page);
     await expect(page).toHaveURL("/transactions");
-    await page.goto("/");
+    // Every card's progress lives on the Cards tab (Home shows one card to watch).
+    await page.goto("/cards");
     await expect(page.getByText("$30.00 / $100.00")).toBeVisible();
 
     // 3. A second Uniqlo expense in store: the warning shows before saving.
@@ -89,15 +90,15 @@ test.describe("card bonus", () => {
       page.getByRole("status", { name: "Warnings for Everyday" }).getByText(/won't earn it/),
     ).toBeVisible();
 
-    // 4. Warnings never block Save. Activity says "No bonus"; Home does not count it.
+    // 4. Warnings never block Save. Activity says "No bonus"; Cards does not count it.
     await save(page);
     await expect(page).toHaveURL("/transactions");
     await expect(page.getByText("No bonus")).toHaveCount(1);
-    await page.goto("/");
+    await page.goto("/cards");
     await expect(page.getByText("$30.00 / $100.00")).toBeVisible();
     const noBonus = page.getByRole("link", { name: "1 no bonus, Everyday" });
     await expect(noBonus).toBeVisible();
-    await expectNoViolations(page, "/ (card bonus section)");
+    await expectNoViolations(page, "/cards");
 
     // 5. The link opens the real filter: only the in-store expense.
     await noBonus.click();
@@ -120,7 +121,7 @@ test.describe("card bonus", () => {
     ).toBeVisible();
     await save(page);
     await expect(page).toHaveURL("/transactions");
-    await page.goto("/");
+    await page.goto("/cards");
     await expect(page.getByText("$120.00 / $100.00")).toBeVisible();
 
     // 8. The card opens what counted: not the in-store expense.

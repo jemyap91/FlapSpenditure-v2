@@ -13,7 +13,7 @@ import type { Category } from "@/components/CategoryPicker";
 import { RecurringForm } from "./RecurringForm";
 
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 /** One row of `recurring_rules`, already joined with the wallet/category
  *  names page.tsx needs a Server Component read to resolve — this

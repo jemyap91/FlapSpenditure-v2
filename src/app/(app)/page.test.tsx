@@ -37,9 +37,25 @@ const { loadCardTracker } = vi.hoisted(() => ({ loadCardTracker: vi.fn() }));
 // it matters (and the real module imports "server-only").
 vi.mock("@/server/card-tracker", () => ({ loadCardTracker }));
 
-const { walletsData, rulesData, skipsData, transactionsData, rpcCalls } = vi.hoisted(() => ({
+// src/server/people.ts imports "server-only", which throws outside a Server
+// Component build.
+vi.mock("server-only", () => ({}));
+
+// The viewer, for the household-members lookup's "You" fallback.
+vi.mock("@/lib/supabase/current-user", () => ({
+  getCurrentUserProfile: async () => ({ id: "u-c", theme: "system", base_currency: "SGD", wallet_sort: "manual" }),
+}));
+
+const { walletsData, rulesData, skipsData, transactionsData, rpcCalls, budgetData } = vi.hoisted(() => ({
   rpcCalls: [] as { name: string; args: Record<string, unknown> }[],
-  walletsData: [] as { id: string; currency_code: string; created_at: string }[],
+  budgetData: [] as Record<string, unknown>[],
+  walletsData: [] as {
+    id: string;
+    currency_code: string;
+    created_at: string;
+    owner_id: string;
+    shared_with_household: boolean;
+  }[],
   rulesData: [] as Record<string, unknown>[],
   skipsData: [] as { rule_id: string; occurrence_on: string }[],
   transactionsData: [] as {
@@ -59,8 +75,18 @@ vi.mock("@/lib/supabase/server", () => ({
       // question this file tests — a quiet, error-free empty result for all
       // three keeps the rest of the page's own "error is not emptiness"
       // checks satisfied without asserting anything about them here.
-      if (["get_category_breakdown", "get_cash_flow", "get_budget_status"].includes(name)) {
+      if (["get_category_breakdown", "get_cash_flow"].includes(name)) {
         return { data: [], error: null };
+      }
+      if (name === "get_budget_status") return { data: budgetData, error: null };
+      if (name === "get_space_members") {
+        return {
+          data: [
+            { space_id: "s1", user_id: "u-c", display_name: "Cheryl", role: "owner", joined_at: "2026-01-01" },
+            { space_id: "s1", user_id: "u-j", display_name: "Jeremy", role: "member", joined_at: "2026-01-02" },
+          ],
+          error: null,
+        };
       }
       throw new Error(`unexpected rpc ${name}`);
     },
@@ -167,9 +193,16 @@ beforeEach(() => {
   skipsData.length = 0;
   transactionsData.length = 0;
   rpcCalls.length = 0;
+  budgetData.length = 0;
   loadCardTracker.mockResolvedValue([]);
 
-  walletsData.push({ id: WALLET_ID, currency_code: "SGD", created_at: "2026-01-01T00:00:00Z" });
+  walletsData.push({
+    id: WALLET_ID,
+    currency_code: "SGD",
+    created_at: "2026-01-01T00:00:00Z",
+    owner_id: "u-c",
+    shared_with_household: false,
+  });
   rulesData.push({
     id: RULE_ID,
     name: "Rent",
@@ -249,7 +282,7 @@ describe("DashboardPage — viewing another month (?month=)", () => {
   it("queries and labels the requested earlier month", async () => {
     await render_("2026-08");
 
-    expect(screen.getByRole("heading", { level: 1, name: "August 2026" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Spent in August 2026" })).toBeInTheDocument();
     for (const name of ["get_category_breakdown", "get_cash_flow", "get_budget_status"]) {
       expect(rpcCalls.find((c) => c.name === name)?.args).toMatchObject({
         from_date: "2026-08-01",
@@ -283,7 +316,7 @@ describe("DashboardPage — viewing another month (?month=)", () => {
   it("shows the current month with no next link by default", async () => {
     await render_();
 
-    expect(screen.getByRole("heading", { level: 1, name: "September 2026" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Spent in September 2026" })).toBeInTheDocument();
     expect(screen.getByText("spent this month")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Previous month, August 2026" })).toHaveAttribute(
       "href",
@@ -296,40 +329,78 @@ describe("DashboardPage — viewing another month (?month=)", () => {
     for (const month of ["2026-10", "2026-13", "nope"]) {
       rpcCalls.length = 0;
       const { unmount } = await render_(month);
-      expect(screen.getByRole("heading", { level: 1, name: "September 2026" })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { level: 2, name: "Spent in September 2026" })).toBeInTheDocument();
       expect(rpcCalls.find((c) => c.name === "get_cash_flow")?.args).toMatchObject({ from_date: "2026-09-01" });
       unmount();
     }
   });
 });
 
-describe("DashboardPage — card bonus tracker", () => {
-  const trackerRow = {
-    walletId: "w1",
-    walletName: "Citi Rewards",
-    currency: "USD",
-    bonusChannel: "Online",
-    capMinor: 100000,
-    from: "2026-08-19",
-    to: "2026-09-18",
-    spentMinor: 31000,
-    remainingMinor: 69000,
+describe("DashboardPage — hero pace against the overall budget", () => {
+  const overall = {
+    budget_id: "b0",
+    category_id: null,
+    category_label: null,
+    currency_code: "SGD",
+    wallet_names: ["Everyday"],
+    wallet_count: 1,
+    spent_minor: 0,
+    budget_minor: 300000,
+    budget_period_start: "2026-09-01",
+  };
+
+  it("has one level-one heading, the greeting", async () => {
+    render(await DashboardPage());
+    expect(screen.getAllByRole("heading", { level: 1 }).map((h) => h.textContent)).toEqual(["Hey, you two"]);
+  });
+
+  it("shows the budget, days left and pace when an overall budget covers every wallet", async () => {
+    budgetData.push(overall);
+    render(await DashboardPage());
+    // 1 Sep of a 30-day month: 29 days after today, nothing spent yet, so
+    // under pace by the first day's share (3000 / 30).
+    expect(screen.getByText(/of SGD 3,000\.00 budget · 29 days left/)).toBeInTheDocument();
+    expect(screen.getByText("SGD 100.00 under pace")).toBeInTheDocument();
+    // The overall budget is the hero's, so it is not repeated as a ring.
+    expect(screen.queryByText("Overall budget")).not.toBeInTheDocument();
+  });
+
+  it("leaves pace out with no overall budget", async () => {
+    render(await DashboardPage());
+    expect(screen.queryByText(/under pace|over pace/)).not.toBeInTheDocument();
+  });
+});
+
+describe("DashboardPage — card to watch", () => {
+  const minSpend = {
+    walletId: WALLET_ID,
+    walletName: "Yuu Card",
+    currency: "SGD",
+    bonusChannel: null,
+    capMinor: 80000,
+    from: "2026-08-24",
+    to: "2026-09-23",
+    spentMinor: 54020,
+    remainingMinor: 25980,
     pace: "under",
     mismatchCount: 0,
   };
 
-  it("sits after the category breakdown and before cash flow", async () => {
-    loadCardTracker.mockResolvedValue([trackerRow]);
+  it("names the most urgent card, with its owner, and links to the Cards tab", async () => {
+    loadCardTracker.mockResolvedValue([minSpend]);
     render(await DashboardPage());
 
-    const heading = (name: string) => screen.getByRole("heading", { name });
-    const before = (a: HTMLElement, b: HTMLElement) =>
-      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
-    // Both neighbours are in their empty state here (the RPC mocks return no rows).
-    const breakdown = screen.getByText(/^No spending recorded/);
-    const cashFlow = screen.getByText(/^No cash flow recorded/);
-    expect(before(breakdown, heading("Card bonus"))).toBe(true);
-    expect(before(heading("Card bonus"), cashFlow)).toBe(true);
+    expect(screen.getByRole("heading", { name: "Card to watch" })).toBeInTheDocument();
+    expect(screen.getByText("Yuu Card")).toBeInTheDocument();
+    expect(screen.getByText("SGD 259.80 to min spend · 23 days left")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Cheryl" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Cards tab" })).toHaveAttribute("href", "/cards");
+  });
+
+  it("shows no card block when nothing needs attention", async () => {
+    loadCardTracker.mockResolvedValue([{ ...minSpend, spentMinor: 80000, remainingMinor: 0, pace: "reached" }]);
+    render(await DashboardPage());
+    expect(screen.queryByRole("heading", { name: "Card to watch" })).not.toBeInTheDocument();
   });
 
   it("measures today's cycle even while browsing an earlier month", async () => {

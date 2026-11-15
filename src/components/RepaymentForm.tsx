@@ -8,7 +8,7 @@ import { updateTransaction } from "@/server/actions/transactions";
 type Mode = { kind: "create"; expenseId: string } | { kind: "edit"; id: string; expenseId: string };
 
 const FIELD =
-  "w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 /**
  * One repayment's fields (spec §4.3). A plain decimal text input, not the
@@ -118,7 +118,7 @@ export function RepaymentForm({
       <button
         type="submit"
         disabled={pending}
-        className="self-start rounded-md px-4 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]"
+        className="self-start rounded-md px-4 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]"
         style={{ background: "var(--ink)", color: "var(--page)" }}
       >
         {mode.kind === "create" ? "Record repayment" : "Save repayment"}

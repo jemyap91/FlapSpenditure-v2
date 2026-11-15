@@ -9,7 +9,7 @@ import type { DueRow } from "@/app/(app)/due-rows";
 import { UndoToast, type ToastState } from "./UndoToast";
 
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 /**
  * A row's date, WITH its year whenever that year isn't `today`'s — fix
@@ -307,7 +307,7 @@ export function DueList({ rows, olderDropped, today }: { rows: DueRow[]; olderDr
                       aria-label={`Record ${row.ruleName} for ${dateLabel}`}
                       onClick={() => handleRecord(row)}
                       className={`shrink-0 rounded-md px-3 py-2 text-sm font-medium disabled:opacity-60 ${FOCUS_RING}`}
-                      style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+                      style={{ background: "var(--accent)", color: "var(--on-accent)" }}
                     >
                       Record
                     </button>

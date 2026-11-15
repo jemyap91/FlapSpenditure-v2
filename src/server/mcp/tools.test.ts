@@ -9,7 +9,7 @@ const EXPENSE_ID = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 const CATEGORY_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const OTHER_WALLET_ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 
-const { actions, stored, tracker, bonus, calls } = vi.hoisted(() => ({
+const { actions, stored, tracker, bonus, walletActions, calls } = vi.hoisted(() => ({
   actions: {
     createTransaction: vi.fn(),
     updateTransaction: vi.fn(),
@@ -21,6 +21,7 @@ const { actions, stored, tracker, bonus, calls } = vi.hoisted(() => ({
   },
   tracker: { loadCardTracker: vi.fn(), warningsFor: vi.fn() },
   bonus: { setWalletBonus: vi.fn() },
+  walletActions: { addWalletReturningId: vi.fn() },
   // Every builder method the fake sees, as [method, ...args].
   calls: [] as unknown[][],
   stored: {
@@ -37,6 +38,7 @@ vi.mock("@/server/actions/transactions", () => actions);
 vi.mock("@/server/actions/refunds", () => ({ createRefund: actions.createRefund }));
 vi.mock("@/server/card-tracker", () => tracker);
 vi.mock("@/server/actions/wallet-bonus", () => bonus);
+vi.mock("@/server/actions/wallets", () => walletActions);
 vi.mock("@/lib/today", () => ({ todayLocalDate: () => "2026-09-29" }));
 
 // A read-only fake: every query against `transactions` resolves to the one
@@ -69,6 +71,7 @@ beforeEach(() => {
   Object.values(actions).forEach((fn) => fn.mockReset());
   Object.values(tracker).forEach((fn) => fn.mockReset());
   bonus.setWalletBonus.mockReset();
+  walletActions.addWalletReturningId.mockReset();
   tracker.warningsFor.mockResolvedValue({ channel: null, warnings: [] });
   calls.length = 0;
   stored.clientDown = false;
@@ -447,6 +450,7 @@ describe("toolList", () => {
       "update_transfer",
       "delete_transaction",
       "get_card_tracker",
+      "create_card",
       "update_wallet_bonus",
       "restore_transaction",
     ]);
@@ -635,5 +639,103 @@ describe("update_transfer", () => {
   it("says so when the transaction isn't found", async () => {
     stored.row = null;
     expect(await callTool("update_transfer", { id: TXN_ID })).toEqual({ ok: false, error: "Transfer not found" });
+  });
+});
+
+describe("create_card", () => {
+  const NEW_ID = "12121212-1212-4121-8121-121212121212";
+
+  beforeEach(() => {
+    stored.list = [
+      { name: "DBS Multiplier (J)", currency_code: "SGD" },
+      { name: "Citi Rewards 8616 (J)", currency_code: "SGD" },
+      { name: "Travel", currency_code: "USD" },
+    ];
+    walletActions.addWalletReturningId.mockResolvedValue({ id: NEW_ID });
+    bonus.setWalletBonus.mockResolvedValue({ ok: true });
+  });
+
+  const sentForm = () => Object.fromEntries(walletActions.addWalletReturningId.mock.calls[0]![0] as FormData);
+
+  it("adds a card wallet in the user's usual currency, with its quota in one call", async () => {
+    const result = await callTool("create_card", {
+      name: "UOB One Visa 5303 (J)",
+      cycle_start_day: 2,
+      max: "500",
+    });
+
+    expect(sentForm()).toEqual({
+      name: "UOB One Visa 5303 (J)",
+      kind: "card",
+      currency_code: "SGD",
+      starting_balance: "0",
+      color_slot: "4",
+      icon: "credit-card",
+    });
+    expect(bonus.setWalletBonus).toHaveBeenCalledWith({
+      wallet_id: NEW_ID,
+      bonus_channel: null,
+      cycle_start_day: 2,
+      max: "500",
+    });
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        wallet_id: NEW_ID,
+        name: "UOB One Visa 5303 (J)",
+        currency: "SGD",
+        bonus_channel: null,
+        cycle_start_day: 2,
+        max: "500",
+        goal: "min_spend",
+      },
+    });
+  });
+
+  it("sets a bonus-channel max when a channel is given", async () => {
+    const result = await callTool("create_card", {
+      name: "DBS Woman's World 0636",
+      currency: "SGD",
+      bonus_channel: "online",
+      cycle_start_day: 1,
+      max: "1000.00",
+    });
+    expect(bonus.setWalletBonus.mock.calls[0]![0]).toMatchObject({ bonus_channel: "online", max: "1000.00" });
+    expect(result).toMatchObject({ ok: true, data: { goal: "max" } });
+  });
+
+  it("adds a card with no quota without touching its terms", async () => {
+    const result = await callTool("create_card", { name: "Trust Card 3083 (C)" });
+    expect(bonus.setWalletBonus).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ ok: true, data: { wallet_id: NEW_ID, max: null } });
+  });
+
+  it("refuses a name already in use, whatever its case, and points at update_wallet_bonus", async () => {
+    const result = await callTool("create_card", { name: "citi rewards 8616 (j)", cycle_start_day: 19, max: "1000" });
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/already exists.*update_wallet_bonus/) });
+    expect(walletActions.addWalletReturningId).not.toHaveBeenCalled();
+  });
+
+  it("refuses a max with no cycle start day before creating anything", async () => {
+    const result = await callTool("create_card", { name: "New Card", max: "500" });
+    expect(result).toMatchObject({ ok: false, error: /^cycle_start_day: / });
+    expect(walletActions.addWalletReturningId).not.toHaveBeenCalled();
+  });
+
+  it("passes the wallet action's refusal through", async () => {
+    walletActions.addWalletReturningId.mockResolvedValue({ error: "Could not create wallet. Please try again." });
+    expect(await callTool("create_card", { name: "New Card" })).toEqual({
+      ok: false,
+      error: "Could not create wallet. Please try again.",
+    });
+  });
+
+  it("says the card exists when only its quota failed, so it is not added twice", async () => {
+    bonus.setWalletBonus.mockResolvedValue({ error: "Max is not a valid amount" });
+    const result = await callTool("create_card", { name: "New Card", cycle_start_day: 5, max: "500" });
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining(`The card was added (wallet_id ${NEW_ID})`),
+    });
   });
 });

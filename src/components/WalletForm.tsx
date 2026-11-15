@@ -17,7 +17,7 @@ const KINDS = [
 }[];
 
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 /**
  * The wallet create/edit form, shared by /onboarding (first wallet) and
@@ -271,9 +271,9 @@ export function WalletForm({
                 className="peer sr-only"
               />
               <div
-                className={`flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-center ${FOCUS_RING} peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--cat-1)]`}
+                className={`flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-center ${FOCUS_RING} peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--focus)]`}
                 style={{
-                  borderColor: selected ? "var(--cat-1)" : "var(--ink-2)",
+                  borderColor: selected ? "var(--accent)" : "var(--ink-2)",
                   background: selected ? "var(--grid)" : "transparent",
                   fontWeight: selected ? 600 : 400,
                 }}
@@ -358,7 +358,7 @@ export function WalletForm({
         type="submit"
         disabled={pending}
         className={`rounded-md px-4 py-2 font-medium disabled:opacity-60 ${FOCUS_RING}`}
-        style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+        style={{ background: "var(--accent)", color: "var(--on-accent)" }}
       >
         {pending ? pendingLabel : submitLabel}
       </button>

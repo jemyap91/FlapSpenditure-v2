@@ -4,7 +4,7 @@ import { useId, useState, useTransition } from "react";
 import { setWalletSharing } from "@/server/actions/household";
 
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 export type SharingMember = {
   user_id: string;
@@ -140,7 +140,7 @@ export function WalletSharingRow({
           disabled={saving}
           aria-label={`Save sharing for ${walletName}`}
           className={`self-start rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-60 ${FOCUS_RING}`}
-          style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+          style={{ background: "var(--accent)", color: "var(--on-accent)" }}
         >
           {saving ? "Saving…" : "Save"}
         </button>

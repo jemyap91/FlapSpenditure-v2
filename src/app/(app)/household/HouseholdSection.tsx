@@ -11,7 +11,7 @@ import { InviteByEmailForm } from "@/components/InviteByEmailForm";
 import { WalletSharingRow, type SharingMember } from "@/components/WalletSharingRow";
 
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 export type HouseholdMember = { user_id: string; display_name: string; role: "owner" | "member" };
 export type HouseholdWallet = {

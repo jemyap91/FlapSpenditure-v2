@@ -115,16 +115,17 @@ function dueLabel(occurrenceIso: string, todayIso: string): string {
  * local calendar day the app renders a heading for.
  */
 /**
- * The dashboard's hero figure (`(app)/page.tsx`: `<header><h1>…</h1><p
- * className="text-5xl">{formatMoney(spent, currency)}</p>…</header>`) —
- * scoped to `header`'s first `<p>` rather than a bare `getByText`, because
+ * The dashboard's hero figure (`HomeHero.tsx`: a `<section>` labelled
+ * "Spent in <month>", whose first `<p>` is the total, cents in a nested
+ * span) — scoped to that section's first `<p>` rather than a bare
+ * `getByText`, because
  * `CategoryBreakdown`'s own per-category figures repeat the SAME dollar
  * string (e.g. a lone Groceries expense shows as both the hero total and
  * that category's own breakdown row) and a page-wide text query collides
  * on it the moment more than one category has spending.
  */
 function heroTotal(page: Page) {
-  return page.locator("header p").first();
+  return page.getByRole("region", { name: /^Spent in / }).locator("p").first();
 }
 
 function dayHeading(occurredOn: string): string {
@@ -172,7 +173,8 @@ test.describe("recurring", () => {
     // dashboard's own "Manage" link (DueList.tsx) disappears whenever
     // nothing is due, which is exactly the state this account starts in,
     // so /transactions' link is this route's only permanent entry point.
-    await page.getByRole("link", { name: "Recurring", exact: true }).click();
+    // Scoped to <main>: the desktop sidebar has its own "Recurring" link too.
+    await page.getByRole("main").getByRole("link", { name: "Recurring", exact: true }).click();
     await expect(page).toHaveURL("/recurring");
 
     async function addRule(name: string, category: string, anchorOn: string, amount: string) {

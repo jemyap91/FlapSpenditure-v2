@@ -10,9 +10,9 @@ import { nextColorSlot, type CategoryIcon } from "@/lib/validation/category";
 import type { Category } from "@/components/CategoryPicker";
 
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 const SWATCH_FOCUS_RING =
-  "peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--cat-1)]";
+  "peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--focus)]";
 
 const SLOTS = Array.from({ length: SLOT_COUNT }, (_, i) => i + 1);
 
@@ -289,7 +289,7 @@ export function CategorySection({
           type="submit"
           disabled={creating}
           className={`flex w-fit items-center gap-1 rounded-md px-3 py-2 text-sm font-medium disabled:opacity-60 ${FOCUS_RING}`}
-          style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+          style={{ background: "var(--accent)", color: "var(--on-accent)" }}
         >
           <Plus size={14} aria-hidden />
           {creating ? "Adding…" : "Add"}
@@ -361,7 +361,7 @@ export function CategorySection({
                 type="submit"
                 disabled={saving}
                 className={`rounded-md px-3 py-2 text-sm font-medium disabled:opacity-60 ${FOCUS_RING}`}
-                style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+                style={{ background: "var(--accent)", color: "var(--on-accent)" }}
               >
                 {saving ? "Saving…" : "Save"}
               </button>
@@ -530,9 +530,9 @@ const IconPicker = memo(function IconPicker({
                       aria-hidden
                       className={`flex h-7 w-7 items-center justify-center rounded-md ${SWATCH_FOCUS_RING}`}
                       style={{
-                        borderLeft: `3px solid ${selected ? "var(--cat-1)" : "transparent"}`,
+                        borderLeft: `3px solid ${selected ? "var(--accent)" : "transparent"}`,
                         background: selected ? "var(--grid)" : "transparent",
-                        color: selected ? "var(--cat-1)" : "var(--ink-2)",
+                        color: selected ? "var(--accent)" : "var(--ink-2)",
                       }}
                     >
                       <Icon size={16} aria-hidden />

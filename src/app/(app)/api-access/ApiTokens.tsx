@@ -4,7 +4,7 @@ import { useActionState, useState, useTransition } from "react";
 import { createApiToken, revokeApiToken, type CreateTokenState } from "@/server/actions/api-tokens";
 
 const FOCUS_RING =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]";
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]";
 
 export type ApiTokenRow = {
   id: string;
@@ -53,7 +53,7 @@ export function ApiTokens({ tokens, endpoint }: { tokens: ApiTokenRow[]; endpoin
           type="submit"
           disabled={creating}
           className={`shrink-0 rounded-md px-3 py-2 text-sm font-medium ${FOCUS_RING}`}
-          style={{ background: "var(--cat-1)", color: "var(--surface)" }}
+          style={{ background: "var(--accent)", color: "var(--on-accent)" }}
         >
           Create token
         </button>
@@ -67,7 +67,7 @@ export function ApiTokens({ tokens, endpoint }: { tokens: ApiTokenRow[]; endpoin
         <section
           aria-label="New token"
           className="flex flex-col gap-3 rounded-md border p-4"
-          style={{ borderColor: "var(--cat-1)" }}
+          style={{ borderColor: "var(--accent)" }}
         >
           <p className="text-sm font-medium" style={{ color: "var(--ink)" }}>
             Copy this token now. You won&apos;t be able to see it again.

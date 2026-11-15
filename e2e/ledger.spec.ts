@@ -111,8 +111,8 @@ test.describe("ledger", () => {
 
     // ONE locator for both projects, still — but the two entry points are
     // no longer the same shape. Desktop keeps the Sidebar's "Add" item
-    // (`hidden md:flex`); mobile lost its tab and gained AddFab, a
-    // bottom-right floating button named "Add a transaction" (`md:hidden`).
+    // (`hidden md:flex`); mobile has the tab bar's centre + button, named
+    // "Add a transaction" (`md:hidden`).
     // Exactly one of the two is in the accessibility tree at any viewport,
     // so this still fails on whichever viewport has no entry point at all —
     // which is the regression the test was written for.

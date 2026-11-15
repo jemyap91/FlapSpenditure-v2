@@ -12,7 +12,7 @@
 // here, no matter how it's spending.
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { BudgetSummary } from "./BudgetSummary";
+import { BudgetSummary, overallBudget } from "./BudgetSummary";
 import type { BudgetStatusRow } from "@/lib/budget-status";
 
 /** A BUDGETED row covering every one of 2 active SGD wallets, matching the
@@ -36,11 +36,10 @@ describe("BudgetSummary — scope filtering (all-wallets only)", () => {
     expect(screen.getByText("Groceries")).toBeInTheDocument();
     expect(screen.getByText(/SGD 412\.00 of SGD 600\.00 · 69%/)).toBeInTheDocument();
     // N7b (whole-branch review): positive control for the empty state's own
-    // `.h-2` ABSENCE assertion below — without this, a rename of the bar's
-    // class would make that absence check pass vacuously forever instead of
-    // catching drift, the exact bug already fixed in BudgetList.test.tsx's
-    // sibling assertion (see its own comment on the same pattern).
-    expect(document.querySelector(".h-2")).toBeInTheDocument();
+    // ring ABSENCE assertion below — without this, a rename of the ring's
+    // marker would make that absence check pass vacuously forever instead of
+    // catching drift.
+    expect(document.querySelector("[data-ring]")).toBeInTheDocument();
   });
 
   it("hides a budget over only a SUBSET of wallets (a /budgets-only concern)", () => {
@@ -102,6 +101,35 @@ describe("BudgetSummary — empty state", () => {
     // No heading, no bar, no section chrome -- same "single line, nothing
     // else" precedent CategoryBreakdown/CashFlow's own empty states set.
     expect(screen.queryByRole("heading")).not.toBeInTheDocument();
-    expect(document.querySelector(".h-2")).not.toBeInTheDocument();
+    expect(document.querySelector("[data-ring]")).not.toBeInTheDocument();
+  });
+});
+
+describe("BudgetSummary — overall budget beside Home's hero", () => {
+  const overall = row({ budget_id: "b0", category_id: null, category_label: null, budget_minor: 320000 });
+
+  it("shows the overall budget as a ring by default", () => {
+    render(<BudgetSummary rows={[overall]} currencyCode="SGD" walletCount={2} />);
+    expect(screen.getByText("Overall budget")).toBeInTheDocument();
+  });
+
+  it("leaves the overall budget to the hero when asked, keeping category rings", () => {
+    render(<BudgetSummary rows={[overall, row()]} currencyCode="SGD" walletCount={2} hideOverall />);
+    expect(screen.queryByText("Overall budget")).not.toBeInTheDocument();
+    expect(screen.getByText("Groceries")).toBeInTheDocument();
+  });
+
+  it("says no CATEGORY budgets cover every wallet when only the overall one does", () => {
+    render(<BudgetSummary rows={[overall]} currencyCode="SGD" walletCount={2} hideOverall />);
+    expect(screen.getByText("No category budgets cover every wallet yet.")).toBeInTheDocument();
+  });
+});
+
+describe("overallBudget", () => {
+  it("finds the no-category budget covering every wallet, and nothing else", () => {
+    const overall = row({ budget_id: "b0", category_id: null, category_label: null });
+    expect(overallBudget([row(), overall], "SGD", 2)).toBe(overall);
+    expect(overallBudget([row()], "SGD", 2)).toBeNull();
+    expect(overallBudget([{ ...overall, wallet_names: ["Everyday"], wallet_count: 1 }], "SGD", 2)).toBeNull();
   });
 });

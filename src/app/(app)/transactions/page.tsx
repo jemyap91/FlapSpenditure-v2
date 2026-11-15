@@ -304,7 +304,7 @@ export default async function TransactionsPage({
             truncating. */}
         <Link
           href="/recurring"
-          className="shrink-0 rounded-sm text-sm underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cat-1)]"
+          className="shrink-0 rounded-sm text-sm underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]"
           style={{ color: "var(--ink-2)" }}
         >
           Recurring
