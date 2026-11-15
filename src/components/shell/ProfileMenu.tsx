@@ -32,7 +32,7 @@ export function ProfileMenu({ theme }: { theme: ThemePref }) {
   const setOpen = (next: boolean) => setOpenOn(next ? pathname : null);
   const panelId = useId();
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const rootRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -54,7 +54,10 @@ export function ProfileMenu({ theme }: { theme: ThemePref }) {
   }, [open]);
 
   return (
-    <div ref={rootRef} className="relative flex items-center justify-between px-4 pt-3 md:hidden">
+    // A <header> (the page's banner landmark), not a bare <div>: everything
+    // on the page must sit in a landmark (axe "region"), and this bar is a
+    // sibling of <main> and the tab bar's <nav>.
+    <header ref={rootRef} className="relative flex items-center justify-between px-4 pt-3 md:hidden">
       <Link href="/" className={`font-display rounded-sm text-base font-extrabold ${FOCUS_RING}`} style={{ color: "var(--ink)" }}>
         Flapspenditure
       </Link>
@@ -105,6 +108,6 @@ export function ProfileMenu({ theme }: { theme: ThemePref }) {
           </form>
         </div>
       </div>
-    </div>
+    </header>
   );
 }

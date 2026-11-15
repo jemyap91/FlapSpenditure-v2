@@ -348,7 +348,9 @@ test("a household owner invites, shares, and a member leaves", async ({ browser 
   // household share only reaches wallets marked shared, not every wallet
   // its owner has.
   await b.goto("/wallets");
-  await expect(b.getByText("Shared")).toBeVisible();
+  // The wallet's own link: "Shared" is also the person tile's name and each
+  // shared wallet's owner label on /wallets now.
+  await expect(b.getByRole("link", { name: "Shared", exact: true })).toBeVisible();
   await expect(b.getByText("Private")).toHaveCount(0);
 
   // --- 6. A shares "Private" DIRECTLY with B, leaving the household switch
@@ -377,11 +379,11 @@ test("a household owner invites, shares, and a member leaves", async ({ browser 
   await expect(b.getByText("You left the household.")).toBeVisible();
 
   await b.goto("/wallets");
-  await expect(b.getByText("Shared")).toHaveCount(0);
+  await expect(b.getByRole("link", { name: "Shared", exact: true })).toHaveCount(0);
   await expect(b.getByText("Bs own")).toBeVisible();
 
   await a.goto("/wallets");
-  await expect(a.getByText("Shared")).toBeVisible();
+  await expect(a.getByRole("link", { name: "Shared", exact: true })).toBeVisible();
   await expect(a.getByText("Private")).toBeVisible();
 
   await ctxA.close();
